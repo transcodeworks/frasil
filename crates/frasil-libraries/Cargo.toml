@@ -1,0 +1,30 @@
+[package]
+name = "frasil-libraries"
+description = "Frasil's libraries extension: tickets, issuer signing and ticket checks. An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+# ext-deposit-tokens.md: ticket purpose 4 and key 7, the deposit grant,
+# read where the peer says it implements that extension, and the issuer's
+# grants. Off by default.
+ext-deposit-tokens = []
+
+[dependencies]
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
+zeroize.workspace = true
+
+[dev-dependencies]
+frasil-testkit = { path = "../frasil-testkit" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

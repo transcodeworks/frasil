@@ -1,0 +1,44 @@
+[package]
+name = "frasil-transport"
+description = "Frasil's transport, sans-IO: frames, messages, handshakes, mailboxes and tickets. An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+# ext-invite-links.md: mailbox kind 4, the drop and `MailboxDelete`. Off by
+# default.
+ext-invite-links = ["frasil-peers/ext-invite-links"]
+# ext-restricted-spaces.md: a restricted space's member key, and where it
+# may be attached and announced. Off by default.
+ext-restricted-spaces = []
+# ext-guests.md: the content name `frasil/leave-request`. Off by default.
+ext-guests = []
+# ext-next-endpoints.md: `NextEndpoint` and the announced ticket. Off by
+# default.
+ext-next-endpoints = []
+# ext-deposit-tokens.md: message types 40 to 43, service 6 and `MailboxPut`
+# key 7, read by frasil-deposit-tokens. Off by default.
+ext-deposit-tokens = []
+
+[dependencies]
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
+frasil-peers = { path = "../frasil-peers", version = "0.1.0" }
+subtle.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+frasil-events = { path = "../frasil-events" }
+frasil-identity = { path = "../frasil-identity" }
+frasil-keys = { path = "../frasil-keys" }
+frasil-testkit = { path = "../frasil-testkit" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

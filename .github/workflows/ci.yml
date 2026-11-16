@@ -1,0 +1,526 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # A merge queue, when the repository uses one: the queued change runs
+  # every job, as a push to main does.
+  merge_group:
+
+# A new push to a pull request cancels its earlier run; runs on main finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Debug information for every target fills a hosted runner's disk.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # Which jobs this change needs (scripts/ci-areas.sh): a pull request runs
+  # the jobs that build what it changes, compared with its base; a push to
+  # main runs every job unless it changes documentation only, and so does a
+  # change in a merge queue. Without a
+  # base to compare with (a new branch, a force-push, a commit that cannot
+  # be fetched), or when the comparison fails, every job runs. ci-ok below
+  # is the one check a merge waits for, and treats a skipped job as passed.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      spec: ${{ steps.areas.outputs.spec }}
+      check: ${{ steps.areas.outputs.check }}
+      deny: ${{ steps.areas.outputs.deny }}
+      mobile: ${{ steps.areas.outputs.mobile }}
+      features: ${{ steps.areas.outputs.features }}
+      fuzz: ${{ steps.areas.outputs.fuzz }}
+      wasm: ${{ steps.areas.outputs.wasm }}
+      js: ${{ steps.areas.outputs.js }}
+    steps:
+      # A pull request checks out its merge commit; the base is its parent.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      # The runner's own stable Cargo reads the manifests, so the pinned
+      # toolchain is not installed for this.
+      - name: Test the area table
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: scripts/ci-areas-test.sh
+      - name: The areas this change affects
+        id: areas
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          FORCED: ${{ github.event.forced }}
+        run: |
+          mode=
+          base=
+          case "$EVENT" in
+            pull_request) base="$PR_BASE" ;;
+            push)
+              mode=--full
+              [ "$FORCED" = true ] || base="$BEFORE"
+              ;;
+          esac
+          if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]]; then
+            echo "No base to compare with: every job runs."
+            scripts/ci-areas.sh --all | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git cat-file -e "$base^{commit}" 2>/dev/null ||
+            git fetch --no-tags --depth=1 origin "$base" ||
+            true
+          if ! git diff --name-only --no-renames "$base" HEAD > "$RUNNER_TEMP/changed"; then
+            echo "Could not compare with $base: every job runs."
+            scripts/ci-areas.sh --all | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Files changed since $base:"
+          cat "$RUNNER_TEMP/changed"
+          echo
+          # shellcheck disable=SC2086 # mode is empty or one flag
+          scripts/ci-areas.sh $mode < "$RUNNER_TEMP/changed" | tee -a "$GITHUB_OUTPUT"
+
+  # The specification's reference script regenerates every vector file and
+  # fails if one differs from the committed file (docs/spec/README.md). On
+  # main and in a merge queue a second hash seed confirms the output does not depend on Python's
+  # hash seed. The runner's own Python is 3.12, which the script needs.
+  spec-vectors:
+    needs: changes
+    if: needs.changes.outputs.spec == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        hashseed: ${{ fromJSON(github.event_name != 'pull_request' && '["0", "1"]' || '["0"]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PYTHONHASHSEED: ${{ matrix.hashseed }}
+    defaults:
+      run:
+        working-directory: docs/spec/reference
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the reference script's pinned dependencies
+        run: |
+          python3 --version
+          python3 -m venv .venv
+          .venv/bin/pip install --require-hashes --no-deps -r requirements.txt
+      # The first run fetches Wycheproof's files from a pinned commit and
+      # refuses them unless their SHA-256 matches.
+      - name: Check the vector files
+        run: .venv/bin/python generate.py --check
+
+  # Every Rust package of the workspace: the protocol crates (crates/frasil-*),
+  # the developer crate (crates/frasil), the peer (apps/relay) and the
+  # conformance tests (tests/conformance). Each extension is a feature, so
+  # the lints (check) and the tests (test) run twice: with the default
+  # features, which are the core protocol, and with every feature. The peer
+  # builds every extension in and turns each on at run time; the conformance
+  # tests' features turn them on in their test peers.
+  #
+  # Formatting and the lints do not differ between systems, so they run
+  # here, on Linux, only.
+  #
+  # Every job runs on a GitHub-hosted runner: a pull request from a fork
+  # never runs on a machine that outlives the job.
+  check:
+    needs: changes
+    if: needs.changes.outputs.check == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Any runner: the action installs rustup when the runner has none, then
+      # the version rust-toolchain.toml pins, with its components.
+      - name: The pinned Rust version
+        id: rust
+        shell: bash
+        run: echo "version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch @ 2026-08-05
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: rustfmt, clippy
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      # frasil-relay builds every extension in, and Cargo unifies its
+      # features with its dependencies' across the workspace; the protocol
+      # crates are checked without the peer too, so that their default
+      # features are checked alone.
+      - name: Clippy, default features
+        run: |
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo clippy --workspace --exclude frasil-relay --exclude frasil-conformance --all-targets --locked -- -D warnings
+      - name: Clippy, every feature
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  # The workspace's tests on Linux, in two jobs side by side: with the
+  # default features and with every feature. The two are different builds,
+  # and one runner's disk does not hold both.
+  #
+  # With every extension feature, the claims check (frasil-testkit) verifies
+  # the claims each crate makes under a feature, so every family of every
+  # vector file is checked, the gated ones included. nextest runs each test
+  # in its own process and stops one that runs too long, naming it
+  # (.config/nextest.toml); doctests run with cargo test, which nextest does
+  # not run.
+  test:
+    needs: changes
+    if: needs.changes.outputs.check == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [default features, every feature]
+    name: test (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      # Toolchains the build does not use take a third of the runner's disk.
+      - name: Free the runner's disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: The pinned Rust version
+        id: rust
+        shell: bash
+        run: echo "version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch @ 2026-08-05
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: test-${{ matrix.features == 'default features' && 'default' || 'every' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # frasil-crypto's wycheproof tests read these from a git-ignored cache
+      # and check each against the SHA-256 that crypto.json pins.
+      - name: Fetch the pinned Wycheproof files
+        run: node scripts/fetch-wycheproof.mjs
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
+        with:
+          tool: cargo-nextest@0.9.151
+      # The peer builds every extension in, so the protocol crates' tests
+      # run without it first, with their default features alone.
+      - name: Test, default features
+        if: matrix.features == 'default features'
+        run: |
+          cargo nextest run --workspace --exclude frasil-relay --exclude frasil-conformance --locked
+          cargo nextest run --locked -p frasil-relay -p frasil-conformance
+          cargo test --workspace --locked --doc
+      - name: Test, every feature
+        if: matrix.features == 'every feature'
+        run: |
+          cargo nextest run --workspace --all-features --locked
+          cargo test --workspace --all-features --locked --doc
+
+  # The workspace's tests with every feature on Windows and macOS, after a
+  # merge to main or in a merge queue: these runners cost several times a
+  # Linux one, so a pull request does not wait for them.
+  test-os:
+    needs: changes
+    if: needs.changes.outputs.check == 'true' && github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows, macos]
+    runs-on: ${{ matrix.os }}-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: The pinned Rust version
+        id: rust
+        shell: bash
+        run: echo "version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch @ 2026-08-05
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Fetch the pinned Wycheproof files
+        run: node scripts/fetch-wycheproof.mjs
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
+        with:
+          tool: cargo-nextest@0.9.151
+      - name: Test, every feature
+        run: cargo nextest run --workspace --all-features --locked
+
+  # Advisories, licences, bans and sources (deny.toml), then every crate
+  # that is published packaged as crates.io would receive it.
+  deny:
+    needs: changes
+    if: needs.changes.outputs.deny == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Any runner: the action installs rustup when the runner has none, then
+      # the version rust-toolchain.toml pins, with its components.
+      - name: The pinned Rust version
+        id: rust
+        shell: bash
+        run: echo "version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch @ 2026-08-05
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: rustfmt, clippy
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny --version 0.20.2
+      - name: Check dependencies
+        run: cargo deny check
+      # The publish workflow (release.yml) runs `cargo publish --workspace`;
+      # this catches a manifest it would refuse, without building each crate.
+      # `cargo package` does not skip the members marked `publish = false`,
+      # whose path dependencies name no version, so they are excluded.
+      - name: Package the published crates
+        run: >-
+          cargo package --workspace --locked --no-verify
+          --exclude frasil-conformance --exclude frasil-testkit
+          --exclude frasil-wasm
+
+  # The developer crate for the mobile targets applications build it for
+  # (scripts/check-mobile.sh): iOS on hosted macOS with Xcode, Android on
+  # hosted Ubuntu with the Android NDK the runner image carries
+  # (ANDROID_NDK_LATEST_HOME). Each on its own platform's runner; iOS, on
+  # the costlier macOS runner, after a merge to main only.
+  mobile:
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: >-
+          ${{ fromJSON(github.event_name != 'pull_request'
+          && '[{"name": "android", "runner": "ubuntu-latest", "targets": "aarch64-linux-android"},
+          {"name": "ios", "runner": "macos-latest", "targets": "aarch64-apple-ios, aarch64-apple-ios-sim"}]'
+          || '[{"name": "android", "runner": "ubuntu-latest", "targets": "aarch64-linux-android"}]') }}
+    name: mobile (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Any runner: the action installs rustup when the runner has none, then
+      # the version rust-toolchain.toml pins, with its components.
+      - name: The pinned Rust version
+        id: rust
+        shell: bash
+        run: echo "version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch @ 2026-08-05
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          targets: ${{ matrix.targets }}
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: mobile-${{ matrix.name }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Check frasil for ${{ matrix.name }}
+        run: scripts/check-mobile.sh ${{ matrix.name }}
+
+  # The developer crate's feature combinations: none, each alone, the
+  # defaults, the defaults plus each other feature, the adapters without a
+  # binding (also on wasm32), the browser set and every feature
+  # (scripts/check-features.sh). The check job covers only
+  # the defaults and every feature, and Cargo unifies features across the
+  # workspace there.
+  features:
+    needs: changes
+    if: needs.changes.outputs.features == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Any runner: the action installs rustup when the runner has none, then
+      # the version rust-toolchain.toml pins, with its components.
+      - name: The pinned Rust version
+        id: rust
+        shell: bash
+        run: echo "version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch @ 2026-08-05
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Clippy, each feature combination
+        run: scripts/check-features.sh
+
+  # The fuzz targets: fuzz/ and apps/relay/fuzz are workspaces
+  # of their own, so the check job builds neither. Here both are formatted
+  # and built, with every feature so that each extension's targets build,
+  # from their committed lockfiles. The nightly workflow (fuzz.yml) builds
+  # them with cargo-fuzz and runs them.
+  fuzz-build:
+    needs: changes
+    if: needs.changes.outputs.fuzz == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Any runner: the action installs rustup when the runner has none, then
+      # the version rust-toolchain.toml pins, with its components.
+      - name: The pinned Rust version
+        id: rust
+        shell: bash
+        run: echo "version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch @ 2026-08-05
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: rustfmt, clippy
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: |
+            fuzz -> target
+            apps/relay/fuzz -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Check formatting
+        run: |
+          cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+          cargo fmt --manifest-path apps/relay/fuzz/Cargo.toml -- --check
+      - name: Build the protocol targets
+        run: cargo build --locked --all-features --bins --manifest-path fuzz/Cargo.toml
+      - name: Build the peer's targets
+        run: cargo build --locked --all-features --bins --manifest-path apps/relay/fuzz/Cargo.toml
+
+  # crates/frasil-wasm on wasm32-unknown-unknown: clippy, then the vector
+  # tests and frasil-crypto's randomness test in Node.js.
+  wasm:
+    needs: changes
+    if: needs.changes.outputs.wasm == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Any runner: the action installs rustup when the runner has none, then
+      # the version rust-toolchain.toml pins, with its components.
+      - name: The pinned Rust version
+        id: rust
+        shell: bash
+        run: echo "version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch @ 2026-08-05
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Setup Node.js
+        uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
+        with:
+          runtime: node@24
+          install: false
+      - name: Clippy on wasm32
+        run: cargo clippy --locked --target wasm32-unknown-unknown -p frasil-wasm --all-targets -- -D warnings
+      - name: Build and test on wasm
+        run: scripts/check-wasm.sh
+
+  # The npm package (crates/frasil-wasm and packages/frasil), built from a
+  # clean state: type checks, unit tests in Node.js, the scenarios against
+  # frasil-relay and the Content Security Policy check in Chromium and
+  # WebKit, size budgets, the packed package's manifest and types (publint,
+  # Are the Types Wrong), unused files and dependencies (knip) and lint.
+  # Then the repository's JavaScript lint.
+  js-package:
+    needs: changes
+    if: needs.changes.outputs.js == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Any runner: the action installs rustup when the runner has none, then
+      # the version rust-toolchain.toml pins, with its components.
+      - name: The pinned Rust version
+        id: rust
+        shell: bash
+        run: echo "version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch @ 2026-08-05
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The pnpm version comes from `packageManager` in package.json.
+      - name: Setup pnpm and Node.js
+        uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
+        with:
+          runtime: node@24
+          cache: true
+          install: false
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium, WebKit and the libraries they need
+        run: pnpm --dir packages/frasil exec playwright install --with-deps chromium webkit
+      - name: Build and test the package
+        run: scripts/check-js.sh --engines chromium,webkit
+      # The `frasil` crate's `browser` feature, in a page and in a worker.
+      - name: Test the browser feature
+        run: scripts/check-browser.sh
+      - name: Lint and format check the JavaScript
+        run: pnpm lint
+
+  # The one check a merge waits for: it fails if a job failed or was
+  # cancelled, and passes when each job passed or was skipped because the
+  # change does not affect it.
+  ci-ok:
+    if: always()
+    needs:
+      - changes
+      - spec-vectors
+      - check
+      - test
+      - test-os
+      - deny
+      - mobile
+      - features
+      - fuzz-build
+      - wasm
+      - js-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed or was skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq -e '.changes.result == "success"' <<<"$NEEDS" > /dev/null || {
+            echo "The changes job did not succeed, so no job was chosen."
+            exit 1
+          }
+          jq -e '[.[] | select(.result != "success" and .result != "skipped")] | length == 0' <<<"$NEEDS" > /dev/null || {
+            echo "A job failed or was cancelled."
+            exit 1
+          }

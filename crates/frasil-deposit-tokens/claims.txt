@@ -1,0 +1,19 @@
+# ext-deposit-tokens.md, 2.1, 2.4 to 2.6 and 2.8: tests/parameters.rs
+ext-deposit-tokens.json parameters
+# 2.1 The VOPRF, RFC 9497's own vectors: tests/voprf.rs
+ext-deposit-tokens.json voprf
+# 2.2 Deposit keys, 2.5 Messages and 3.2 Learning a peer's keys:
+# tests/keys.rs
+ext-deposit-tokens.json keys
+ext-deposit-tokens.json key_consistency
+# 2.3 The deposit grant and 3.4 Issuing: tests/issuance.rs
+ext-deposit-tokens.json grants
+ext-deposit-tokens.json issuance
+ext-deposit-tokens.json space_draws
+# 3.5 Finishing issuance: tests/finishing.rs
+ext-deposit-tokens.json finishing
+# 3.7 Redeeming and 3.8 The token budget: tests/redemption.rs
+ext-deposit-tokens.json redemption
+ext-deposit-tokens.json budgets
+# 3.9 Spent tokens and key rotation: tests/rotation.rs
+ext-deposit-tokens.json rotation

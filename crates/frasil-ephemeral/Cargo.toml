@@ -1,0 +1,31 @@
+[package]
+name = "frasil-ephemeral"
+description = "Frasil's ephemeral channel extension. An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+# ext-restricted-spaces.md: a restricted space's key reference read by
+# frasil-keys' one reader. Off by default, when this crate reads its two
+# visible parts itself.
+ext-restricted-spaces = ["frasil-keys/ext-restricted-spaces"]
+
+[dependencies]
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
+frasil-keys = { path = "../frasil-keys", version = "0.1.0" }
+frasil-transport = { path = "../frasil-transport", version = "0.1.0" }
+zeroize.workspace = true
+
+[dev-dependencies]
+frasil-testkit = { path = "../frasil-testkit" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

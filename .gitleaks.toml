@@ -1,0 +1,30 @@
+# gitleaks: the default rules, less the test material that is meant to look
+# like secrets.
+#
+#   gitleaks dir --config .gitleaks.toml .
+#   gitleaks git --config .gitleaks.toml .
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures, generated test vectors and build output"
+paths = [
+  # Vectors and known answers derived from fixed seeds.
+  '''^docs/spec/vectors/''',
+  '''^docs/spec/reference/kats/''',
+  '''(^|/)target/''',
+  '''(^|/)node_modules/''',
+  '''(^|/)dist/''',
+  '''^packages/frasil/src/wasm/''',
+  '''(^|/)\.venv/''',
+  '''^docs/spec/reference/\.cache/''',
+]
+# Matched against the whole line.
+regexTarget = "line"
+regexes = [
+  # RFC 6455's sample Sec-WebSocket-Key ("the sample nonce").
+  '''dGhlIHNhbXBsZSBub25jZQ==''',
+  # The relay's configuration tests' placeholder operator token.
+  '''FRASIL_OPERATOR_TOKEN", "0123456789abcdef"''',
+]

@@ -1,0 +1,40 @@
+[package]
+name = "frasil-testkit"
+description = "Test support for Frasil: the vector loader, the vector claims check, and devices for application tests."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+publish = false
+
+[features]
+# The extension features a `claims.txt` line may name as `[feature]`: the
+# claims check verifies such a claim only in a build with the feature, so a
+# workspace `--all-features` run verifies them all.
+ext-file-versions = []
+ext-guests = []
+ext-invite-links = []
+ext-libraries = []
+ext-next-endpoints = []
+ext-recovery-agent = []
+ext-restricted-spaces = []
+space-files = []
+# Devices for tests of applications built on `frasil` (`devices`): in
+# memory, on loopback, admitted to each other's spaces without a peer.
+devices = ["dep:frasil", "dep:tokio"]
+
+[dependencies]
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+frasil = { path = "../frasil", version = "0.1.0", optional = true }
+tokio = { workspace = true, optional = true, features = ["time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[[test]]
+name = "devices"
+required-features = ["devices"]
+
+[lints]
+workspace = true

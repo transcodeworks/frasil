@@ -1,0 +1,29 @@
+//! frasil-relay's space snapshot, a space's decoded state at rest, on
+//! arbitrary bytes. The reader does not panic; what it accepts is the one
+//! encoding of what it returns, its journal records below its `through`.
+#![no_main]
+
+#[allow(dead_code)]
+#[path = "../../src/records.rs"]
+mod records;
+
+use libfuzzer_sys::fuzz_target;
+use records::Snapshot;
+
+fuzz_target!(|data: &[u8]| {
+    if let Some(snapshot) = Snapshot::decode(data) {
+        assert_eq!(snapshot.encode(), data, "a second encoding of a snapshot");
+        assert!(
+            snapshot
+                .ops
+                .iter()
+                .all(|(index, _)| *index < snapshot.through)
+        );
+        assert!(
+            snapshot
+                .held
+                .iter()
+                .all(|held| held.index < snapshot.through)
+        );
+    }
+});

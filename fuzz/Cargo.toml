@@ -1,0 +1,592 @@
+# Coverage-guided fuzz targets for protocol 1's decoders, run with cargo-fuzz
+# (libFuzzer) on a nightly toolchain: see scripts/fuzz.sh. This package is its
+# own workspace, so the main workspace never builds it or its dependencies.
+# Each slice adds the targets for the decoders it writes.
+[package]
+name = "frasil-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[features]
+ext-guests = ["frasil-admission/ext-guests", "frasil-space/ext-guests", "frasil-transport/ext-guests"]
+ext-restricted-spaces = ["frasil-keys/ext-restricted-spaces", "frasil-units/ext-restricted-spaces"]
+ext-invite-links = ["frasil-admission/ext-invite-links", "frasil-space/ext-invite-links", "frasil-transport/ext-invite-links"]
+ext-next-endpoints = ["frasil-transport/ext-next-endpoints"]
+ext-deposit-tokens = ["dep:frasil-deposit-tokens", "frasil-libraries/ext-deposit-tokens", "frasil-transport/ext-deposit-tokens"]
+
+[dependencies]
+frasil = { path = "../crates/frasil", default-features = false }
+frasil-adapter = { path = "../crates/frasil-adapter" }
+frasil-adapter-blobs = { path = "../crates/frasil-adapter-blobs" }
+frasil-adapter-loro = { path = "../crates/frasil-adapter-loro" }
+frasil-adapter-records = { path = "../crates/frasil-adapter-records" }
+frasil-admission = { path = "../crates/frasil-admission" }
+frasil-app-requests = { path = "../crates/frasil-app-requests" }
+frasil-base = { path = "../crates/frasil-base" }
+frasil-crypto = { path = "../crates/frasil-crypto" }
+frasil-deposit-tokens = { path = "../crates/frasil-deposit-tokens", optional = true }
+frasil-ephemeral = { path = "../crates/frasil-ephemeral" }
+frasil-events = { path = "../crates/frasil-events" }
+frasil-identity = { path = "../crates/frasil-identity" }
+frasil-keys = { path = "../crates/frasil-keys" }
+frasil-libraries = { path = "../crates/frasil-libraries" }
+frasil-peers = { path = "../crates/frasil-peers" }
+frasil-space = { features = ["oracle"], path = "../crates/frasil-space" }
+frasil-space-file = { path = "../crates/frasil-space-file" }
+frasil-store = { path = "../crates/frasil-store", default-features = false }
+frasil-transport = { path = "../crates/frasil-transport" }
+frasil-units = { features = ["oracle"], path = "../crates/frasil-units" }
+libfuzzer-sys = "=0.4.13"
+zeroize = "=1.9.1"
+
+# Fuzz builds keep overflow checks and debug assertions on, so that an
+# overflow is a crash rather than a wrapped value. cargo-fuzz sets both by
+# default; this keeps them if it is run with --release.
+[profile.release]
+debug-assertions = true
+overflow-checks = true
+debug = 1
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "warn"
+
+[[bin]]
+name = "base_cbor"
+path = "fuzz_targets/base_cbor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crypto_wrap"
+path = "fuzz_targets/crypto_wrap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crypto_signature"
+path = "fuzz_targets/crypto_signature.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "adapter_records"
+path = "fuzz_targets/adapter_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "adapter_blobs"
+path = "fuzz_targets/adapter_blobs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "events_decode"
+path = "fuzz_targets/events_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "events_log_state"
+path = "fuzz_targets/events_log_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identity_body"
+path = "fuzz_targets/identity_body.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identity_sheet"
+path = "fuzz_targets/identity_sheet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identity_fingerprint"
+path = "fuzz_targets/identity_fingerprint.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identity_entry"
+path = "fuzz_targets/identity_entry.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identity_link"
+path = "fuzz_targets/identity_link.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "adapter_loro"
+path = "fuzz_targets/adapter_loro.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "adapter_loro_blob"
+path = "fuzz_targets/adapter_loro_blob.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "adapter_loro_snapshot"
+path = "fuzz_targets/adapter_loro_snapshot.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identity_list_event"
+path = "fuzz_targets/identity_list_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "keys_body"
+path = "fuzz_targets/keys_body.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "keys_reference"
+path = "fuzz_targets/keys_reference.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "keys_sealed_name"
+path = "fuzz_targets/keys_sealed_name.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "store_record"
+path = "fuzz_targets/store_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "store_held"
+path = "fuzz_targets/store_held.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "store_sealed_keys"
+path = "fuzz_targets/store_sealed_keys.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "store_mark"
+path = "fuzz_targets/store_mark.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "libraries_ticket"
+path = "fuzz_targets/libraries_ticket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "libraries_ticket_link"
+path = "fuzz_targets/libraries_ticket_link.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "app_requests_headers"
+path = "fuzz_targets/app_requests_headers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "app_requests_statement"
+path = "fuzz_targets/app_requests_statement.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "peers_storage_body"
+path = "fuzz_targets/peers_storage_body.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "peers_cut_event"
+path = "fuzz_targets/peers_cut_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "peers_entries_state"
+path = "fuzz_targets/peers_entries_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "peers_merge_statement"
+path = "fuzz_targets/peers_merge_statement.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "space_roster_part"
+path = "fuzz_targets/space_roster_part.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "units_body"
+path = "fuzz_targets/units_body.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "units_messages"
+path = "fuzz_targets/units_messages.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "units_statement"
+path = "fuzz_targets/units_statement.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "units_space_snapshot"
+path = "fuzz_targets/units_space_snapshot.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transport_frame"
+path = "fuzz_targets/transport_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transport_handshake"
+path = "fuzz_targets/transport_handshake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transport_ticket"
+path = "fuzz_targets/transport_ticket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transport_addresses"
+path = "fuzz_targets/transport_addresses.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transport_lan"
+path = "fuzz_targets/transport_lan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transport_mailbox"
+path = "fuzz_targets/transport_mailbox.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ephemeral_outer"
+path = "fuzz_targets/ephemeral_outer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ephemeral_inner"
+path = "fuzz_targets/ephemeral_inner.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ephemeral_plaintext"
+path = "fuzz_targets/ephemeral_plaintext.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "admission_message"
+path = "fuzz_targets/admission_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "admission_text"
+path = "fuzz_targets/admission_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "admission_records"
+path = "fuzz_targets/admission_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_sync"
+path = "fuzz_targets/client_sync.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_public_keys"
+path = "fuzz_targets/client_public_keys.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "libraries_attach"
+path = "fuzz_targets/libraries_attach.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ext_invite_links_change"
+path = "fuzz_targets/ext_invite_links_change.rs"
+test = false
+doc = false
+bench = false
+required-features = ["ext-invite-links"]
+
+[[bin]]
+name = "ext_invite_links_link"
+path = "fuzz_targets/ext_invite_links_link.rs"
+test = false
+doc = false
+bench = false
+required-features = ["ext-invite-links"]
+
+[[bin]]
+name = "ext_invite_links_messages"
+path = "fuzz_targets/ext_invite_links_messages.rs"
+test = false
+doc = false
+bench = false
+required-features = ["ext-invite-links"]
+
+[[bin]]
+name = "ext_restricted_spaces_reference"
+path = "fuzz_targets/ext_restricted_spaces_reference.rs"
+test = false
+doc = false
+bench = false
+required-features = ["ext-restricted-spaces"]
+
+[[bin]]
+name = "ext_restricted_spaces_move"
+path = "fuzz_targets/ext_restricted_spaces_move.rs"
+test = false
+doc = false
+bench = false
+required-features = ["ext-restricted-spaces"]
+
+[[bin]]
+name = "ext_guests_leave_request"
+path = "fuzz_targets/ext_guests_leave_request.rs"
+test = false
+doc = false
+bench = false
+required-features = ["ext-guests"]
+
+[[bin]]
+name = "space_file_record"
+path = "fuzz_targets/space_file_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "space_file_way_in"
+path = "fuzz_targets/space_file_way_in.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "space_file_file"
+path = "fuzz_targets/space_file_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ext_next_endpoints_message"
+path = "fuzz_targets/ext_next_endpoints_message.rs"
+test = false
+doc = false
+bench = false
+required-features = ["ext-next-endpoints"]
+
+[[bin]]
+name = "deposit_tokens_keys_get"
+path = "fuzz_targets/deposit_tokens_keys_get.rs"
+test = false
+doc = false
+bench = false
+required-features = ["ext-deposit-tokens"]
+
+[[bin]]
+name = "deposit_tokens_keys"
+path = "fuzz_targets/deposit_tokens_keys.rs"
+test = false
+doc = false
+bench = false
+required-features = ["ext-deposit-tokens"]
+
+[[bin]]
+name = "deposit_tokens_request"
+path = "fuzz_targets/deposit_tokens_request.rs"
+test = false
+doc = false
+bench = false
+required-features = ["ext-deposit-tokens"]
+
+[[bin]]
+name = "deposit_tokens_issue"
+path = "fuzz_targets/deposit_tokens_issue.rs"
+test = false
+doc = false
+bench = false
+required-features = ["ext-deposit-tokens"]
+
+[[bin]]
+name = "deposit_tokens_put"
+path = "fuzz_targets/deposit_tokens_put.rs"
+test = false
+doc = false
+bench = false
+required-features = ["ext-deposit-tokens"]
+
+[[bin]]
+name = "deposit_tokens_header"
+path = "fuzz_targets/deposit_tokens_header.rs"
+test = false
+doc = false
+bench = false
+required-features = ["ext-deposit-tokens"]
+
+[[bin]]
+name = "deposit_tokens_grant"
+path = "fuzz_targets/deposit_tokens_grant.rs"
+test = false
+doc = false
+bench = false
+required-features = ["ext-deposit-tokens"]
+
+[[bin]]
+name = "space_checkpoint_record"
+path = "fuzz_targets/space_checkpoint_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identity_list_record"
+path = "fuzz_targets/identity_list_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transport_erasure_late"
+path = "fuzz_targets/transport_erasure_late.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "peers_erasure_late"
+path = "fuzz_targets/peers_erasure_late.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "welcome_request"
+path = "fuzz_targets/welcome_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "units_record_object"
+path = "fuzz_targets/units_record_object.rs"
+test = false
+doc = false
+bench = false

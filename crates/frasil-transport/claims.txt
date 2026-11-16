@@ -1,0 +1,25 @@
+# transport.md, sections 2.2 to 2.5, 2.8, 2.9, 3.1 and 3.16's packets:
+# tests/formats.rs
+transport.json labels
+transport.json parameters
+transport.json framing
+transport.json tickets
+transport.json local_network
+# transport.md, sections 2.6 and 3.2 to 3.7 (the member handshake, the
+# roster check and the re-check): tests/member.rs
+transport.json member_handshake
+transport.json state_choice
+transport.json member_refusals
+transport.json roster_check
+# transport.md, sections 3.10 to 3.12 and 3.15's values: tests/peer.rs
+transport.json device_to_peer
+# transport.md, section 3.16's member addresses: tests/addresses.rs
+transport.json member_addresses
+# transport.md, sections 2.7 and 3.14: tests/mailboxes.rs
+transport.json mailboxes
+# ext-next-endpoints.md, the message, its receiver and the announced
+# ticket: tests/next_endpoints.rs
+[ext-next-endpoints] ext-next-endpoints.json parameters
+[ext-next-endpoints] ext-next-endpoints.json announcement
+[ext-next-endpoints] ext-next-endpoints.json refused
+[ext-next-endpoints] ext-next-endpoints.json reconnecting

@@ -1,0 +1,71 @@
+# The prefixes the reference's builders derived each history's inputs
+# under: every roster.json test reads them (tests/common/space.rs)
+roster.json history_prefixes
+# roster.md, sections 2.1 to 2.7: tests/formats.rs
+roster.json labels
+roster.json parameters
+roster.json descriptors
+# roster.md, "The space descriptor" and 3.3: a later document's descriptor
+# holds the space, and a grant of it never counts: tests/held_spaces.rs
+roster.json held_spaces
+roster.json policies
+roster.json encodings
+# roster.md, section 3.4.1 (The event alone), and the cases refused at the
+# event's place by section 3.6 (Authority at the place) or keys.md's checks
+# against the event and its place: tests/refused.rs
+roster.json refused_events
+# roster.md, section 3.3 (Grants of spaces and effective membership):
+# tests/graph.rs
+roster.json grant_graph
+roster.json effective_membership
+# roster.md, sections 3.5 to 3.14 (Attacks to What replicas derive):
+# tests/histories.rs. key_histories is the roster-level outcome of
+# histories keys.json's key graph also tests; its test also runs the key
+# graph over each resolved view.
+roster.json concurrent_changes
+roster.json bound_keys
+roster.json cycles
+roster.json duels
+roster.json forks
+roster.json writes
+roster.json across_logs
+roster.json key_histories
+# roster.md, section 3.9 (Space events a replica cannot open):
+# tests/unopened.rs
+roster.json unopened_events
+# roster.md, section 3.14 (What replicas derive): tests/derived.rs
+roster.json stability
+roster.json refused_unit
+# keys.md, sections 3.4 to 3.13 (Notices and space principals to
+# Deliveries): tests/keygraph.rs
+keys.json notices
+keys.json taking_keys
+keys.json ranks
+keys.json rotation_delay
+keys.json cascades
+keys.json gap_keys
+keys.json histories
+# keys.md, section 3.17 (Keys after a checkpoint): tests/keygraph_checkpoint.rs
+keys.json checkpoint_worlds
+# ext-invite-links.md: tests/ext_invite_links.rs.
+# "The invite grant and the successor" and "Keys" (who receives what, and
+# the key graph's histories)
+[ext-invite-links] ext-invite-links.json encodings
+[ext-invite-links] ext-invite-links.json refused_changes
+[ext-invite-links] ext-invite-links.json keys
+# ext-recovery-agent.md:
+# tests/ext_recovery_agent.rs. "The waiting period": agent_waiting_period's
+# default and range in the space policy
+[ext-recovery-agent] ext-recovery-agent.json parameters
+# ext-restricted-spaces.md: tests/ext_restricted_spaces.rs. "The parent of
+# a restricted space", "Membership of a restricted space" and "Keys of a
+# restricted space"
+[ext-restricted-spaces] ext-restricted-spaces.json restricted_parent
+[ext-restricted-spaces] ext-restricted-spaces.json restricted_membership
+[ext-restricted-spaces] ext-restricted-spaces.json restricted_rotations
+# "Creating a carve-out"
+[ext-restricted-spaces] ext-restricted-spaces.json carve_out
+# ext-guests.md: tests/ext_guests.rs. "Ending a session"
+[ext-guests] ext-guests.json session_expiry
+# roster.md, "Checkpoints": the world after a checkpoint, and a replica that forgot
+roster.json checkpoints

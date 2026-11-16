@@ -1,0 +1,10 @@
+# events.md, every family: tests/events.rs
+events.json parameters
+events.json encodings
+events.json refusals
+events.json causal_order
+events.json chains
+events.json equivocation_proofs
+# crypto.md, section 3.9 (Anchors and coverage) and 3.10 (The classical
+# sunset): tests/coverage.rs
+crypto.json coverage

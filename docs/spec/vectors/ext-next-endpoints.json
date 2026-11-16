@@ -1,0 +1,116 @@
+{
+  "parameters": {
+    "type": 96,
+    "name": "NextEndpoint",
+    "cap": 4096,
+    "tables": [
+      {
+        "code": 4,
+        "name": "next_endpoint",
+        "scope": "device"
+      },
+      {
+        "code": 31,
+        "name": "announced",
+        "scope": "log"
+      }
+    ]
+  },
+  "rotation": {
+    "with_a_kept_seed": {
+      "kept_next_seed": "0931aa3687deb7a5375b500eaeaaa7cd5c3b831b2c63372f042a3b0636a3c9bf",
+      "fresh_seed": "4653cc237bac14eb858c1633821516369c6201f09388028fb253bd96f7ef47ff",
+      "fresh_next_seed": "cf3d25da13463effe9e492cc8b014db5ff4b665b5ae1cfe8645481a19d9ed99f",
+      "endpoint_key": "c590b37f57bea5177a8c4f59c5c0a1e7dd8775ab0432b94b9fadfde52870d075",
+      "announced_key": "a37933bb1abf1980c0ff613c8b9da0918971b35cb3b984b84dc1e94ede9d81da",
+      "record_before": "0931aa3687deb7a5375b500eaeaaa7cd5c3b831b2c63372f042a3b0636a3c9bf",
+      "record_after": "cf3d25da13463effe9e492cc8b014db5ff4b665b5ae1cfe8645481a19d9ed99f"
+    },
+    "with_none": {
+      "fresh_seed": "4653cc237bac14eb858c1633821516369c6201f09388028fb253bd96f7ef47ff",
+      "fresh_next_seed": "0931aa3687deb7a5375b500eaeaaa7cd5c3b831b2c63372f042a3b0636a3c9bf",
+      "endpoint_key": "7f99d846eb5904f5ebc34fb05c409e31272d704d0e0d11b966bffee6e8caaa29",
+      "announced_key": "c590b37f57bea5177a8c4f59c5c0a1e7dd8775ab0432b94b9fadfde52870d075",
+      "record_after": "0931aa3687deb7a5375b500eaeaaa7cd5c3b831b2c63372f042a3b0636a3c9bf"
+    }
+  },
+  "announcement": {
+    "attach": 0,
+    "next_key": "a37933bb1abf1980c0ff613c8b9da0918971b35cb3b984b84dc1e94ede9d81da",
+    "sender_endpoint_key": "f1a3a62c118cf389366ccf1fa3673ccaaa5c7cb7c8fb330526f55ae1ba08c989",
+    "message": "a30018600100025820a37933bb1abf1980c0ff613c8b9da0918971b35cb3b984b84dc1e94ede9d81da",
+    "frame": "00000029a30018600100025820a37933bb1abf1980c0ff613c8b9da0918971b35cb3b984b84dc1e94ede9d81da",
+    "core_receiver": "dropped",
+    "outcomes": [
+      {
+        "description": "on an attach both sides admitted",
+        "message": "a30018600100025820a37933bb1abf1980c0ff613c8b9da0918971b35cb3b984b84dc1e94ede9d81da",
+        "outcome": "kept",
+        "announced": "a37933bb1abf1980c0ff613c8b9da0918971b35cb3b984b84dc1e94ede9d81da"
+      },
+      {
+        "description": "on an attach the receiver has not admitted",
+        "message": "a30018600100025820a37933bb1abf1980c0ff613c8b9da0918971b35cb3b984b84dc1e94ede9d81da",
+        "outcome": "dropped",
+        "step": 3
+      },
+      {
+        "description": "naming the sender's current key",
+        "message": "a30018600100025820f1a3a62c118cf389366ccf1fa3673ccaaa5c7cb7c8fb330526f55ae1ba08c989",
+        "outcome": "dropped",
+        "step": 4
+      }
+    ]
+  },
+  "refused": [
+    {
+      "description": "an extra key, 3",
+      "connection": "member",
+      "message": "a40018600100025820a37933bb1abf1980c0ff613c8b9da0918971b35cb3b984b84dc1e94ede9d81da0300",
+      "error": "Malformed"
+    },
+    {
+      "description": "a key of 31 bytes",
+      "connection": "member",
+      "message": "a3001860010002581fa37933bb1abf1980c0ff613c8b9da0918971b35cb3b984b84dc1e94ede9d81",
+      "error": "Malformed"
+    },
+    {
+      "description": "an attach that is not unsigned",
+      "connection": "member",
+      "message": "a3001860014100025820a37933bb1abf1980c0ff613c8b9da0918971b35cb3b984b84dc1e94ede9d81da",
+      "error": "Malformed"
+    },
+    {
+      "description": "a small-order key",
+      "connection": "member",
+      "message": "a30018600100025820c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "error": "InvalidKey"
+    },
+    {
+      "description": "on a device-to-peer connection",
+      "connection": "peer",
+      "message": "a30018600100025820a37933bb1abf1980c0ff613c8b9da0918971b35cb3b984b84dc1e94ede9d81da",
+      "error": "Malformed"
+    }
+  ],
+  "reconnecting": [
+    {
+      "description": "an announced key",
+      "kept_ticket": "a501010201035820e18af45606253d9996d8c03ddb2261075f7464bf2ed887d92a1e7ebf1077c25d0481781968747470733a2f2f72656c61792e6578616d706c652e6f7267058146c0a80114ba97",
+      "announced_key": "55dba22cef530f82cae3723a470ead4cc2be670e6d6b15d8da04fe0ba4d7aab3",
+      "dialed": [
+        "a501010201035820e18af45606253d9996d8c03ddb2261075f7464bf2ed887d92a1e7ebf1077c25d0481781968747470733a2f2f72656c61792e6578616d706c652e6f7267058146c0a80114ba97",
+        "a50101020103582055dba22cef530f82cae3723a470ead4cc2be670e6d6b15d8da04fe0ba4d7aab30481781968747470733a2f2f72656c61792e6578616d706c652e6f7267058146c0a80114ba97"
+      ]
+    },
+    {
+      "description": "an announced key equal to the ticket's",
+      "kept_ticket": "a501010201035820e18af45606253d9996d8c03ddb2261075f7464bf2ed887d92a1e7ebf1077c25d0481781968747470733a2f2f72656c61792e6578616d706c652e6f7267058146c0a80114ba97",
+      "announced_key": "e18af45606253d9996d8c03ddb2261075f7464bf2ed887d92a1e7ebf1077c25d",
+      "dialed": [
+        "a501010201035820e18af45606253d9996d8c03ddb2261075f7464bf2ed887d92a1e7ebf1077c25d0481781968747470733a2f2f72656c61792e6578616d706c652e6f7267058146c0a80114ba97"
+      ]
+    }
+  ]
+}

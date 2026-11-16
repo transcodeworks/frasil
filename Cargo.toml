@@ -1,0 +1,178 @@
+[workspace]
+# Every package is MIT.
+members = ["crates/*", "apps/relay", "tests/conformance", "tests/record-memory"]
+resolver = "3"
+
+[workspace.package]
+# One version for every package, which release-please sets
+# (release-please-config.json).
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/transcodeworks/frasil"
+readme = "README.md"
+rust-version = "1.96.1"
+keywords = ["e2ee", "local-first", "crdt", "sync", "collaboration"]
+categories = ["cryptography", "network-programming"]
+
+# External pins, each at an exact version and reviewed as a pin. Crates use
+# them with `workspace = true`.
+[workspace.dependencies]
+# The testkit's vector loader.
+hex = "=0.4.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+
+# 1. The crypto generation: the RustCrypto stack hpke 0.14.1 brings, and
+# nothing older (crypto.md, section 2.1). hpke has only the X-Wing KEM
+# (0x647a), HKDF-SHA256 and ChaCha20-Poly1305: DHKEM(X25519) (0x0020) is
+# refused, and the wrap takes its encapsulation bytes from the caller.
+hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "mlkem", "chacha", "hkdfsha2"] }
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
+hkdf = "=0.13.0"
+hmac = "=0.13.0"
+sha2 = { version = "=0.11.1", default-features = false }
+ed25519-dalek = "=3.0.0"
+x25519-dalek = { version = "=3.0.0", features = ["static_secrets"] }
+curve25519-dalek = { version = "=5.0.0", default-features = false }
+subtle = { version = "=2.6.1", default-features = false }
+zeroize = { version = "=1.9.1", features = ["derive"] }
+# The operating system's random source. On wasm32-unknown-unknown a crate
+# adds the `wasm_js` feature, which alone selects `crypto.getRandomValues`.
+getrandom = { version = "=0.4.3", default-features = false }
+# RFC 9497's VOPRF for deposit tokens: mode VOPRF (0x01), ristretto255-SHA512,
+# a batch evaluated under one proof (ext-deposit-tokens.md, section 2.1). A
+# pre-release, the first on curve25519-dalek 5, digest 0.11 and rand_core 0.10,
+# pinned until its stable release. Blinds and the proof's scalar come from an
+# RNG the caller passes, which replays a vector's bytes. elliptic-curve 0.14
+# comes with it for the NIST suites, unused here.
+voprf = { version = "=0.6.0-pre.2", default-features = false, features = ["alloc", "ristretto255-ciphersuite"] }
+
+# 2. ML-DSA-65 (FIPS 204): keys from a 32-byte seed, pure signing with an
+# empty context and a caller-supplied `rnd` (crypto.md, section 2.1).
+ml-dsa = { version = "=0.1.1", default-features = false, features = ["alloc", "zeroize"] }
+
+# 3. iroh and the native network clients (transport.md, sections 3.15 and
+# 3.16). ring is the only TLS provider.
+iroh = { version = "=1.4.1", default-features = false, features = ["tls-ring"] }
+iroh-relay = { version = "=1.4.1", default-features = false }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }
+socket2 = { version = "=0.6.5", features = ["all"] }
+tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+# The server binding's HTTP client. Its rustls comes without a provider, and
+# a client installs ring as the process default before it builds one.
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider"] }
+
+# 4. Loro (adapter-loro.md).
+loro = "=1.17.0"
+
+# 5. Storage: SQLite, built from source (at-rest.md), and the peer's
+# S3-compatible object store (peers.md). rust-s3's own TLS features bring
+# rustls with aws-lc-rs; instead its reqwest 0.12 client gets TLS from the
+# `rustls-tls` feature of `reqwest-s3` here, which is rustls on ring.
+# Credentials come from the peer's settings, never from rust-s3's HTTP
+# credential sources.
+rusqlite = { version = "=0.42.0", features = ["bundled"] }
+# frasil's `index` feature: a typed local cache in SQLite, encrypted at rest.
+# It shares rusqlite and its one libsqlite3-sys with the store: natively it
+# adds `bundled-sqlcipher` (SQLCipher on CommonCrypto on Apple targets, on
+# OpenSSL elsewhere, vendored with `index-vendored-openssl`); on wasm32,
+# where rusqlite links sqlite-wasm-rs, SQLite3 Multiple Ciphers
+# (`sqlite3mc`) in its SQLCipher scheme. sqlite-wasm-rs is the version
+# rusqlite 0.42.0 links.
+sqlite-wasm-rs = { version = "=0.6.3", default-features = false }
+# The index's persistent store in a browser worker: an OPFS
+# SyncAccessHandle pool VFS for sqlite-wasm-rs.
+sqlite-wasm-vfs = { version = "=0.3.0", default-features = false }
+# Typed Diesel queries over the index's read-only connection, with the
+# `index-diesel` feature. Diesel 2.4 links the same libsqlite3-sys, and
+# sqlite-wasm-rs on wasm32.
+diesel = { version = "=2.4.0", default-features = false }
+# The index's derive macro (`frasil-index-derive`): one struct, one table.
+proc-macro2 = "=1.0.107"
+quote = "=1.0.47"
+syn = { version = "=2.0.119", features = ["full"] }
+rust-s3 = { version = "=0.38.0", default-features = false, features = ["with-tokio"] }
+reqwest-s3 = { package = "reqwest", version = "=0.12.28", default-features = false, features = ["rustls-tls"] }
+
+# 6. The peer's server: HTTP and WebSocket on tokio.
+axum = { version = "=0.8.9", features = ["ws"] }
+tokio = "=1.54.1"
+futures-util = "=0.3.34"
+# Raft among a region's peer nodes, for membership and node leases only:
+# no record goes through it. Default features off, so no clap.
+openraft = { version = "=0.9.25", default-features = false, features = ["serde"] }
+
+# 7. WebAssembly. wasm-bindgen is pinned exactly: the CLI that generates the
+# JavaScript glue must be the macro's version. Then property tests.
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-futures = "=0.4.79"
+js-sys = "=0.3.106"
+web-sys = "=0.3.106"
+wasm-bindgen-test = "=0.3.79"
+# Without the default features, which fork processes to time out cases, it
+# also builds for wasm32.
+proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
+
+# 8. Native bindings (bindings/swift, bindings/kotlin). UniFFI generates
+# the Swift and Kotlin glue from crates/frasil-uniffi; the generator binary
+# and the library must be one version, pinned so that Frasil's bindings can
+# be loaded in one process with other UniFFI libraries built at this version.
+uniffi = { version = "=0.31.0", features = ["tokio"] }
+
+[workspace.lints.rust]
+missing_docs = "deny"
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# The WebAssembly module of the npm package (packages/frasil): smaller rather
+# than faster.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+
+# The tests sign, verify and seal thousands of events, and the seeded model
+# checks hundreds of thousands: unoptimised, the cryptography crates make a
+# debug test run many times slower. Development builds optimise them alone;
+# the workspace's own crates stay unoptimised for debugging.
+[profile.dev.package.ml-dsa]
+opt-level = 3
+[profile.dev.package.ml-kem]
+opt-level = 3
+[profile.dev.package.module-lattice]
+opt-level = 3
+[profile.dev.package.hybrid-array]
+opt-level = 3
+[profile.dev.package.keccak]
+opt-level = 3
+[profile.dev.package.sha3]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.ed25519-dalek]
+opt-level = 3
+[profile.dev.package.x25519-dalek]
+opt-level = 3
+[profile.dev.package.x-wing]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+[profile.dev.package.blake3]
+opt-level = 3
+[profile.dev.package.aes]
+opt-level = 3
+[profile.dev.package.aes-gcm]
+opt-level = 3
+# frasil-crypto calls them; their inlined and generic code is compiled there.
+[profile.dev.package.frasil-crypto]
+opt-level = 3

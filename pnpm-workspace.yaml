@@ -1,0 +1,8 @@
+# The JavaScript packages live under packages/. A directory without a
+# package.json is skipped.
+packages:
+  - "packages/*"
+
+# esbuild needs its postinstall to place the platform binary Vite runs.
+allowBuilds:
+  esbuild: true

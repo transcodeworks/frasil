@@ -1,0 +1,172 @@
+{
+  "units": [
+    {
+      "name": "b1",
+      "note": "a put",
+      "id": "5ead2c2a5a0b895f409e43c9b916bcd2d222732eb39728859ba6a8f152a5efc5",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "clock": 1,
+      "objects": [
+        "3e98389688269b34cc9d3f2e56c73bfe8bc4707ff4e1a34978a6e524c56143a9f4eef686cf12697c264f6696a465cecd12c6ee497c22a511610a4d8a24343130"
+      ],
+      "content": "a30101020103818250f7de3de8c84ea615e1bbdae1cd12db50a50158403e98389688269b34cc9d3f2e56c73bfe8bc4707ff4e1a34978a6e524c56143a9f4eef686cf12697c264f6696a465cecd12c6ee497c22a511610a4d8a2434313002582101041ea77ef4fa5d717efee060e2cb7ce4e8a6dc82708a19e0ff18d955ae9d9816031a003d09000469766964656f2f6d70340568636c69702e6d7034"
+    },
+    {
+      "name": "b2",
+      "note": "a put",
+      "id": "755c2fd8793a660b20360e86ae1b769fa5bf197e882b4b01de7ebe6a141d6c17",
+      "author": "209aa5aa611ff7ada6a7824a851abe2b303094a867deb5a2bb80d79d33c5ff01",
+      "clock": 1,
+      "objects": [
+        "879ed1721d084da989534ea93c5105944342ae6c76a2de1ec8657ad3043d870a5c172df4e645c8efa589e844d7b7ccd9c5e8b00baa8ff5a0a3d7232ce01c299f"
+      ],
+      "content": "a30101020103818250775de3043e8ce0d82db68cee51acd81fa4015840879ed1721d084da989534ea93c5105944342ae6c76a2de1ec8657ad3043d870a5c172df4e645c8efa589e844d7b7ccd9c5e8b00baa8ff5a0a3d7232ce01c299f02582101041ea77ef4fa5d717efee060e2cb7ce4e8a6dc82708a19e0ff18d955ae9d98160318780469696d6167652f706e67"
+    },
+    {
+      "name": "b3",
+      "note": "a remove of b2's handle",
+      "id": "7fbb879470db166b549c22a4b2625ebc9ccb1f92d1c9dafaa478c791a2e8d902",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "clock": 2,
+      "objects": [],
+      "content": "a30101020203818150775de3043e8ce0d82db68cee51acd81f"
+    }
+  ],
+  "merge_orders": {
+    "orders": [
+      [
+        "b1",
+        "b2",
+        "b3"
+      ],
+      [
+        "b1",
+        "b3",
+        "b2"
+      ],
+      [
+        "b2",
+        "b1",
+        "b3"
+      ],
+      [
+        "b2",
+        "b3",
+        "b1"
+      ],
+      [
+        "b3",
+        "b1",
+        "b2"
+      ],
+      [
+        "b3",
+        "b2",
+        "b1"
+      ]
+    ],
+    "snapshot": "a30101020203828550775de3043e8ce0d82db68cee51acd81f80025820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458207fbb879470db166b549c22a4b2625ebc9ccb1f92d1c9dafaa478c791a2e8d9028550f7de3de8c84ea615e1bbdae1cd12db50a50158403e98389688269b34cc9d3f2e56c73bfe8bc4707ff4e1a34978a6e524c56143a9f4eef686cf12697c264f6696a465cecd12c6ee497c22a511610a4d8a2434313002582101041ea77ef4fa5d717efee060e2cb7ce4e8a6dc82708a19e0ff18d955ae9d9816031a003d09000469766964656f2f6d70340568636c69702e6d7034015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458205ead2c2a5a0b895f409e43c9b916bcd2d222732eb39728859ba6a8f152a5efc5"
+  },
+  "history_free": "a30101020203818550f7de3de8c84ea615e1bbdae1cd12db50a50158403e98389688269b34cc9d3f2e56c73bfe8bc4707ff4e1a34978a6e524c56143a9f4eef686cf12697c264f6696a465cecd12c6ee497c22a511610a4d8a2434313002582101041ea77ef4fa5d717efee060e2cb7ce4e8a6dc82708a19e0ff18d955ae9d9816031a003d09000469766964656f2f6d70340568636c69702e6d7034015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458205ead2c2a5a0b895f409e43c9b916bcd2d222732eb39728859ba6a8f152a5efc5",
+  "snapshot_unit_objects": [
+    "3e98389688269b34cc9d3f2e56c73bfe8bc4707ff4e1a34978a6e524c56143a9f4eef686cf12697c264f6696a465cecd12c6ee497c22a511610a4d8a24343130"
+  ],
+  "content_refusals": [
+    {
+      "name": "an object not listed",
+      "content": "a30101020103818250f7de3de8c84ea615e1bbdae1cd12db50a50158403e98389688269b34cc9d3f2e56c73bfe8bc4707ff4e1a34978a6e524c56143a9f4eef686cf12697c264f6696a465cecd12c6ee497c22a511610a4d8a2434313002582101041ea77ef4fa5d717efee060e2cb7ce4e8a6dc82708a19e0ff18d955ae9d9816031a003d09000469766964656f2f6d70340568636c69702e6d7034",
+      "objects": [],
+      "class": "ObjectNotListed"
+    },
+    {
+      "name": "a handle twice",
+      "content": "a30101020103828150f7de3de8c84ea615e1bbdae1cd12db508150f7de3de8c84ea615e1bbdae1cd12db50",
+      "objects": [],
+      "class": "Malformed"
+    },
+    {
+      "name": "a 15-byte handle",
+      "content": "a3010102010381814ff7de3de8c84ea615e1bbdae1cd12db",
+      "objects": [],
+      "class": "Malformed"
+    },
+    {
+      "name": "an entry without a size",
+      "content": "a30101020103818250f7de3de8c84ea615e1bbdae1cd12db50a20158403e98389688269b34cc9d3f2e56c73bfe8bc4707ff4e1a34978a6e524c56143a9f4eef686cf12697c264f6696a465cecd12c6ee497c22a511610a4d8a2434313002582101041ea77ef4fa5d717efee060e2cb7ce4e8a6dc82708a19e0ff18d955ae9d9816",
+      "objects": [
+        "3e98389688269b34cc9d3f2e56c73bfe8bc4707ff4e1a34978a6e524c56143a9f4eef686cf12697c264f6696a465cecd12c6ee497c22a511610a4d8a24343130"
+      ],
+      "class": "Malformed"
+    }
+  ],
+  "compaction_checks": [
+    {
+      "writer": "a full writer",
+      "capabilities": [],
+      "adapter": "frasil:blobs",
+      "snapshot_unit": "accepted"
+    },
+    {
+      "writer": "a suggester",
+      "capabilities": [
+        [
+          "suggest",
+          1
+        ]
+      ],
+      "adapter": "frasil:blobs",
+      "snapshot_unit": "CapabilityRefused"
+    },
+    {
+      "writer": "a writer granted suggest with mode extends",
+      "capabilities": [
+        [
+          "suggest",
+          0
+        ]
+      ],
+      "adapter": "frasil:blobs",
+      "snapshot_unit": "accepted"
+    }
+  ],
+  "references": {
+    "source_space": "3c57dd8302ca64c1596f7681d597a9af1f803b7bed907947968e85809145b5de",
+    "source_content_key": "14f5b4609e5e4af6577ba924ecb92f71aa598e7a7233d56073c5f1fb9bb132ad",
+    "key_reference": "01403f3e5c0c00d04864cdb1cf109a4e2f12d3aa6ec5bea9bbc26ac7797241ae54",
+    "chunk_bytes": 16,
+    "plaintext": "6120637565277320617564696f2c2073746f726564206f6e636520696e20697473206c696272617279",
+    "object": {
+      "id": "4a909a9160274ce0740652d732b374346becf8b19f8a6976ff049d256d1afbd3",
+      "object_key": "9909afff3dd7e3291a31ba011d182100da0dcf7884b9d6c915003e97a53b929b",
+      "locator": "4a909a9160274ce0740652d732b374346becf8b19f8a6976ff049d256d1afbd358ea4f63454861f6182895392b14a3cc7e94cb4e5eae68e1d05a09311ed56595",
+      "bytes": "0000004da401010258204a909a9160274ce0740652d732b374346becf8b19f8a6976ff049d256d1afbd303582101403f3e5c0c00d04864cdb1cf109a4e2f12d3aa6ec5bea9bbc26ac7797241ae54041829f403b69689c792863633a3614898d8b13badd99852f290c70f09f1fb7b9a81d6f9837e7ca908a874f081fd209136daeecafc0c754988cebcabd41d3201ded0ed19faedb7bde70b181bf98a0848e7df186e1fc962a44acc2bcfd8e0ec2ff685cf2ab1782f6a31b4751a859861350544ce0d514a3e3ea02ea39108672559289be53d09bed04a0eb21b961904318ca46e58ef605d03eb80c62c671a9b784d4e8febcc"
+    },
+    "unit": {
+      "space": "6a304ba75c96207f99db12d93d359b854bd248dcf5e4096c22e790e61be1faad",
+      "handle": "51ca2790ef10c0f050029f2b70db7df8",
+      "objects": [
+        "4a909a9160274ce0740652d732b374346becf8b19f8a6976ff049d256d1afbd358ea4f63454861f6182895392b14a3cc7e94cb4e5eae68e1d05a09311ed56595"
+      ],
+      "content": "a3010102010381825051ca2790ef10c0f050029f2b70db7df8a70158404a909a9160274ce0740652d732b374346becf8b19f8a6976ff049d256d1afbd358ea4f63454861f6182895392b14a3cc7e94cb4e5eae68e1d05a09311ed5659502582101403f3e5c0c00d04864cdb1cf109a4e2f12d3aa6ec5bea9bbc26ac7797241ae540318290469617564696f2f6f676705676375652e6f67670658203c57dd8302ca64c1596f7681d597a9af1f803b7bed907947968e85809145b5de0758209909afff3dd7e3291a31ba011d182100da0dcf7884b9d6c915003e97a53b929b"
+    },
+    "opened": "6120637565277320617564696f2c2073746f726564206f6e636520696e20697473206c696272617279",
+    "refusals": [
+      {
+        "name": "a reference without its object key",
+        "content": "a3010102010381825051ca2790ef10c0f050029f2b70db7df8a40158404a909a9160274ce0740652d732b374346becf8b19f8a6976ff049d256d1afbd358ea4f63454861f6182895392b14a3cc7e94cb4e5eae68e1d05a09311ed5659502582101403f3e5c0c00d04864cdb1cf109a4e2f12d3aa6ec5bea9bbc26ac7797241ae5403010658203c57dd8302ca64c1596f7681d597a9af1f803b7bed907947968e85809145b5de",
+        "objects": [
+          "4a909a9160274ce0740652d732b374346becf8b19f8a6976ff049d256d1afbd358ea4f63454861f6182895392b14a3cc7e94cb4e5eae68e1d05a09311ed56595"
+        ],
+        "class": "Malformed"
+      },
+      {
+        "name": "a 31-byte object key",
+        "content": "a3010102010381825051ca2790ef10c0f050029f2b70db7df8a50158404a909a9160274ce0740652d732b374346becf8b19f8a6976ff049d256d1afbd358ea4f63454861f6182895392b14a3cc7e94cb4e5eae68e1d05a09311ed5659502582101403f3e5c0c00d04864cdb1cf109a4e2f12d3aa6ec5bea9bbc26ac7797241ae5403010658203c57dd8302ca64c1596f7681d597a9af1f803b7bed907947968e85809145b5de07581f9909afff3dd7e3291a31ba011d182100da0dcf7884b9d6c915003e97a53b92",
+        "objects": [
+          "4a909a9160274ce0740652d732b374346becf8b19f8a6976ff049d256d1afbd358ea4f63454861f6182895392b14a3cc7e94cb4e5eae68e1d05a09311ed56595"
+        ],
+        "class": "Malformed"
+      }
+    ]
+  }
+}

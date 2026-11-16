@@ -1,0 +1,45 @@
+# identity.md, "The device-list event", "Kinds of list member" and "The state
+# of a list at a place": tests/derivations.rs
+identity.json parameters
+# identity.md, "Passkey members": tests/derivations.rs
+identity.json passkey_derivations
+identity.json passkey_refusals
+# identity.md, "Recovery keys": tests/derivations.rs
+identity.json recovery_keys
+# identity.md, "Fetch keys and recovery entries": tests/derivations.rs
+identity.json recovery_entries
+# identity.md, "The possession statement" and "Checking a list event alone",
+# against the envelope and placed in the merged list: tests/possession.rs
+identity.json possession
+identity.json possession_refusals
+# identity.md, "Fingerprints" and "Comparing fingerprints": tests/fingerprints.rs
+identity.json fingerprints
+identity.json fingerprint_parsing
+# identity.md, "Account links" and "Checking an account link", against the
+# merged list: tests/account_links.rs
+identity.json account_links
+# identity.md, "The person ID and the personal space", "Checking a list event
+# alone", "The state of a list at a place", "Checks at the event's place",
+# "What a list vouches for", "Adding list members", "Using a passkey member"
+# and "Pins": tests/lists.rs
+identity.json persons
+identity.json forged_list
+identity.json list
+identity.json passkey_list
+identity.json list_refusals
+identity.json enrolment
+identity.json pins
+# identity.md, "The merge": tests/merges.rs
+identity.json merges
+# identity.md, "The possession statement" (a proof is for one adder),
+# "Checking a list event alone" and "The merge": tests/replayed_adds.rs
+identity.json replayed_adds
+# ext-recovery-agent.md:
+# tests/ext_recovery_agent.rs. "The waiting period" and "The late verifier,
+# and no witness"
+[ext-recovery-agent] ext-recovery-agent.json waiting_decisions
+[ext-recovery-agent] ext-recovery-agent.json recipients_while_waiting
+# identity.md, "List checkpoints", with a holder that kept everything and one
+# that forgot and reads only what it keeps; signatures and record refusals:
+# tests/list_checkpoints.rs
+identity.json list_checkpoints

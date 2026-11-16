@@ -1,0 +1,3 @@
+# The scenarios claim no vector family. tests/vectors.rs runs peers.json's
+# `credentials` and `decisions`, which frasil-peers claims, through
+# frasil-relay's store path.

@@ -1,0 +1,13 @@
+# frasil-relay claims no family of peers.json: those are frasil-peers'.
+# tests/conformance runs `credentials` and `decisions` through this
+# service's store path (tests/vectors.rs).
+#
+# ext-libraries.md, 3.3 Attaching, 2.5 What a peer keeps, and peers.md,
+# "Hosting a space": src/libraries/tests.rs, against a core with the
+# extension on. Every extension is built into the peer, so these run in
+# every build.
+ext-libraries.json attachments
+ext-libraries.json import
+ext-libraries.json ledgers
+# 3.8 Keeping a held object: src/libraries/tests.rs.
+ext-libraries.json held_objects

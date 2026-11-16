@@ -1,0 +1,528 @@
+{
+  "parameters": {
+    "loro_version": "1.17.0",
+    "space": "6a304ba75c96207f99db12d93d359b854bd248dcf5e4096c22e790e61be1faad",
+    "stream": "dfdf949a90e67189311d000b7d55f0f8"
+  },
+  "peer_ids": [
+    {
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "incarnation": 5,
+      "digest": "1da34e1d1e0bf10b375803daf5ca783e41a59e453f1bb2b885d07f012f8db221",
+      "first_8": 2135636535268864267,
+      "peer": 2135636535268864267
+    },
+    {
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "incarnation": 12,
+      "digest": "c62b6095cf3bb0fd2463d404f4f6a7a3f0ae123a0c25bc531f1854dadcae1a52",
+      "first_8": 14279613240051478781,
+      "peer": 14279613240051478781
+    },
+    {
+      "author": "209aa5aa611ff7ada6a7824a851abe2b303094a867deb5a2bb80d79d33c5ff01",
+      "incarnation": 5,
+      "digest": "68f5864413e031dcf2929e0da0878f7429b561a09e956303342f1948463c025b",
+      "first_8": 7563098776187974108,
+      "peer": 7563098776187974108
+    }
+  ],
+  "contents": {
+    "edit": "a40101020003050458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+    "suggestion": "a40101020103090458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+    "accept": "a30101020205815820d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf",
+    "dismiss": "a30101020305815820d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf"
+  },
+  "checks": [
+    {
+      "name": "an edit that continues its incarnation",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a40101020003050458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+      "seq": 7,
+      "capabilities": [],
+      "meta": {
+        "mode": "updates",
+        "spans": [
+          [
+            2135636535268864267,
+            10,
+            20
+          ]
+        ]
+      },
+      "earlier_spans": [
+        [
+          2135636535268864267,
+          0,
+          10
+        ]
+      ],
+      "base_counters": [],
+      "held_suggestions": [],
+      "verdict": "accepted"
+    },
+    {
+      "name": "a gap, which Loro holds pending",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a40101020003050458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+      "seq": 7,
+      "capabilities": [],
+      "meta": {
+        "mode": "updates",
+        "spans": [
+          [
+            2135636535268864267,
+            12,
+            20
+          ]
+        ]
+      },
+      "earlier_spans": [
+        [
+          2135636535268864267,
+          0,
+          10
+        ]
+      ],
+      "base_counters": [],
+      "held_suggestions": [],
+      "verdict": "accepted"
+    },
+    {
+      "name": "an overlap with an earlier unit",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a40101020003050458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+      "seq": 7,
+      "capabilities": [],
+      "meta": {
+        "mode": "updates",
+        "spans": [
+          [
+            2135636535268864267,
+            10,
+            20
+          ]
+        ]
+      },
+      "earlier_spans": [
+        [
+          2135636535268864267,
+          0,
+          15
+        ]
+      ],
+      "base_counters": [],
+      "held_suggestions": [],
+      "verdict": "LoroOverlap"
+    },
+    {
+      "name": "an overlap with the base snapshot",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a40101020003050458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+      "seq": 7,
+      "capabilities": [],
+      "meta": {
+        "mode": "updates",
+        "spans": [
+          [
+            2135636535268864267,
+            10,
+            20
+          ]
+        ]
+      },
+      "earlier_spans": [],
+      "base_counters": [
+        [
+          2135636535268864267,
+          15
+        ]
+      ],
+      "held_suggestions": [],
+      "verdict": "LoroOverlap"
+    },
+    {
+      "name": "a late edit re-sent, both held",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a40101020003050458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+      "seq": 7,
+      "capabilities": [],
+      "meta": {
+        "mode": "updates",
+        "spans": [
+          [
+            2135636535268864267,
+            10,
+            20
+          ]
+        ]
+      },
+      "earlier_spans": [
+        [
+          2135636535268864267,
+          0,
+          10
+        ],
+        [
+          2135636535268864267,
+          10,
+          20
+        ]
+      ],
+      "base_counters": [],
+      "held_suggestions": [],
+      "verdict": "accepted",
+      "resubmitted_spans": [
+        [
+          2135636535268864267,
+          10,
+          20
+        ]
+      ]
+    },
+    {
+      "name": "a late edit re-sent, only the re-sent one held",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a40101020003050458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+      "seq": 7,
+      "capabilities": [],
+      "meta": {
+        "mode": "updates",
+        "spans": [
+          [
+            2135636535268864267,
+            10,
+            20
+          ]
+        ]
+      },
+      "earlier_spans": [
+        [
+          2135636535268864267,
+          0,
+          10
+        ]
+      ],
+      "base_counters": [],
+      "held_suggestions": [],
+      "verdict": "accepted"
+    },
+    {
+      "name": "another writer's peer",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a40101020003050458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+      "seq": 7,
+      "capabilities": [],
+      "meta": {
+        "mode": "updates",
+        "spans": [
+          [
+            7563098776187974108,
+            0,
+            4
+          ]
+        ]
+      },
+      "earlier_spans": [],
+      "base_counters": [],
+      "held_suggestions": [],
+      "verdict": "LoroForeignPeer"
+    },
+    {
+      "name": "two peers",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a40101020003050458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+      "seq": 7,
+      "capabilities": [],
+      "meta": {
+        "mode": "updates",
+        "spans": [
+          [
+            2135636535268864267,
+            10,
+            20
+          ],
+          [
+            7563098776187974108,
+            0,
+            4
+          ]
+        ]
+      },
+      "earlier_spans": [],
+      "base_counters": [],
+      "held_suggestions": [],
+      "verdict": "LoroForeignPeer"
+    },
+    {
+      "name": "a snapshot blob",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a40101020003050458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+      "seq": 7,
+      "capabilities": [],
+      "meta": {
+        "mode": "snapshot",
+        "spans": []
+      },
+      "earlier_spans": [],
+      "base_counters": [],
+      "held_suggestions": [],
+      "verdict": "LoroMalformed"
+    },
+    {
+      "name": "an unreadable blob",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a40101020003050458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+      "seq": 7,
+      "capabilities": [],
+      "meta": null,
+      "earlier_spans": [],
+      "base_counters": [],
+      "held_suggestions": [],
+      "verdict": "LoroMalformed"
+    },
+    {
+      "name": "an incarnation after its seq",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a40101020003050458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+      "seq": 4,
+      "capabilities": [],
+      "meta": {
+        "mode": "updates",
+        "spans": [
+          [
+            2135636535268864267,
+            10,
+            20
+          ]
+        ]
+      },
+      "earlier_spans": [],
+      "base_counters": [],
+      "held_suggestions": [],
+      "verdict": "LoroIncarnation"
+    },
+    {
+      "name": "a suggestion not at its own seq",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a40101020103090458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+      "seq": 10,
+      "capabilities": [],
+      "meta": {
+        "mode": "updates",
+        "spans": [
+          [
+            14921989765305388312,
+            0,
+            3
+          ]
+        ]
+      },
+      "earlier_spans": [],
+      "base_counters": [],
+      "held_suggestions": [],
+      "verdict": "LoroIncarnation"
+    },
+    {
+      "name": "a suggester's suggestion at its own seq",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a40101020103090458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+      "seq": 9,
+      "capabilities": [
+        [
+          "suggest",
+          1
+        ]
+      ],
+      "meta": {
+        "mode": "updates",
+        "spans": [
+          [
+            14921989765305388312,
+            0,
+            3
+          ]
+        ]
+      },
+      "earlier_spans": [],
+      "base_counters": [],
+      "held_suggestions": [],
+      "verdict": "accepted"
+    },
+    {
+      "name": "a suggester's edit",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a40101020003050458207374616e642d696e20666f72204c6f726f2773206578706f7274206279746573",
+      "seq": 7,
+      "capabilities": [
+        [
+          "suggest",
+          1
+        ]
+      ],
+      "meta": {
+        "mode": "updates",
+        "spans": [
+          [
+            2135636535268864267,
+            10,
+            20
+          ]
+        ]
+      },
+      "earlier_spans": [],
+      "base_counters": [],
+      "held_suggestions": [],
+      "verdict": "CapabilityRefused"
+    },
+    {
+      "name": "an accept of a suggestion not held",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101020205815820d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf",
+      "seq": 7,
+      "capabilities": [],
+      "meta": null,
+      "earlier_spans": [],
+      "base_counters": [],
+      "held_suggestions": [],
+      "verdict": "TargetNotHeld"
+    },
+    {
+      "name": "an accept",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101020205815820d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf",
+      "seq": 7,
+      "capabilities": [],
+      "meta": null,
+      "earlier_spans": [],
+      "base_counters": [],
+      "held_suggestions": [
+        "d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf"
+      ],
+      "verdict": "accepted"
+    },
+    {
+      "name": "a dismiss",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101020305815820d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf",
+      "seq": 7,
+      "capabilities": [],
+      "meta": null,
+      "earlier_spans": [],
+      "base_counters": [],
+      "held_suggestions": [
+        "d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf"
+      ],
+      "verdict": "accepted"
+    },
+    {
+      "name": "a suggester's accept",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101020205815820d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf",
+      "seq": 7,
+      "capabilities": [
+        [
+          "suggest",
+          1
+        ]
+      ],
+      "meta": null,
+      "earlier_spans": [],
+      "base_counters": [],
+      "held_suggestions": [
+        "d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf"
+      ],
+      "verdict": "CapabilityRefused"
+    },
+    {
+      "name": "a suggester's dismiss",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101020305815820d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf",
+      "seq": 7,
+      "capabilities": [
+        [
+          "suggest",
+          1
+        ]
+      ],
+      "meta": null,
+      "earlier_spans": [],
+      "base_counters": [],
+      "held_suggestions": [
+        "d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf"
+      ],
+      "verdict": "CapabilityRefused"
+    }
+  ],
+  "content_refusals": [
+    {
+      "name": "an unknown version, 2",
+      "content": "a40102020003010440",
+      "class": "UnknownContentVersion"
+    },
+    {
+      "name": "role 4",
+      "content": "a40101020403010440",
+      "class": "Malformed"
+    },
+    {
+      "name": "an edit without a blob",
+      "content": "a3010102000301",
+      "class": "Malformed"
+    },
+    {
+      "name": "an accept with a blob",
+      "content": "a401010202044005815820d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf",
+      "class": "Malformed"
+    },
+    {
+      "name": "incarnation 0",
+      "content": "a40101020003000440",
+      "class": "Malformed"
+    }
+  ],
+  "snapshot_state": {
+    "open_suggestion": {
+      "suggestions": [
+        "d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf"
+      ],
+      "state": "a3010102581c7374616e642d696e20666f722061204c6f726f20736e617073686f740381845820d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060950958207374616e642d696e20666f7220612073756767657374696f6e277320626c6f62"
+    },
+    "compacted_with_dismissed": {
+      "dismissed": [
+        "d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf"
+      ],
+      "state": "a3010102582d7374616e642d696e20666f722061204c6f726f20736e617073686f7420776974682069747320686973746f72790481845820d1313b05ce4eb0bb39cf56f09e315a85cff736037993f01d0c93078386c5e8bf582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060950958207374616e642d696e20666f7220612073756767657374696f6e277320626c6f62"
+    }
+  },
+  "compaction_checks": [
+    {
+      "writer": "a full writer",
+      "capabilities": [],
+      "adapter": "frasil:loro",
+      "snapshot_unit": "accepted"
+    },
+    {
+      "writer": "a suggester",
+      "capabilities": [
+        [
+          "suggest",
+          1
+        ]
+      ],
+      "adapter": "frasil:loro",
+      "snapshot_unit": "CapabilityRefused"
+    },
+    {
+      "writer": "a writer granted suggest with mode extends",
+      "capabilities": [
+        [
+          "suggest",
+          0
+        ]
+      ],
+      "adapter": "frasil:loro",
+      "snapshot_unit": "accepted"
+    }
+  ]
+}

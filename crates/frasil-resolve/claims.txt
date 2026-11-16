@@ -1,0 +1,5 @@
+# roster.md, 3.7 The resolution procedure: tests/procedure_tables.rs. The
+# procedure is proved also through frasil-identity (identity.json merges),
+# frasil-peers (peers.json resolution) and frasil-space (roster.json cycles,
+# duels).
+roster.json procedure_tables

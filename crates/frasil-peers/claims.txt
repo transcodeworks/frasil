@@ -1,0 +1,30 @@
+# peers.md, sections 2.1 to 2.6, 3.2, 3.5, 3.7, 3.10 to 3.13 and 3.16:
+# tests/formats.rs
+peers.json parameters
+peers.json proofs
+peers.json merge_statement
+peers.json skeleton
+peers.json erase_bodies
+# peers.md, section 3.13 (What replicas check): tests/twins.rs. Only
+# foreign_enrolment_and_planted_administrator_slot gives its history; the
+# other cases are checked as far as their bytes allow.
+peers.json twin_checks
+# peers.md, sections 3.12 (The skeleton's resolution) and 3.14 (Stability at
+# the peer): tests/resolution.rs
+peers.json resolution
+peers.json stability
+# peers.md, sections 2.1, 3.4 to 3.7 and 3.17: tests/entries.rs
+peers.json credentials
+peers.json merge_cap
+peers.json recovery_entries
+# peers.md, sections 3.16 to 3.19: tests/decisions.rs
+peers.json decisions
+# ext-file-versions.md, 3.6 to 3.9: tests/retention.rs
+[ext-file-versions] ext-file-versions.json listings
+[ext-file-versions] ext-file-versions.json after_compaction
+[ext-file-versions] ext-file-versions.json heads_and_depth
+[ext-file-versions] ext-file-versions.json decisions
+[ext-file-versions] ext-file-versions.json holds
+# peers.md, sections 3.21 and 3.22 (Skeleton cuts, Truncation):
+# tests/skeleton_cuts.rs
+peers.json skeleton_cuts

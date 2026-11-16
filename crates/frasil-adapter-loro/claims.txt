@@ -1,0 +1,8 @@
+# adapter-loro.md: tests/adapter_loro.rs
+adapter-loro.json parameters
+adapter-loro.json peer_ids
+adapter-loro.json contents
+adapter-loro.json checks
+adapter-loro.json content_refusals
+adapter-loro.json snapshot_state
+adapter-loro.json compaction_checks

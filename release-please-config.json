@@ -1,0 +1,202 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "simple",
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "initial-version": "0.1.0",
+  "bump-minor-pre-major": true,
+  "changelog-sections": [
+    {
+      "type": "feat",
+      "section": "Features"
+    },
+    {
+      "type": "fix",
+      "section": "Bug fixes"
+    },
+    {
+      "type": "spec",
+      "section": "Specification"
+    },
+    {
+      "type": "perf",
+      "section": "Performance"
+    },
+    {
+      "type": "docs",
+      "section": "Documentation"
+    },
+    {
+      "type": "revert",
+      "section": "Reverts"
+    },
+    {
+      "type": "test",
+      "section": "Tests",
+      "hidden": true
+    },
+    {
+      "type": "ci",
+      "section": "CI",
+      "hidden": true
+    },
+    {
+      "type": "chore",
+      "section": "Miscellaneous",
+      "hidden": true
+    },
+    {
+      "type": "refactor",
+      "section": "Refactoring",
+      "hidden": true
+    }
+  ],
+  "packages": {
+    ".": {
+      "package-name": "frasil",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "Cargo.toml",
+          "jsonpath": "$.workspace.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-adapter-blobs/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-adapter-loro/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-adapter-records/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-adapter/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-admission/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-app-requests/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-crypto/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-deposit-tokens/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-ephemeral/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-events/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-identity/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-iroh/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-keys/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-libraries/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-peers/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-resolve/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-space-file/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-space/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-store/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-transport/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil-units/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/frasil/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "apps/relay/Cargo.toml",
+          "jsonpath": "$..[?(@.path && @.version)].version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(!@.source)].version"
+        },
+        {
+          "type": "toml",
+          "path": "fuzz/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value !== 'frasil-fuzz' && !@.source)].version"
+        },
+        {
+          "type": "toml",
+          "path": "apps/relay/fuzz/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value !== 'frasil-relay-fuzz' && !@.source)].version"
+        },
+        {
+          "type": "json",
+          "path": "packages/frasil/package.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    }
+  }
+}

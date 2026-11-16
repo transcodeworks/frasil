@@ -1,0 +1,38 @@
+[package]
+name = "frasil-store"
+description = "Frasil's store at rest: sealed device keys, records, the head, the mark and continuity. An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["sqlite"]
+# The SQLite backend of the `Store` trait, the only part of the crate that
+# does IO. Off for wasm32, where the application provides its own store.
+sqlite = ["dep:rusqlite"]
+# ext-invite-links.md: the `invite` and `claim` records. Off by default.
+ext-invite-links = []
+# ext-guests.md: `state` key 3, the last completed sync. Off by default.
+ext-guests = []
+
+[dependencies]
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
+frasil-events = { path = "../frasil-events", version = "0.1.0" }
+frasil-keys = { path = "../frasil-keys", version = "0.1.0" }
+rusqlite = { workspace = true, optional = true }
+zeroize.workspace = true
+
+[dev-dependencies]
+frasil-identity = { path = "../frasil-identity" }
+frasil-testkit = { path = "../frasil-testkit" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

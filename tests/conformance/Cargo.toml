@@ -1,0 +1,83 @@
+[package]
+name = "frasil-conformance"
+description = "End-to-end scenarios of Frasil's clients against frasil-relay."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+publish = false
+
+[dependencies]
+# The client, as applications use it, in the scenarios named client_*.
+frasil = { path = "../../crates/frasil" }
+frasil-admission = { path = "../../crates/frasil-admission" }
+frasil-base = { path = "../../crates/frasil-base" }
+frasil-crypto = { path = "../../crates/frasil-crypto" }
+frasil-deposit-tokens = { path = "../../crates/frasil-deposit-tokens", optional = true }
+frasil-events = { path = "../../crates/frasil-events" }
+frasil-iroh = { path = "../../crates/frasil-iroh" }
+frasil-keys = { path = "../../crates/frasil-keys" }
+frasil-libraries = { path = "../../crates/frasil-libraries", optional = true }
+frasil-relay = { path = "../../apps/relay" }
+frasil-peers = { path = "../../crates/frasil-peers" }
+frasil-space = { path = "../../crates/frasil-space" }
+frasil-store = { path = "../../crates/frasil-store" }
+frasil-testkit = { path = "../../crates/frasil-testkit" }
+frasil-transport = { path = "../../crates/frasil-transport" }
+frasil-units = { path = "../../crates/frasil-units" }
+# An iroh relay on loopback under a test certificate, with no peer, for the
+# serverless scenario.
+iroh-relay = { workspace = true, features = ["server", "test-utils"] }
+futures-util = { workspace = true, features = ["sink"] }
+reqwest.workspace = true
+rustls.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite.workspace = true
+
+[features]
+# Each extension's feature also turns the extension on in every test peer
+# (`frasil_conformance::settings`); without it, test peers run the core.
+#
+# ext-libraries.md's scenarios.
+ext-libraries = ["dep:frasil-libraries", "frasil/ext-libraries"]
+# ext-deposit-tokens.md's scenarios: the peer issues and redeems tokens,
+# and the client draws and pays with them. The extension needs
+# ext-libraries at the peer.
+ext-deposit-tokens = [
+    "ext-libraries",
+    "dep:frasil-deposit-tokens",
+    "frasil/ext-deposit-tokens",
+    "frasil-libraries/ext-deposit-tokens",
+    "frasil-transport/ext-deposit-tokens",
+]
+# ext-invite-links.md's drops at the peer.
+ext-invite-links = [
+    "frasil/ext-invite-links",
+    "frasil-peers/ext-invite-links",
+    "frasil-transport/ext-invite-links",
+]
+# ext-restricted-spaces.md's client scenarios.
+ext-restricted-spaces = ["frasil/ext-restricted-spaces"]
+# ext-space-files.md's client scenarios: a file carried between devices,
+# and the objects it leaves out fetched through the peer. The claim from a
+# file needs ext-invite-links at the client; the peer serves no drop.
+space-files = ["frasil/space-files", "frasil/ext-invite-links"]
+# ext-drive.md's client scenarios.
+ext-drive = ["frasil/ext-drive"]
+# ext-file-versions.md's client and peer scenarios.
+ext-file-versions = ["frasil/ext-file-versions"]
+# ext-guests.md's client scenarios.
+ext-guests = ["frasil/ext-guests"]
+# ext-next-endpoints.md: members with no peer meet again after both
+# rotate.
+ext-next-endpoints = ["frasil/ext-next-endpoints"]
+# The client's partial replicas (units.md, "Partial replicas").
+partial-replicas = ["frasil/partial-replicas"]
+# ext-ephemeral.md's channel, relayed through a peer.
+ephemeral = ["frasil/ephemeral"]
+# ext-app-requests.md: a device admitted through a peer signs requests to
+# an application's server. The peer has no part in it.
+ext-app-requests = ["frasil/ext-app-requests"]
+
+[lints]
+workspace = true

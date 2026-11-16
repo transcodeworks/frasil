@@ -1,0 +1,35 @@
+# units.md: tests/formats.rs, tests/snapshots.rs and tests/procedures.rs
+units.json fixtures
+units.json parameters
+units.json units
+units.json list_events
+units.json unit_refusals
+units.json handed_body_keys
+units.json supersessions
+units.json stream_types
+units.json system_stream
+units.json objects
+units.json object_refusals
+units.json compaction
+units.json stream_snapshot
+units.json space_snapshot
+# units.md, "Objects", "Stubs" and "The space snapshot" for checkpoints:
+# a record object's self reference, stubs with cuts, snapshot keys 12 to 14
+units.json record_objects
+units.json stubs_with_cuts
+units.json snapshot_checkpoint
+units.json head_statements
+units.json statement_outcomes
+units.json stub_confirmation
+units.json messages
+units.json settled
+units.json partial_replica
+# ext-restricted-spaces.md, sections 2.4 and 3.7: the move record, late
+# writes and their re-application: tests/ext_restricted_spaces.rs
+[ext-restricted-spaces] ext-restricted-spaces.json move_records
+[ext-restricted-spaces] ext-restricted-spaces.json move_record_refusals
+[ext-restricted-spaces] ext-restricted-spaces.json late_writes
+# ext-guests.md, "The writer's decision" and "Heartbeats":
+# tests/ext_guests.rs
+[ext-guests] ext-guests.json writer_decisions
+[ext-guests] ext-guests.json heartbeats

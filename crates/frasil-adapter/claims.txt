@@ -1,0 +1,3 @@
+# units.md, section 3.17 (The adapter interface): no vector file of its own.
+# The adapters' vector files prove it, claimed by frasil-adapter-records and
+# frasil-adapter-blobs.

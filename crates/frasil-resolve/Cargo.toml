@@ -1,0 +1,22 @@
+[package]
+name = "frasil-resolve"
+description = "Frasil's resolution procedure, shared by the roster, the device list and the peer's skeleton. An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+
+[dev-dependencies]
+frasil-testkit = { path = "../frasil-testkit" }
+proptest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

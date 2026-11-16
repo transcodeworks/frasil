@@ -1,0 +1,144 @@
+# Weekly dependency updates. Minor and patch updates come grouped, one pull
+# request per ecosystem and directory; a major update comes alone. Crates
+# that must move together have a group of their own, and the pins that
+# move only by hand are ignored below, each with its reason. A release is
+# proposed only once it is a week old.
+version: 2
+
+updates:
+  # The workspace, and the two fuzz workspaces, which have lockfiles of
+  # their own and repeat some of the workspace's pins.
+  - package-ecosystem: cargo
+    directories:
+      - /
+      - /fuzz
+      - /apps/relay/fuzz
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # The CLI that writes the JavaScript glue must be the macro's version
+      # (Cargo.toml, section 7); CI installs it from Cargo.lock.
+      wasm-bindgen:
+        patterns:
+          - wasm-bindgen
+          - wasm-bindgen-*
+          - js-sys
+          - web-sys
+      # The cryptography generation that hpke brings (Cargo.toml, section 1),
+      # reviewed apart from everything else.
+      crypto:
+        patterns:
+          - hpke
+          - chacha20poly1305
+          - hkdf
+          - hmac
+          - sha2
+          - ed25519-dalek
+          - x25519-dalek
+          - curve25519-dalek
+          - ml-dsa
+          - subtle
+          - zeroize
+          - getrandom
+        update-types:
+          - minor
+          - patch
+      cargo:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # A pre-release pinned until its stable release (Cargo.toml, section
+      # 1); a newer pre-release is not wanted, and the stable one is moved
+      # to by hand.
+      - dependency-name: voprf
+      # The Loro adapter walks a document's bytes as the pinned Loro's
+      # decoder does (docs/webassembly.md), so a new Loro is reviewed by
+      # hand, with the advisories deny.toml ignores through it.
+      - dependency-name: loro
+      # Applications that ship UniFFI bindings over frasil load this version
+      # in the same process (Cargo.toml, section 8).
+      - dependency-name: uniffi
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-major
+      # rusqlite and diesel link one libsqlite3-sys, and one sqlite-wasm-rs
+      # on wasm32, so rusqlite, diesel, sqlite-wasm-rs and sqlite-wasm-vfs
+      # move together, by hand (Cargo.toml, section 5).
+      - dependency-name: rusqlite
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-major
+      - dependency-name: sqlite-wasm-rs
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-major
+      # reqwest is pinned twice: 0.13 for the server binding and 0.12, as
+      # reqwest-s3, for rust-s3's client (Cargo.toml, section 5). Updates
+      # cannot tell the two apart, so a new minor is moved to by hand.
+      - dependency-name: reqwest
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-major
+
+  # The pnpm workspace's root (the lint) and the browser package.
+  - package-ecosystem: npm
+    directories:
+      - /
+      - /packages/frasil
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    versioning-strategy: increase
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      npm:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Node.js's types follow the Node.js that CI and the contributing
+      # guide use (24).
+      - dependency-name: "@types/node"
+        update-types:
+          - version-update:semver-major
+
+  # The workflows' actions, each pinned to a commit with its version.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Pinned to a commit of its `stable` branch, which has no releases to
+      # move to; the toolchain itself comes from rust-toolchain.toml.
+      - dependency-name: dtolnay/rust-toolchain

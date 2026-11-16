@@ -1,0 +1,24 @@
+# crypto.md, sections 2.1 to 2.4, 2.6 and 3.1 to 3.5: tests/keys_and_wraps.rs
+crypto.json labels
+crypto.json sizes
+crypto.json suites
+crypto.json wrap_uses
+crypto.json constants
+crypto.json ed25519_keys
+crypto.json x25519_keys
+crypto.json x25519_at_use
+crypto.json xwing_keys
+crypto.json fixtures
+crypto.json device_ids
+crypto.json wraps
+crypto.json wrap_refusals
+# crypto.md, "Test vectors", Wycheproof's X25519 and Ed25519 files: tests/wycheproof.rs
+crypto.json wycheproof
+# crypto.md, sections 2.5 and 3.6 to 3.8: tests/schemes.rs
+crypto.json schemes
+crypto.json signers
+crypto.json kind_policy
+crypto.json signatures
+crypto.json signature_refusals
+# crypto.md, "Test vectors", Wycheproof's ML-DSA-65 tests: tests/mldsa65_known_answers.rs
+crypto.json mldsa65_known_answers

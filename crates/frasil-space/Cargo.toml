@@ -1,0 +1,51 @@
+[package]
+name = "frasil-space"
+description = "Frasil's spaces: the roster, effective membership, the write rule and the key graph. An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+# Tree-based record reader used by conformance and fuzz checks.
+oracle = []
+# ext-invite-links.md: member type 3, the succeed op, change keys 13 (on a
+# grant of type 3) and 14, the race rule, and how an invite key counts in
+# the key graph. Off by default.
+ext-invite-links = ["frasil-keys/ext-invite-links"]
+# ext-restricted-spaces.md: descriptor kind 1, the restricted space: its
+# parent, its membership narrowed by the parent's, the write rule's paths
+# through the parent, when it rotates, and the carve-out's mirrors. Off by
+# default.
+ext-restricted-spaces = ["frasil-keys/ext-restricted-spaces"]
+# ext-recovery-agent.md: the waiting period, which decides whether this
+# replica wraps for a list member rooted in an agent. Off by default.
+ext-recovery-agent = ["frasil-identity/ext-recovery-agent"]
+# ext-guests.md: the guest preset, a session's expiry and its end, the
+# administering device's decision on a leave request. Off by default.
+ext-guests = []
+
+[dependencies]
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
+frasil-events = { path = "../frasil-events", version = "0.1.0" }
+frasil-identity = { path = "../frasil-identity", version = "0.1.0" }
+frasil-keys = { path = "../frasil-keys", version = "0.1.0" }
+frasil-peers = { path = "../frasil-peers", version = "0.1.0" }
+frasil-resolve = { path = "../frasil-resolve", version = "0.1.0" }
+zeroize.workspace = true
+
+[dev-dependencies]
+frasil-space = { path = ".", features = ["oracle"] }
+frasil-testkit = { path = "../frasil-testkit" }
+# The model check counts releases and restores as a replica does
+# (units.md, 3.12) at a replica that forgot and one that kept everything.
+frasil-units = { path = "../frasil-units" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

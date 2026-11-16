@@ -1,0 +1,16 @@
+# adapter-blobs.md: tests/adapter_blobs.rs
+adapter-blobs.json units
+adapter-blobs.json merge_orders
+adapter-blobs.json history_free
+adapter-blobs.json snapshot_unit_objects
+adapter-blobs.json content_refusals
+adapter-blobs.json compaction_checks
+adapter-blobs.json references
+# ext-file-versions.md, 2.2 Settings to 3.5 and 3.11: tests/file_versions.rs
+[ext-file-versions] ext-file-versions.json parameters
+[ext-file-versions] ext-file-versions.json writer
+[ext-file-versions] ext-file-versions.json replica_checks
+[ext-file-versions] ext-file-versions.json supersession_set
+[ext-file-versions] ext-file-versions.json compaction
+[ext-file-versions] ext-file-versions.json compaction_checks
+[ext-file-versions] ext-file-versions.json cadence

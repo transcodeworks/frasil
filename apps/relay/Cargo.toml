@@ -1,0 +1,67 @@
+[package]
+name = "frasil-relay"
+description = "Frasil's always-on peer service, with an optional iroh relay."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+name = "frasil_relay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "frasil-relay"
+path = "src/main.rs"
+
+# Every extension the peer implements is built in, and the operator turns
+# each on at run time (`FRASIL_EXTENSIONS`, crate `config`), so that one
+# binary serves every operator. The package has no features.
+[dependencies]
+frasil-adapter = { path = "../../crates/frasil-adapter", version = "0.1.0" }
+frasil-admission = { path = "../../crates/frasil-admission", version = "0.1.0" }
+frasil-base = { path = "../../crates/frasil-base", version = "0.1.0" }
+frasil-crypto = { path = "../../crates/frasil-crypto", version = "0.1.0" }
+frasil-deposit-tokens = { path = "../../crates/frasil-deposit-tokens", version = "0.1.0" }
+frasil-ephemeral = { path = "../../crates/frasil-ephemeral", version = "0.1.0" }
+frasil-events = { path = "../../crates/frasil-events", version = "0.1.0" }
+frasil-iroh = { path = "../../crates/frasil-iroh", version = "0.1.0" }
+frasil-keys = { path = "../../crates/frasil-keys", version = "0.1.0" }
+frasil-libraries = { path = "../../crates/frasil-libraries", version = "0.1.0", features = ["ext-deposit-tokens"] }
+frasil-peers = { path = "../../crates/frasil-peers", version = "0.1.0", features = ["ext-file-versions", "ext-invite-links"] }
+frasil-store = { path = "../../crates/frasil-store", version = "0.1.0" }
+frasil-transport = { path = "../../crates/frasil-transport", version = "0.1.0", features = ["ext-deposit-tokens", "ext-invite-links"] }
+frasil-units = { path = "../../crates/frasil-units", version = "0.1.0" }
+axum.workspace = true
+futures-util.workspace = true
+# iroh's relay server, embedded (src/iroh_relay.rs).
+iroh-relay = { workspace = true, features = ["server"] }
+# Membership and node leases of a region's nodes.
+openraft.workspace = true
+# rust-s3's HTTP client, reqwest 0.12: its TLS comes from this pin's
+# `rustls-tls`, rustls on ring.
+reqwest-s3.workspace = true
+rust-s3.workspace = true
+rustls.workspace = true
+# The cluster's Raft messages and commands, as JSON.
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+# The internal links' MACs and the cluster key, compared in constant time
+# (crate `cluster`, module `handshake`).
+subtle.workspace = true
+# The internal links' ephemeral keys (crate `cluster`, module `link`).
+x25519-dalek.workspace = true
+# Deposit keys' seeds, zeroized when dropped (crate `deposit`).
+zeroize.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+
+[dev-dependencies]
+frasil-testkit = { path = "../../crates/frasil-testkit" }
+
+[lints]
+workspace = true

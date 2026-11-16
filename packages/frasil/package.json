@@ -1,0 +1,122 @@
+{
+  "name": "@frasil/client",
+  "version": "0.1.0",
+  "description": "Frasil's client for browsers: devices that share spaces of documents, tables and files, end to end encrypted, online and offline, through always-on peers that hold no key. WebAssembly inside; one install, no setup.",
+  "license": "MIT",
+  "homepage": "https://github.com/transcodeworks/frasil",
+  "bugs": "https://github.com/transcodeworks/frasil/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/transcodeworks/frasil.git",
+    "directory": "packages/frasil"
+  },
+  "keywords": [
+    "end-to-end encryption",
+    "webassembly",
+    "local-first",
+    "crdt",
+    "loro"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./embedded": {
+      "types": "./dist/embedded/index.d.ts",
+      "default": "./dist/embedded/index.js"
+    },
+    "./frasil_wasm.wasm": "./dist/wasm/frasil_wasm_bg.wasm",
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "default": "./dist/client.js"
+    },
+    "./module": {
+      "types": "./dist/module/load.d.ts",
+      "default": "./dist/module/load.js"
+    },
+    "./module/frasil_wasm.wasm": "./dist/module/frasil_wasm.wasm",
+    "./index": {
+      "types": "./dist/index/indexed.d.ts",
+      "default": "./dist/index/indexed.js"
+    },
+    "./index/embedded": {
+      "types": "./dist/index-embedded/indexed.d.ts",
+      "default": "./dist/index-embedded/indexed.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "default": "./dist/react.js"
+    },
+    "./svelte": {
+      "types": "./dist/svelte.d.ts",
+      "default": "./dist/svelte.js"
+    },
+    "./solid": {
+      "types": "./dist/solid.d.ts",
+      "default": "./dist/solid.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": [
+    "./dist/runtime.js",
+    "./dist/engine.js",
+    "./dist/wasm/*.js",
+    "./dist/*/runtime.js",
+    "./dist/*/engine.js",
+    "./dist/*/wasm/*.js"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:binding": "playwright test",
+    "size": "node scripts/size.mjs --check",
+    "lint": "biome check .",
+    "check:package": "publint --strict && attw --pack . --profile esm-only --exclude-entrypoints ./frasil_wasm.wasm ./module/frasil_wasm.wasm",
+    "knip": "knip"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "solid-js": ">=1.8"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "solid-js": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.5",
+    "@biomejs/biome": "2.5.14",
+    "@playwright/test": "1.63.0",
+    "@types/node": "24.10.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "fake-indexeddb": "6.2.5",
+    "jsdom": "31.0.0",
+    "knip": "6.44.1",
+    "publint": "0.3.25",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "solid-js": "1.9.18",
+    "svelte": "5.57.3",
+    "typescript": "7.0.2",
+    "vitest": "3.2.7"
+  }
+}

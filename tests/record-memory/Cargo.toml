@@ -1,0 +1,18 @@
+[package]
+name = "frasil-record-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dev-dependencies]
+frasil-space = { path = "../../crates/frasil-space" }
+frasil-units = { path = "../../crates/frasil-units" }
+frasil-events = { path = "../../crates/frasil-events" }
+frasil-keys = { path = "../../crates/frasil-keys" }
+frasil-crypto = { path = "../../crates/frasil-crypto" }
+
+# The allocator instrumentation is confined to its integration-test binary.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "deny"

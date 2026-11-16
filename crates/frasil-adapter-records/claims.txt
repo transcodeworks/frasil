@@ -1,0 +1,14 @@
+# adapter-records.md: tests/adapter_records.rs
+adapter-records.json parameters
+adapter-records.json changesets
+adapter-records.json admission
+adapter-records.json writer_clock
+adapter-records.json merge_orders
+adapter-records.json rebuilds
+adapter-records.json history_free
+adapter-records.json suggestions
+adapter-records.json content_refusals
+adapter-records.json compaction_checks
+adapter-records.json value_nesting
+adapter-records.json value_types
+adapter-records.json change_times

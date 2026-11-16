@@ -1,0 +1,7 @@
+# ext-space-files.md, the file's own families: tests/vectors.rs. The files
+# and the roads in, which need a replica, are the frasil crate's.
+ext-space-files.json records
+ext-space-files.json record_refusals
+ext-space-files.json way_in
+ext-space-files.json appends
+ext-space-files.json refusals

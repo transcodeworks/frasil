@@ -1,0 +1,15 @@
+# at-rest.md, every family: tests/at_rest.rs
+at-rest.json device
+at-rest.json derivations
+at-rest.json sealed_device_keys
+at-rest.json sealed_device_keys_refusals
+at-rest.json records
+at-rest.json record_refusals
+at-rest.json mark
+at-rest.json continuity
+at-rest.json after_restore
+at-rest.json head_revisions
+at-rest.json passkey_to_record
+# ext-next-endpoints.md, a rotation's seeds, keys and next_endpoint record:
+# tests/next_endpoints.rs
+ext-next-endpoints.json rotation

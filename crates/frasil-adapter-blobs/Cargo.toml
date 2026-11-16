@@ -1,0 +1,32 @@
+[package]
+name = "frasil-adapter-blobs"
+description = "Frasil's Blobs adapter. An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+# File versions (ext-file-versions.md): the supersession set, and what a
+# compactor lists from it.
+ext-file-versions = []
+
+[dependencies]
+frasil-adapter = { path = "../frasil-adapter", version = "0.1.0" }
+frasil-adapter-records = { path = "../frasil-adapter-records", version = "0.1.0" }
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+
+[dev-dependencies]
+frasil-events = { path = "../frasil-events" }
+frasil-testkit = { path = "../frasil-testkit" }
+frasil-units = { path = "../frasil-units" }
+proptest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

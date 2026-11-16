@@ -1,0 +1,123 @@
+# Coverage-guided fuzz targets for frasil-relay's own decoders, run with
+# cargo-fuzz (libFuzzer) on a nightly toolchain, from this directory:
+#
+#   cargo +nightly fuzz run relay_object_front -- -max_total_time=60
+#
+# The peer's targets are a package of their own, apart from the targets in
+# the repository's fuzz/. Each target takes
+# the peer's module it fuzzes as a source file of its own, so the package
+# builds none of the peer's network stack. This package is its own
+# workspace, so the main workspace never builds it.
+[package]
+name = "frasil-relay-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+frasil-adapter = { path = "../../../crates/frasil-adapter" }
+frasil-base = { path = "../../../crates/frasil-base" }
+frasil-crypto = { path = "../../../crates/frasil-crypto" }
+frasil-events = { path = "../../../crates/frasil-events" }
+frasil-libraries = { path = "../../../crates/frasil-libraries" }
+frasil-store = { path = "../../../crates/frasil-store", default-features = false }
+frasil-units = { path = "../../../crates/frasil-units" }
+futures-util = "=0.3.34"
+libfuzzer-sys = "=0.4.13"
+# The cluster's JSON bodies (relay_cluster_json), as the peer reads them:
+# the same pins as the workspace's.
+openraft = { version = "=0.9.25", default-features = false, features = ["serde"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+# The cluster's handshake (relay_cluster_handshake): its MACs compared in
+# constant time, its keys zeroized.
+subtle = { version = "=2.6.1", default-features = false }
+zeroize = { version = "=1.9.1", features = ["derive"] }
+
+# Fuzz builds keep overflow checks and debug assertions on, so that an
+# overflow is a crash rather than a wrapped value.
+[profile.release]
+debug-assertions = true
+overflow-checks = true
+debug = 1
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "warn"
+
+[[bin]]
+name = "relay_object_front"
+path = "fuzz_targets/relay_object_front.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relay_records"
+path = "fuzz_targets/relay_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relay_snapshot"
+path = "fuzz_targets/relay_snapshot.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relay_shard_formats"
+path = "fuzz_targets/relay_shard_formats.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relay_library_records"
+path = "fuzz_targets/relay_library_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relay_cluster_frames"
+path = "fuzz_targets/relay_cluster_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relay_handover_bundle"
+path = "fuzz_targets/relay_handover_bundle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relay_deposit_records"
+path = "fuzz_targets/relay_deposit_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relay_cluster_json"
+path = "fuzz_targets/relay_cluster_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relay_cluster_handshake"
+path = "fuzz_targets/relay_cluster_handshake.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,26 @@
+[package]
+name = "frasil-app-requests"
+description = "Frasil's device-signed requests to application servers: signer and verifier. An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
+frasil-events = { path = "../frasil-events", version = "0.1.0" }
+frasil-identity = { path = "../frasil-identity", version = "0.1.0" }
+
+[dev-dependencies]
+curve25519-dalek.workspace = true
+frasil-testkit = { path = "../frasil-testkit" }
+serde_json.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

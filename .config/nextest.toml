@@ -1,0 +1,20 @@
+# cargo-nextest, which CI runs the tests with: each test in its own
+# process, and a test that hangs fails with its name. A test is reported
+# slow after a minute and stopped after five.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 5 }
+fail-fast = false
+
+# The seeded model checks and the peer's crash test run for minutes on a
+# hosted runner; they are stopped after twenty.
+[[profile.default.overrides]]
+filter = 'binary(skeleton_cuts) | binary(checkpoint_model) | test(a_crash_at_any_write_loses_no_acknowledged_batch)'
+slow-timeout = { period = "120s", terminate-after = 10 }
+
+# Tests that open sockets on loopback (the iroh binding, the client's
+# connections, the scenarios against a running peer) now and then miss a
+# deadline on a busy hosted runner; one that passes on a second or third
+# try is reported as flaky and does not fail the run.
+[[profile.default.overrides]]
+filter = 'package(frasil-iroh) | package(frasil-conformance) | binary(connections)'
+retries = 2

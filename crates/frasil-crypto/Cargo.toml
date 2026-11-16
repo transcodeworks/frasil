@@ -1,0 +1,53 @@
+[package]
+name = "frasil-crypto"
+description = "Frasil's primitives, key checks, the X-Wing wrap and signature schemes 0 and 2. An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+chacha20poly1305.workspace = true
+curve25519-dalek.workspace = true
+ed25519-dalek.workspace = true
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+getrandom.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+# hpke's X-Wing KEM is built only with its `x25519` feature as well as
+# `mlkem`. The feature names no new crate: it brings x25519-dalek 3.0.0,
+# already pinned. DHKEM(X25519), 0x0020, stays refused (crypto.md).
+hpke = { workspace = true, features = ["x25519"] }
+ml-dsa.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+x25519-dalek.workspace = true
+zeroize.workspace = true
+
+# wasm32-unknown-unknown has no operating system to ask for randomness:
+# `wasm_js` selects the JavaScript host's `crypto.getRandomValues`.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
+
+[dev-dependencies]
+frasil-testkit = { path = "../frasil-testkit" }
+serde.workspace = true
+serde_json.workspace = true
+
+# proptest brings getrandom 0.3 through rand, which does not build for
+# wasm32-unknown-unknown; tests/properties.rs is native only.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+proptest.workspace = true
+
+# tests/wasm_randomness.rs, run with wasm-bindgen-test-runner.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+js-sys.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-test.workspace = true
+
+[lints]
+workspace = true

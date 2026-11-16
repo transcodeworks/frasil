@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "declaration": false,
+    "stripInternal": false,
+    "allowJs": true,
+    "checkJs": true,
+    "types": ["node"]
+  },
+  "include": ["src", "test", "scripts", "vitest.config.ts", "playwright.config.ts"],
+  "exclude": ["src/wasm", "dist"]
+}

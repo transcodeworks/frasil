@@ -1,0 +1,27 @@
+[package]
+name = "frasil-adapter-loro"
+description = "Frasil's Loro adapter. An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+frasil-adapter = { path = "../frasil-adapter", version = "0.1.0" }
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+# SHA-256 and the `frasil/loro-peer/v1` label (crypto.md).
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
+loro.workspace = true
+
+[dev-dependencies]
+frasil-testkit = { path = "../frasil-testkit" }
+proptest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

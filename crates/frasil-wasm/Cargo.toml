@@ -1,0 +1,65 @@
+[package]
+name = "frasil-wasm"
+description = "Frasil's client for browsers, through wasm-bindgen."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+publish = false
+
+[lib]
+# cdylib for wasm-bindgen; rlib so native builds and Clippy of the
+# workspace can build it, empty.
+crate-type = ["cdylib", "rlib"]
+
+# Everything is gated on the JavaScript wasm target: elsewhere the crate is
+# empty and depends on nothing.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# The client without SQLite or iroh, with the browser's tasks, clocks and
+# server binding (`frasil::browser`; transport.md, section 3.15).
+# Guests (ext-guests.md): a guest's grant, leaving by request, ending a
+# session, and the writer's decision. Space files (ext-space-files.md):
+# a space exported to bytes and imported from them. Deposit tokens
+# (ext-deposit-tokens.md): grants, drawing ahead of need, paid deposits.
+frasil = { path = "../frasil", default-features = false, features = ["browser", "server-socket", "adapter-loro", "adapter-records", "adapter-blobs", "ext-guests", "ext-invite-links", "ext-restricted-spaces", "ephemeral", "ext-app-requests", "ext-libraries", "ext-deposit-tokens", "ext-drive", "ext-file-versions", "space-files"] }
+frasil-adapter-blobs = { path = "../frasil-adapter-blobs" }
+frasil-adapter-loro = { path = "../frasil-adapter-loro" }
+frasil-base = { path = "../frasil-base" }
+frasil-events = { path = "../frasil-events" }
+frasil-space = { path = "../frasil-space" }
+frasil-store = { path = "../frasil-store", default-features = false }
+frasil-transport = { path = "../frasil-transport" }
+frasil-units = { path = "../frasil-units" }
+js-sys.workspace = true
+loro.workspace = true
+# Only its AsyncRead and AsyncWrite, which `frasil::Blobs` streams through.
+tokio.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+zeroize.workspace = true
+
+# tests/vectors.rs runs the vector tests of frasil-crypto, frasil-events,
+# frasil-store and frasil-units under wasm32, with what they use.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+curve25519-dalek.workspace = true
+frasil-adapter = { path = "../frasil-adapter" }
+frasil-adapter-records = { path = "../frasil-adapter-records" }
+frasil-crypto = { path = "../frasil-crypto" }
+frasil-identity = { path = "../frasil-identity" }
+frasil-keys = { path = "../frasil-keys" }
+ml-dsa.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Named `testkit`: tests/vectors.rs answers to `frasil_testkit` itself,
+# reading the vector files compiled in rather than from disk.
+testkit = { package = "frasil-testkit", path = "../frasil-testkit" }
+wasm-bindgen-test.workspace = true
+
+[features]
+# The index (`frasil::index`), in a build of its own for the npm package's
+# `@frasil/client/index` entry: SQLite with SQLite3 Multiple Ciphers, in the
+# origin-private file system of a dedicated worker. The default build
+# leaves it out, and with it SQLite.
+index = ["frasil/index"]
+
+[lints]
+workspace = true

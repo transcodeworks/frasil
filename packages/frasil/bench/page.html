@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Frasil WebAssembly benchmark</title>
+    <!-- The workloads in headless Chromium (bench/run.mjs serves this page, the built package
+         under /dist/ and this directory under /bench/): `__bench(runs)` measures them, and their
+         progress goes to the console, which the runner prints. -->
+    <script type="module">
+      import { measure } from "/bench/workloads.mjs";
+      import * as frasil from "/dist/index.js";
+
+      window.__bench = (runs) => measure(frasil, { runs, log: (line) => console.log(line) });
+      window.__ready = true;
+    </script>
+  </head>
+  <body></body>
+</html>

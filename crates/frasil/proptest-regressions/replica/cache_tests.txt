@@ -1,0 +1,16 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6d4d40808c69c491575a5da50f38b52b941b5aeb5a3eb302233de1c998d643c0 # shrinks to ops = [Edit { device: 0, doc: 0, restricted: false }, Grant { device: 2, history: true }, Deliver { from: 0, to: 2, mask: 12323676835868921926, restricted: false }], partial = true
+cc 1c31c94db9c55e170d60727c66ace86a1d27a4e463903506490d440cc043700f # shrinks to ops = [Edit { device: 0, doc: 0, restricted: false }, Grant { device: 2, history: true }, Deliver { from: 0, to: 2, mask: 254381535560967646, restricted: false }], partial = true
+cc 6b00f985ba3c48bee2888b433082bf55f84119cb5b3f3f79f88e679a623c05c3 # shrinks to ops = [Edit { device: 0, doc: 0, restricted: false }, Grant { device: 2, history: true }, Deliver { from: 0, to: 2, mask: 87735699425691742, restricted: false }], partial = true
+cc 6daaaffb9c577d49d80dc1430ac49f2592426515c519240c9fff44592b05fc51 # shrinks to ops = [Edit { device: 0, doc: 0, restricted: false }, Deliver { from: 0, to: 2, mask: 2807551039867755703, restricted: false }, Grant { device: 2, history: true }], partial = true
+cc 8042a8669af3b2ed7cd9349e7c7df9346c4de6cf3bacd9bf3f4453939ee75dad # shrinks to ops = [Edit { device: 0, doc: 0, restricted: false }, Grant { device: 2, history: true }, Deliver { from: 0, to: 2, mask: 1281441743640961554, restricted: false }], partial = true
+cc 9055724fbb9608310de311718afaa3514146338f615e5d9c333ce3ab11db1782 # shrinks to ops = [Edit { device: 0, doc: 0, restricted: false }, Deliver { from: 0, to: 2, mask: 708978911439585151, restricted: false }, Grant { device: 2, history: true }], partial = true
+cc 104b19e1332220d8db561fd316814aa4559725190ac5e23c2d16d8bebcdd79be # shrinks to ops = [Edit { device: 0, doc: 0, restricted: false }, Deliver { from: 0, to: 2, mask: 1371501672482865935, restricted: false }, Grant { device: 2, history: true }], partial = true
+cc a28011b1bdc6a37f75506c3d1d3bf3f97925137f0dad22efe1fdfdb68b120837 # shrinks to ops = [Edit { device: 0, doc: 0, restricted: false }, Grant { device: 2, history: true }, Deliver { from: 0, to: 2, mask: 5425299188878122454, restricted: false }], partial = true
+cc b8f9e98dd407014b56497cbdbf972ad8bd9ffc80c769b0535acd3ed9d868dd34 # shrinks to ops = [Grant { device: 2, history: true }, Remove { device: 2 }, Edit { device: 0, doc: 1, restricted: false }, Grant { device: 2, history: false }], partial = true
+cc 116c70881f4b8c3e5a74c011f9a3effd2a294961b6aefb154fe9b5bd551a1143 # shrinks to ops = [Grant { device: 2, history: true }, Edit { device: 1, doc: 0, restricted: false }, Remove { device: 2 }, Edit { device: 0, doc: 1, restricted: false }, Grant { device: 2, history: false }], partial = true

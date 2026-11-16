@@ -1,0 +1,37 @@
+name: Bug report
+description: Frasil, the peer or the browser package does something wrong.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security vulnerabilities go through [private reporting](https://github.com/transcodeworks/frasil/security/advisories/new), not here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The smallest code, test or steps that show it.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Where
+      description: The crate or package, its features, the operating system or browser, and the peer's storage if it matters.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or output
+      render: text

@@ -1,0 +1,471 @@
+{
+  "parameters": {
+    "space": "6a304ba75c96207f99db12d93d359b854bd248dcf5e4096c22e790e61be1faad",
+    "stream": "dfdf949a90e67189311d000b7d55f0f8",
+    "devices": {
+      "A": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "B": "209aa5aa611ff7ada6a7824a851abe2b303094a867deb5a2bb80d79d33c5ff01",
+      "C": "41d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d7706095",
+      "D": "7523920b49b933579b1f5f050355ed1f1c16b12d2b8e0bb1d121ac3708097878"
+    }
+  },
+  "changesets": [
+    {
+      "name": "c1",
+      "note": "a row inserted",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "id": "03c57e52df1e35aef82b1606d49a5aaaad30f1f71a12ba18d4db6863844e74e9",
+      "clock": 1,
+      "content": "a30101020103838467656e747269657345726f772d316081018467656e747269657345726f772d316377686f8163416e6e8467656e747269657345726f772d3165686f7572738108"
+    },
+    {
+      "name": "c2",
+      "note": "a tie at clock 2 with c3, broken by writer",
+      "author": "209aa5aa611ff7ada6a7824a851abe2b303094a867deb5a2bb80d79d33c5ff01",
+      "id": "f0a0295aabe8c379774c04fb41278f38b902f7c785913f913f82b24019aeeaf2",
+      "clock": 2,
+      "content": "a30101020203818467656e747269657345726f772d3165686f7572738107"
+    },
+    {
+      "name": "c3",
+      "note": "a tie at clock 2 with c2, broken by writer; a second row inserted",
+      "author": "41d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d7706095",
+      "id": "a7369242812dda3b989e178210d96410c16edc5af6fdf307411c227f4a68515d",
+      "clock": 2,
+      "content": "a30101020203838467656e747269657345726f772d3165686f75727381098467656e747269657345726f772d326081018467656e747269657345726f772d326377686f81624379"
+    },
+    {
+      "name": "c4",
+      "note": "row 1 deleted",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "id": "060c266acbf3318a5f3d1b644344e391ecd0592d185f33eec29b063ff29f0bae",
+      "clock": 3,
+      "content": "a30101020303818467656e747269657345726f772d316080"
+    },
+    {
+      "name": "c5",
+      "note": "a clock ahead of the floor",
+      "author": "209aa5aa611ff7ada6a7824a851abe2b303094a867deb5a2bb80d79d33c5ff01",
+      "id": "9a77f0f29c4aa35053e726e52230b29114d75b6b57f1e605da803ff0218d6157",
+      "clock": 9,
+      "content": "a30101020903818467656e747269657345726f772d326377686f8163426561"
+    },
+    {
+      "name": "c6",
+      "note": "a suggestion",
+      "author": "41d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d7706095",
+      "id": "aff40ca5e1a22d53b17c73515864cdf2fd5434542149ebd5949fab2c3862f993",
+      "clock": 3,
+      "content": "a40101020303818467656e747269657345726f772d3265686f75727381040401"
+    },
+    {
+      "name": "c7",
+      "note": "a changeset of a device whose removal is learned late",
+      "author": "7523920b49b933579b1f5f050355ed1f1c16b12d2b8e0bb1d121ac3708097878",
+      "id": "542ad260fd84697c1ef6d8a01b74305fedf35494f0c8792a57b41071d4c97b49",
+      "clock": 3,
+      "content": "a30101020303818467656e747269657345726f772d326377686f8163446565"
+    },
+    {
+      "name": "c8",
+      "note": "row 1 inserted again, and the accept of c6, adopting its op",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "id": "80014dc05d656acf2805a13150b26d1dac08aea37f07ecfcb83cfdd82157c499",
+      "clock": 4,
+      "content": "a40101020403828467656e747269657345726f772d316081018467656e747269657345726f772d3265686f757273810405815820aff40ca5e1a22d53b17c73515864cdf2fd5434542149ebd5949fab2c3862f993"
+    }
+  ],
+  "admission": {
+    "admitted": [
+      "c1",
+      "c2",
+      "c3",
+      "c4",
+      "c6",
+      "c7",
+      "c8"
+    ],
+    "floor": 4,
+    "waiting": [
+      "c5"
+    ],
+    "waiting_class": "ClockAhead"
+  },
+  "writer_clock": {
+    "held": [
+      "c1",
+      "c2",
+      "c3",
+      "c4",
+      "c5",
+      "c6",
+      "c7",
+      "c8"
+    ],
+    "floor": 4,
+    "next_clock": 5,
+    "not": 10,
+    "why": "c5's clock 9 waits as ClockAhead and does not count"
+  },
+  "merge_orders": {
+    "accepted": [
+      "c1",
+      "c2",
+      "c3",
+      "c4",
+      "c5",
+      "c6",
+      "c8"
+    ],
+    "orders": [
+      [
+        "c1",
+        "c4",
+        "c7",
+        "c8",
+        "c5",
+        "c3",
+        "c6",
+        "c2"
+      ],
+      [
+        "c2",
+        "c6",
+        "c3",
+        "c5",
+        "c8",
+        "c7",
+        "c4",
+        "c1"
+      ],
+      [
+        "c8",
+        "c3",
+        "c6",
+        "c1",
+        "c4",
+        "c2",
+        "c5",
+        "c7"
+      ]
+    ],
+    "snapshot": "a30101020403818267656e7472696573828245726f772d318385608101045820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024582080014dc05d656acf2805a13150b26d1dac08aea37f07ecfcb83cfdd82157c4998565686f757273810902582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060955820a7369242812dda3b989e178210d96410c16edc5af6fdf307411c227f4a68515d856377686f8163416e6e015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024582003c57e52df1e35aef82b1606d49a5aaaad30f1f71a12ba18d4db6863844e74e98245726f772d32838560810102582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060955820a7369242812dda3b989e178210d96410c16edc5af6fdf307411c227f4a68515d8565686f7572738104045820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024582080014dc05d656acf2805a13150b26d1dac08aea37f07ecfcb83cfdd82157c499856377686f8162437902582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060955820a7369242812dda3b989e178210d96410c16edc5af6fdf307411c227f4a68515d",
+    "rows": {
+      "entries": {
+        "726f772d31": {
+          "hours": [
+            9
+          ],
+          "who": [
+            "Ann"
+          ]
+        },
+        "726f772d32": {
+          "hours": [
+            4
+          ],
+          "who": [
+            "Cy"
+          ]
+        }
+      }
+    }
+  },
+  "rebuilds": {
+    "with_removed_device": {
+      "snapshot": "a30101020403818267656e7472696573828245726f772d318385608101045820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024582080014dc05d656acf2805a13150b26d1dac08aea37f07ecfcb83cfdd82157c4998565686f757273810902582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060955820a7369242812dda3b989e178210d96410c16edc5af6fdf307411c227f4a68515d856377686f8163416e6e015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024582003c57e52df1e35aef82b1606d49a5aaaad30f1f71a12ba18d4db6863844e74e98245726f772d32838560810102582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060955820a7369242812dda3b989e178210d96410c16edc5af6fdf307411c227f4a68515d8565686f7572738104045820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024582080014dc05d656acf2805a13150b26d1dac08aea37f07ecfcb83cfdd82157c499856377686f81634465650358207523920b49b933579b1f5f050355ed1f1c16b12d2b8e0bb1d121ac37080978785820542ad260fd84697c1ef6d8a01b74305fedf35494f0c8792a57b41071d4c97b49",
+      "note": "c7 applied, before its writer's removal was learned; the snapshot under merge_orders is the rebuild without it"
+    },
+    "from_snapshot": {
+      "base_of": [
+        "c1",
+        "c2",
+        "c3"
+      ],
+      "base": "a30101020203818267656e7472696573828245726f772d318385608101015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024582003c57e52df1e35aef82b1606d49a5aaaad30f1f71a12ba18d4db6863844e74e98565686f757273810902582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060955820a7369242812dda3b989e178210d96410c16edc5af6fdf307411c227f4a68515d856377686f8163416e6e015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024582003c57e52df1e35aef82b1606d49a5aaaad30f1f71a12ba18d4db6863844e74e98245726f772d32828560810102582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060955820a7369242812dda3b989e178210d96410c16edc5af6fdf307411c227f4a68515d856377686f8162437902582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060955820a7369242812dda3b989e178210d96410c16edc5af6fdf307411c227f4a68515d",
+      "then_applied": [
+        "c4",
+        "c6",
+        "c8"
+      ],
+      "same_as_full": true
+    }
+  },
+  "history_free": "a30101020403818267656e7472696573828245726f772d318385608101045820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024582080014dc05d656acf2805a13150b26d1dac08aea37f07ecfcb83cfdd82157c4998565686f757273810902582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060955820a7369242812dda3b989e178210d96410c16edc5af6fdf307411c227f4a68515d856377686f8163416e6e015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024582003c57e52df1e35aef82b1606d49a5aaaad30f1f71a12ba18d4db6863844e74e98245726f772d32838560810102582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060955820a7369242812dda3b989e178210d96410c16edc5af6fdf307411c227f4a68515d8565686f7572738104045820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024582080014dc05d656acf2805a13150b26d1dac08aea37f07ecfcb83cfdd82157c499856377686f8162437902582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060955820a7369242812dda3b989e178210d96410c16edc5af6fdf307411c227f4a68515d",
+  "suggestions": {
+    "suggester_suggestion": {
+      "content": "a40101020303818467656e747269657345726f772d3265686f75727381040401",
+      "capabilities": [
+        [
+          "suggest",
+          1
+        ]
+      ],
+      "result": "accepted"
+    },
+    "open_without_accept": {
+      "left_out": "c8",
+      "snapshot": "a40101020403818267656e7472696573828245726f772d3183856080035820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac720245820060c266acbf3318a5f3d1b644344e391ecd0592d185f33eec29b063ff29f0bae8565686f757273810902582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060955820a7369242812dda3b989e178210d96410c16edc5af6fdf307411c227f4a68515d856377686f8163416e6e015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024582003c57e52df1e35aef82b1606d49a5aaaad30f1f71a12ba18d4db6863844e74e98245726f772d32828560810102582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060955820a7369242812dda3b989e178210d96410c16edc5af6fdf307411c227f4a68515d856377686f8162437902582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060955820a7369242812dda3b989e178210d96410c16edc5af6fdf307411c227f4a68515d0481835820aff40ca5e1a22d53b17c73515864cdf2fd5434542149ebd5949fab2c3862f993582041d3151e3faf03ca511cf4863e5b570380d4be516e594049b71a9499d77060955820a40101020303818467656e747269657345726f772d3265686f75727381040401"
+    }
+  },
+  "content_refusals": [
+    {
+      "name": "a cell twice",
+      "content": "a30101020103828467656e747269657345726f772d316377686f8161618467656e747269657345726f772d316377686f816162",
+      "capabilities": [],
+      "class": "Malformed"
+    },
+    {
+      "name": "a marker of [2]",
+      "content": "a30101020103818467656e747269657345726f772d31608102",
+      "capabilities": [],
+      "class": "Malformed"
+    },
+    {
+      "name": "an empty table name",
+      "content": "a3010102010381846045726f772d316377686f816161",
+      "capabilities": [],
+      "class": "Malformed"
+    },
+    {
+      "name": "a value of two items",
+      "content": "a30101020103818467656e747269657345726f772d316377686f8261616162",
+      "capabilities": [],
+      "class": "Malformed"
+    },
+    {
+      "name": "clock 0",
+      "content": "a30101020003818467656e747269657345726f772d316377686f816161",
+      "capabilities": [],
+      "class": "Malformed"
+    },
+    {
+      "name": "accepts in a suggestion",
+      "content": "a50101020103818467656e747269657345726f772d316377686f816161040105815820aff40ca5e1a22d53b17c73515864cdf2fd5434542149ebd5949fab2c3862f993",
+      "capabilities": [],
+      "class": "Malformed"
+    },
+    {
+      "name": "an unknown version, 2",
+      "content": "a3010202010380",
+      "capabilities": [],
+      "class": "UnknownContentVersion"
+    },
+    {
+      "name": "a suggester's plain changeset",
+      "content": "a30101020103818467656e747269657345726f772d316377686f816161",
+      "capabilities": [
+        [
+          "suggest",
+          1
+        ]
+      ],
+      "class": "CapabilityRefused"
+    },
+    {
+      "name": "a suggester's accept",
+      "content": "a40101020103818467656e747269657345726f772d316377686f81616105815820aff40ca5e1a22d53b17c73515864cdf2fd5434542149ebd5949fab2c3862f993",
+      "capabilities": [
+        [
+          "suggest",
+          1
+        ]
+      ],
+      "class": "CapabilityRefused"
+    }
+  ],
+  "compaction_checks": [
+    {
+      "writer": "a full writer",
+      "capabilities": [],
+      "adapter": "frasil:records",
+      "snapshot_unit": "accepted"
+    },
+    {
+      "writer": "a suggester",
+      "capabilities": [
+        [
+          "suggest",
+          1
+        ]
+      ],
+      "adapter": "frasil:records",
+      "snapshot_unit": "CapabilityRefused"
+    },
+    {
+      "writer": "a writer granted suggest with mode extends",
+      "capabilities": [
+        [
+          "suggest",
+          0
+        ]
+      ],
+      "adapter": "frasil:records",
+      "snapshot_unit": "accepted"
+    }
+  ],
+  "value_nesting": [
+    {
+      "name": "a value nested 8 deep",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101020103828467656e747269657345726f772d316081018467656e747269657345726f772d31647472656581818181818181818100",
+      "id": "03d35caeb844e14a1ef09b427beec66980b246cf3d13288af59f3c5af2d4a0ff",
+      "result": "accepted",
+      "state": "a30101020103818267656e7472696573818245726f772d318285608101015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024582003d35caeb844e14a1ef09b427beec66980b246cf3d13288af59f3c5af2d4a0ff85647472656581818181818181818100015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024582003d35caeb844e14a1ef09b427beec66980b246cf3d13288af59f3c5af2d4a0ff"
+    },
+    {
+      "name": "a value nested 9 deep",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101020103828467656e747269657345726f772d316081018467656e747269657345726f772d3164747265658181818181818181818100",
+      "result": "Malformed"
+    }
+  ],
+  "value_types": [
+    {
+      "name": "every type the records subset adds, in one changeset",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a301010201038b8467656e747269657345726f772d316081018467656e747269657345726f772d316a616e20696e746567657281078467656e747269657345726f772d316c6e65676174697665206f6e6581208467656e747269657345726f772d31652d325e3633813b7fffffffffffffff8467656e747269657345726f772d31652d325e3634813bffffffffffffffff8467656e747269657345726f772d316566616c736581f48467656e747269657345726f772d31647472756581f58467656e747269657345726f772d3163312e3581fb3ff80000000000008467656e747269657345726f772d316d6e65676174697665207a65726f81fb80000000000000008467656e747269657345726f772d3168696e66696e69747981fb7ff00000000000008467656e747269657345726f772d317561206c697374206f66206d697865642074797065738184fb3fd000000000000022f56178",
+      "id": "1517f8e2b73fad35550df8af3619200bd01a5f09ab49c0b54391264cd45cbaf9",
+      "result": "accepted",
+      "state": "a30101020103818267656e7472696573818245726f772d318b85608101015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458201517f8e2b73fad35550df8af3619200bd01a5f09ab49c0b54391264cd45cbaf985652d325e3633813b7fffffffffffffff015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458201517f8e2b73fad35550df8af3619200bd01a5f09ab49c0b54391264cd45cbaf985652d325e3634813bffffffffffffffff015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458201517f8e2b73fad35550df8af3619200bd01a5f09ab49c0b54391264cd45cbaf98563312e3581fb3ff8000000000000015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458201517f8e2b73fad35550df8af3619200bd01a5f09ab49c0b54391264cd45cbaf9857561206c697374206f66206d697865642074797065738184fb3fd000000000000022f56178015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458201517f8e2b73fad35550df8af3619200bd01a5f09ab49c0b54391264cd45cbaf9856a616e20696e74656765728107015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458201517f8e2b73fad35550df8af3619200bd01a5f09ab49c0b54391264cd45cbaf9856566616c736581f4015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458201517f8e2b73fad35550df8af3619200bd01a5f09ab49c0b54391264cd45cbaf98568696e66696e69747981fb7ff0000000000000015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458201517f8e2b73fad35550df8af3619200bd01a5f09ab49c0b54391264cd45cbaf9856c6e65676174697665206f6e658120015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458201517f8e2b73fad35550df8af3619200bd01a5f09ab49c0b54391264cd45cbaf9856d6e65676174697665207a65726f81fb8000000000000000015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458201517f8e2b73fad35550df8af3619200bd01a5f09ab49c0b54391264cd45cbaf985647472756581f5015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458201517f8e2b73fad35550df8af3619200bd01a5f09ab49c0b54391264cd45cbaf9"
+    },
+    {
+      "name": "a NaN",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101020103818467656e747269657345726f772d31617681fb7ff8000000000000",
+      "id": null,
+      "result": "Malformed",
+      "state": null
+    },
+    {
+      "name": "1.5 as a half-precision float",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101020103818467656e747269657345726f772d31617681f93e00",
+      "id": null,
+      "result": "Malformed",
+      "state": null
+    },
+    {
+      "name": "1.5 as a single-precision float",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101020103818467656e747269657345726f772d31617681fa3fc00000",
+      "id": null,
+      "result": "Malformed",
+      "state": null
+    },
+    {
+      "name": "null",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101020103818467656e747269657345726f772d31617681f6",
+      "id": null,
+      "result": "Malformed",
+      "state": null
+    },
+    {
+      "name": "undefined",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101020103818467656e747269657345726f772d31617681f7",
+      "id": null,
+      "result": "Malformed",
+      "state": null
+    },
+    {
+      "name": "the simple value 16",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101020103818467656e747269657345726f772d31617681f0",
+      "id": null,
+      "result": "Malformed",
+      "state": null
+    },
+    {
+      "name": "-1 in a head that is not the shortest",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101020103818467656e747269657345726f772d316176813800",
+      "id": null,
+      "result": "Malformed",
+      "state": null
+    },
+    {
+      "name": "a tag",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101020103818467656e747269657345726f772d31617681c100",
+      "id": null,
+      "result": "Malformed",
+      "state": null
+    },
+    {
+      "name": "a negative clock, outside a value",
+      "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+      "content": "a30101022003818467656e747269657345726f772d3161768100",
+      "id": null,
+      "result": "Malformed",
+      "state": null
+    }
+  ],
+  "change_times": {
+    "changesets": [
+      {
+        "name": "t1",
+        "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+        "id": "8be503e88e530466e1fa0ad86214bc00da4942d00ca26ac38a3573ed3e5fb84c",
+        "content": "a40101020103828467656e747269657345726f772d316081018467656e747269657345726f772d316377686f8163416e6e071a6553f100"
+      },
+      {
+        "name": "t2",
+        "author": "209aa5aa611ff7ada6a7824a851abe2b303094a867deb5a2bb80d79d33c5ff01",
+        "id": "073f626c386241d962037a6310f8387fb5623eed7ecff2b60b4acc948c75c548",
+        "content": "a30101020203818467656e747269657345726f772d316377686f8163426f62"
+      },
+      {
+        "name": "t3",
+        "author": "e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac72024",
+        "id": "f4b537b468709451c0bf469cfa7e050ed70694bc2833c65411f9c420bd366eea",
+        "content": "a40101020303818467656e747269657345726f772d31646e6f7465816178071a6553f164"
+      }
+    ],
+    "table": "entries",
+    "key": "726f772d31",
+    "cells": [
+      {
+        "column": "",
+        "written_by": "t1",
+        "time": 1700000000
+      },
+      {
+        "column": "who",
+        "written_by": "t2",
+        "time": null
+      },
+      {
+        "column": "note",
+        "written_by": "t3",
+        "time": 1700000100
+      }
+    ],
+    "last_change": {
+      "column": "note",
+      "by": "t3",
+      "time": 1700000100
+    },
+    "state": "a30101020303818267656e7472696573818245726f772d318386608101015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458208be503e88e530466e1fa0ad86214bc00da4942d00ca26ac38a3573ed3e5fb84c1a6553f10086646e6f7465816178035820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac720245820f4b537b468709451c0bf469cfa7e050ed70694bc2833c65411f9c420bd366eea1a6553f164856377686f8163426f62025820209aa5aa611ff7ada6a7824a851abe2b303094a867deb5a2bb80d79d33c5ff015820073f626c386241d962037a6310f8387fb5623eed7ecff2b60b4acc948c75c548",
+    "refusals": [
+      {
+        "name": "a time in text",
+        "content": "a40101020103818467656e747269657345726f772d316176810007636e6f77",
+        "class": "Malformed"
+      },
+      {
+        "name": "a negative time",
+        "content": "a40101020103818467656e747269657345726f772d31617681000720",
+        "class": "Malformed"
+      }
+    ],
+    "state_refusals": [
+      {
+        "name": "a cell of seven items",
+        "state": "a30101020103818267656e7472696573818245726f772d318187608101015820e352e109990274e4b6bc4193d42edc4d63cec42dcbd5b6ef1dabe6647ac7202458208be503e88e530466e1fa0ad86214bc00da4942d00ca26ac38a3573ed3e5fb84c1a6553f10000",
+        "class": "Malformed"
+      }
+    ]
+  }
+}

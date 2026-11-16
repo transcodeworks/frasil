@@ -1,0 +1,32 @@
+[package]
+name = "frasil-keys"
+description = "Frasil's key formats: rotations, derivations, bundles, wraps, links and sealed names. An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+# ext-invite-links.md: what an invite key's bundle holds. Off by default.
+ext-invite-links = []
+# ext-restricted-spaces.md: a restricted space's content key, the restricted
+# key reference and sealed names under it. Off by default.
+ext-restricted-spaces = []
+
+[dependencies]
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
+frasil-events = { path = "../frasil-events", version = "0.1.0" }
+zeroize.workspace = true
+
+[dev-dependencies]
+frasil-testkit = { path = "../frasil-testkit" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

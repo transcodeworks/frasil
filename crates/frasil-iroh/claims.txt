@@ -1,0 +1,3 @@
+# The iroh binding claims no family of its own. It runs transport.json's
+# `framing` (tests/framing.rs) and `local_network` (tests/local_network.rs)
+# again on real sockets; frasil-transport claims both.

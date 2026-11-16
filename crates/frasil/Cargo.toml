@@ -1,0 +1,239 @@
+[package]
+name = "frasil"
+description = "Frasil for applications: devices that share spaces, online and offline."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["sqlite", "iroh", "server", "adapter-loro", "adapter-records", "adapter-blobs"]
+# The SQLite store (at-rest.md), through frasil-store's backend.
+sqlite = ["frasil-store/sqlite"]
+# Member connections, local discovery and nearby pairing over the iroh
+# binding (transport.md, section 3.16).
+iroh = ["dep:frasil-iroh"]
+# Connections to always-on peers over the server binding's WebSocket, and
+# its object routes over HTTP (transport.md, section 3.15).
+server = ["dep:tokio-tungstenite", "dep:futures-util", "dep:reqwest", "dep:rustls", "dep:serde_json"]
+# The server binding over a WebSocket and HTTP the application supplies,
+# with its tasks and timers (`peer::socket`): a browser's, through
+# frasil-wasm. It opens no socket and needs no tokio runtime.
+server-socket = []
+# A device in a browser or a web worker, from a Rust application compiled
+# to wasm32-unknown-unknown (`frasil::browser`): the browser's tasks and
+# timers, its clocks, the server binding over its WebSocket and `fetch`,
+# and `Storage::indexed_db`. Elsewhere it adds nothing but `server-socket`.
+browser = ["server-socket", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
+# The built-in adapters (adapter-loro.md, adapter-records.md,
+# adapter-blobs.md), which `AdapterRegistry::with_builtins` registers.
+adapter-loro = ["dep:frasil-adapter-loro", "dep:loro"]
+adapter-records = ["dep:frasil-adapter-records"]
+adapter-blobs = ["dep:frasil-adapter-blobs", "adapter-records"]
+# The ephemeral channel (ext-ephemeral.md), over member connections and
+# through always-on peers.
+ephemeral = ["dep:frasil-ephemeral"]
+# Signed application requests (ext-app-requests.md): a device signs, an
+# application's server verifies.
+ext-app-requests = ["dep:frasil-app-requests"]
+# File versions (ext-file-versions.md): a put says what it supersedes, a
+# compactor carries it forward, and streams compact on a cadence of their own.
+ext-file-versions = ["adapter-blobs", "frasil-adapter-blobs?/ext-file-versions"]
+# Library tickets (ext-libraries.md): a space attached to a library.
+ext-libraries = ["dep:frasil-libraries"]
+# Deposit tokens (ext-deposit-tokens.md): a device learns each peer's
+# deposit keys, draws tokens ahead of need on a grant the application hands
+# it or as a writer of a space the peer hosts, keeps them sealed at rest,
+# and pays with one for each deposit in a device mailbox there.
+ext-deposit-tokens = [
+    "ext-libraries",
+    "dep:frasil-deposit-tokens",
+    "frasil-libraries/ext-deposit-tokens",
+    "frasil-transport/ext-deposit-tokens",
+]
+# The drive extension (ext-drive.md): a file tree any application reads.
+ext-drive = ["adapter-loro", "dep:frasil-drive"]
+# Invite links (ext-invite-links.md): an administrator's link, its drop at
+# peers, the claimant's walk, and the administering devices' closes and
+# revocations.
+ext-invite-links = [
+    "frasil-admission/ext-invite-links",
+    "frasil-keys/ext-invite-links",
+    "frasil-peers/ext-invite-links",
+    "frasil-space/ext-invite-links",
+    "frasil-store/ext-invite-links",
+    "frasil-transport/ext-invite-links",
+]
+# The recovery agent (ext-recovery-agent.md): each space's waiting
+# decisions, kept at rest; the relay of an agent's adds; the person's veto.
+ext-recovery-agent = ["frasil-identity/ext-recovery-agent", "frasil-space/ext-recovery-agent"]
+# Restricted spaces (ext-restricted-spaces.md): a private part of a space
+# whose members must reach its parent, its keys derived from the parent's;
+# the parent's removals mirrored; documents moved into it, with their late
+# writes re-applied.
+ext-restricted-spaces = [
+    "frasil-keys/ext-restricted-spaces",
+    "frasil-space/ext-restricted-spaces",
+    "frasil-transport/ext-restricted-spaces",
+    "frasil-units/ext-restricted-spaces",
+    "frasil-ephemeral?/ext-restricted-spaces",
+]
+# Guests (ext-guests.md): the guest preset, sessions ended in one event
+# and by their expiry, leave requests, the writer's decision, and nothing
+# at rest.
+ext-guests = [
+    "frasil-admission/ext-guests",
+    "frasil-space/ext-guests",
+    "frasil-store/ext-guests",
+    "frasil-transport/ext-guests",
+    "frasil-units/ext-guests",
+]
+# Announced next endpoints (ext-next-endpoints.md): each member endpoint
+# key is announced to the members a device is connected to before the
+# device takes it, so members with no always-on peer meet again after both
+# rotate.
+ext-next-endpoints = ["iroh", "frasil-transport/ext-next-endpoints"]
+# Partial replicas (units.md, "Partial replicas"): `Options::partial`, a
+# device that holds each space's frame and the streams it opens.
+partial-replicas = []
+# Space files (ext-space-files.md): a space exported to a file with a way
+# in, appended to, and imported as a member, a claimant or a reader by
+# keys. Invites in a file need `ext-invite-links`.
+space-files = ["dep:frasil-space-file"]
+# The index (`frasil::index`): a typed local SQLite cache over many spaces,
+# its tables plain structs with `#[derive(Table)]`, fed by the Records of
+# spaces of a kind, queried with SQL or live. Encrypted at rest: SQLCipher
+# natively, SQLite3 Multiple Ciphers on wasm32.
+index = [
+    "adapter-loro",
+    "adapter-records",
+    "dep:frasil-index-derive",
+    "dep:rusqlite",
+    "dep:sha2",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:getrandom",
+    "dep:sqlite-wasm-rs",
+    "dep:sqlite-wasm-vfs",
+    "dep:js-sys",
+]
+# Typed Diesel queries over the index, and a Diesel `table!` per table.
+index-diesel = ["index", "dep:diesel", "frasil-index-derive?/diesel"]
+# SQLCipher's crypto from a vendored OpenSSL, for native targets without a
+# system crypto library SQLCipher uses (Android, Linux, Windows). Apple
+# targets use CommonCrypto and need nothing. Native targets only: wasm32
+# does not build with it, since it asks sqlite-wasm-rs for SQLCipher beside
+# SQLite3 Multiple Ciphers.
+index-vendored-openssl = ["index", "rusqlite?/bundled-sqlcipher-vendored-openssl"]
+# Every binding, adapter and extension this crate implements.
+p1-full = ["sqlite", "iroh", "server", "server-socket", "browser", "ephemeral", "adapter-loro", "adapter-records", "adapter-blobs", "ext-invite-links", "ext-recovery-agent", "ext-restricted-spaces", "ext-guests", "ext-next-endpoints", "ext-app-requests", "ext-libraries", "ext-deposit-tokens", "ext-drive", "ext-file-versions", "partial-replicas", "space-files", "index", "index-diesel"]
+
+[dependencies]
+frasil-adapter = { path = "../frasil-adapter", version = "0.1.0" }
+frasil-admission = { path = "../frasil-admission", version = "0.1.0" }
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
+frasil-events = { path = "../frasil-events", version = "0.1.0" }
+frasil-identity = { path = "../frasil-identity", version = "0.1.0" }
+frasil-keys = { path = "../frasil-keys", version = "0.1.0" }
+frasil-peers = { path = "../frasil-peers", version = "0.1.0" }
+frasil-space = { path = "../frasil-space", version = "0.1.0" }
+frasil-store = { path = "../frasil-store", version = "0.1.0", default-features = false }
+frasil-transport = { path = "../frasil-transport", version = "0.1.0" }
+frasil-units = { path = "../frasil-units", version = "0.1.0" }
+frasil-adapter-loro = { path = "../frasil-adapter-loro", version = "0.1.0", optional = true }
+frasil-adapter-records = { path = "../frasil-adapter-records", version = "0.1.0", optional = true }
+frasil-adapter-blobs = { path = "../frasil-adapter-blobs", version = "0.1.0", optional = true }
+frasil-iroh = { path = "../frasil-iroh", version = "0.1.0", optional = true }
+frasil-ephemeral = { path = "../frasil-ephemeral", version = "0.1.0", optional = true }
+frasil-app-requests = { path = "../frasil-app-requests", version = "0.1.0", optional = true }
+frasil-libraries = { path = "../frasil-libraries", version = "0.1.0", optional = true }
+frasil-deposit-tokens = { path = "../frasil-deposit-tokens", version = "0.1.0", optional = true }
+frasil-drive = { path = "../frasil-drive", version = "0.1.0", optional = true }
+frasil-space-file = { path = "../frasil-space-file", version = "0.1.0", optional = true }
+loro = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true, features = ["sink"] }
+reqwest = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+zeroize.workspace = true
+# The index's.
+frasil-index-derive = { path = "../frasil-index-derive", version = "0.1.0", optional = true }
+serde = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+
+# The index's SQLite: SQLCipher natively.
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+rusqlite = { workspace = true, optional = true, features = ["bundled-sqlcipher", "hooks"] }
+getrandom = { workspace = true, optional = true, features = ["std"] }
+diesel = { workspace = true, optional = true, features = ["sqlite"] }
+
+# The `browser` feature's, and the index's, on the JavaScript wasm target
+# only: the index's SQLite is sqlite-wasm-rs with SQLite3 Multiple Ciphers.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+rusqlite = { workspace = true, optional = true, features = ["ffi-sqlite-wasm-rs", "hooks"] }
+sqlite-wasm-rs = { workspace = true, optional = true, features = ["sqlite3mc", "wasm-bindgen"] }
+sqlite-wasm-vfs = { workspace = true, optional = true, features = ["sahpool"] }
+getrandom = { workspace = true, optional = true, features = ["wasm_js"] }
+diesel = { workspace = true, optional = true, features = ["sqlite"] }
+js-sys = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true, features = ["BinaryType", "CloseEvent", "DomException", "DomStringList", "Event", "Headers", "IdbDatabase", "IdbFactory", "IdbKeyRange", "IdbObjectStore", "IdbOpenDbRequest", "IdbRequest", "IdbTransaction", "IdbTransactionMode", "IdbVersionChangeEvent", "MessageEvent", "Request", "RequestInit", "RequestRedirect", "Response", "WebSocket"] }
+
+# test-util: tests that measure Frasil's own timers run on tokio's paused
+# clock. Native only: wasm32 has no multi-threaded runtime.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "test-util", "time"] }
+# The index's Diesel test.
+diesel = { workspace = true, features = ["sqlite"] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+js-sys.workspace = true
+wasm-bindgen-test.workspace = true
+
+[[test]]
+name = "browser"
+required-features = ["browser"]
+
+[[test]]
+name = "browser_worker"
+required-features = ["browser"]
+
+[[test]]
+name = "browser_deposit_tokens"
+required-features = ["browser", "ext-deposit-tokens"]
+
+[dev-dependencies]
+frasil-testkit = { path = "../frasil-testkit" }
+proptest.workspace = true
+serde_json.workspace = true
+
+[[test]]
+name = "deposit_tokens"
+required-features = ["ext-deposit-tokens", "server-socket"]
+
+[[test]]
+name = "collecting"
+required-features = ["server-socket"]
+
+[[test]]
+name = "index"
+required-features = ["index", "iroh"]
+
+[[test]]
+name = "index_diesel"
+required-features = ["index-diesel"]
+
+[[example]]
+name = "shared_note"
+required-features = ["server", "iroh", "adapter-loro"]
+
+[lints]
+workspace = true

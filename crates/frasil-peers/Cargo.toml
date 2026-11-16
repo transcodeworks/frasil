@@ -1,0 +1,32 @@
+[package]
+name = "frasil-peers"
+description = "The rules of Frasil's always-on peers that replicas also run. An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+# ext-file-versions.md: listings, heads, depth and retention.
+ext-file-versions = []
+# ext-invite-links.md: a peer's invite drops. Off by default.
+ext-invite-links = []
+
+[dependencies]
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
+frasil-events = { path = "../frasil-events", version = "0.1.0" }
+frasil-keys = { path = "../frasil-keys", version = "0.1.0" }
+frasil-resolve = { path = "../frasil-resolve", version = "0.1.0" }
+zeroize.workspace = true
+
+[dev-dependencies]
+frasil-testkit = { path = "../frasil-testkit" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+{
+  "name": "frasil",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.10.0",
+  "description": "pnpm workspace root for Frasil's JavaScript packages.",
+  "scripts": {
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14"
+  }
+}

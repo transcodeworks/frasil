@@ -1,0 +1,27 @@
+name: Feature or specification proposal
+description: A new capability, an API change, or a change to the protocol.
+labels: [proposal]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and why Frasil makes it hard today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: The proposal
+      description: The behaviour you want. For a protocol change, name the specification documents and sections it touches, and whether it fits as an extension.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and compatibility
+      description: What it changes about what a peer, a member or a former member can see or do, and what older replicas do with it.

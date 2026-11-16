@@ -1,0 +1,25 @@
+[package]
+name = "frasil-space-file"
+description = "Frasil's space files: one space in a file, with a way in (ext-space-files.md). An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+frasil-adapter = { path = "../frasil-adapter", version = "0.1.0" }
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
+frasil-events = { path = "../frasil-events", version = "0.1.0" }
+zeroize.workspace = true
+
+[dev-dependencies]
+frasil-testkit = { path = "../frasil-testkit" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

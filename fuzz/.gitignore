@@ -1,0 +1,6 @@
+# Everything a fuzzing run writes. The seed corpora in corpus/ are checked in;
+# a run grows its own corpus in work/ and saves crashes in artifacts/.
+target/
+work/
+artifacts/
+coverage/

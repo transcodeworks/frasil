@@ -1,0 +1,14 @@
+.git
+target
+.env
+.env.*
+**/target
+**/node_modules
+**/dist
+frasil-data
+**/.venv
+docs/spec/reference/.cache
+fuzz/work
+fuzz/artifacts
+apps/relay/fuzz/work
+apps/relay/fuzz/artifacts

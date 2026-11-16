@@ -1,0 +1,1271 @@
+{
+  "specification": "overview.md",
+  "units": "seconds",
+  "timers": [
+    {
+      "name": "admission_code_lifetime",
+      "bounds": "an admission code request",
+      "default": 900,
+      "minimum": 900,
+      "maximum": 900,
+      "set_by": "protocol",
+      "counted": "wall, the joiner's clock",
+      "in": [
+        "admission.md"
+      ]
+    },
+    {
+      "name": "admission_code_skew",
+      "bounds": "an admission code request",
+      "default": 60,
+      "minimum": 60,
+      "maximum": 60,
+      "set_by": "protocol",
+      "counted": "wall",
+      "in": [
+        "admission.md"
+      ]
+    },
+    {
+      "name": "exchange_mailbox_lifetime",
+      "bounds": "an exchange mailbox",
+      "default": null,
+      "minimum": null,
+      "maximum": 1020,
+      "set_by": "the peer",
+      "counted": "the peer's timeline",
+      "in": [
+        "transport.md"
+      ],
+      "default_text": "expires_at + 60; at most 1,020 after the request"
+    },
+    {
+      "name": "gap_key_timeout",
+      "bounds": "a restored member's gap keys; keeping a refused unit's content; settling a snapshot; a replica dropping erased content without stability",
+      "default": 604800,
+      "minimum": 3600,
+      "maximum": 7776000,
+      "set_by": "space policy",
+      "counted": "lower, from each holder's first sight of the restoring merge, the refusing event, the snapshot or the erasure",
+      "in": [
+        "keys.md",
+        "roster.md",
+        "units.md",
+        "peers.md"
+      ]
+    },
+    {
+      "name": "rotation_step",
+      "bounds": "the cascade delay, per rank",
+      "default": 2,
+      "minimum": 1,
+      "maximum": 10,
+      "set_by": "the implementation",
+      "counted": "lower, from first sight of the trigger",
+      "in": [
+        "keys.md"
+      ]
+    },
+    {
+      "name": "rotation_rank_cap",
+      "bounds": "the highest rank the delay counts",
+      "default": 63,
+      "minimum": 63,
+      "maximum": 63,
+      "set_by": "protocol",
+      "counted": null,
+      "in": [
+        "keys.md"
+      ]
+    },
+    {
+      "name": "anchor_interval",
+      "bounds": "anchors",
+      "default": 86400,
+      "minimum": 3600,
+      "maximum": 604800,
+      "set_by": "the implementation",
+      "counted": "lower, from the device's last anchor in the space",
+      "in": [
+        "crypto.md"
+      ]
+    },
+    {
+      "name": "replica_release_retention",
+      "bounds": "release at a replica",
+      "default": 2592000,
+      "minimum": 2592000,
+      "maximum": null,
+      "set_by": "the application",
+      "counted": "lower, from first sight of the release",
+      "in": [
+        "units.md"
+      ]
+    },
+    {
+      "name": "erasure_timeout",
+      "bounds": "erasure, credentials requests, reclaiming a release and collection, without stability at the peer",
+      "default": 604800,
+      "minimum": 3600,
+      "maximum": 7776000,
+      "set_by": "the operator",
+      "counted": "lower, the peer's, from acceptance",
+      "in": [
+        "peers.md"
+      ]
+    },
+    {
+      "name": "release_retention",
+      "bounds": "release at a peer",
+      "default": 2592000,
+      "minimum": 0,
+      "maximum": 31536000,
+      "set_by": "the operator",
+      "counted": "lower, the peer's, from acceptance",
+      "in": [
+        "peers.md"
+      ]
+    },
+    {
+      "name": "orphan_grace",
+      "bounds": "an object no unit references",
+      "default": 86400,
+      "minimum": 3600,
+      "maximum": 2592000,
+      "set_by": "the operator",
+      "counted": "lower, the peer's, from first sight of the object",
+      "in": [
+        "peers.md"
+      ]
+    },
+    {
+      "name": "file_version_retention",
+      "bounds": "an old version of a file, superseded at every listing",
+      "default": 604800,
+      "minimum": 0,
+      "maximum": 31536000,
+      "set_by": "the operator",
+      "counted": "lower, the peer's, from first sight of the earliest superseding unit",
+      "in": [
+        "ext-file-versions.md"
+      ]
+    },
+    {
+      "name": "version_compaction_interval",
+      "bounds": "compacting a Blobs stream whose units since its last snapshot carry supersessions",
+      "default": 86400,
+      "minimum": 3600,
+      "maximum": 604800,
+      "set_by": "the implementation",
+      "counted": "lower, from the client's first sight of the first such unit",
+      "in": [
+        "ext-file-versions.md"
+      ]
+    },
+    {
+      "name": "handshake_deadline",
+      "bounds": "a handshake, to the first Admit or refusal",
+      "default": 10,
+      "minimum": 10,
+      "maximum": 10,
+      "set_by": "protocol",
+      "counted": "monotonic",
+      "in": [
+        "transport.md"
+      ]
+    },
+    {
+      "name": "probation",
+      "bounds": "an unknown member after a proven key state",
+      "default": 30,
+      "minimum": 30,
+      "maximum": 30,
+      "set_by": "protocol",
+      "counted": "monotonic",
+      "in": [
+        "transport.md"
+      ],
+      "default_text": "30, and 4,096 events"
+    },
+    {
+      "name": "endpoint_rotation",
+      "bounds": "a device's member endpoint key",
+      "default": 86400,
+      "minimum": null,
+      "maximum": 86400,
+      "set_by": "the implementation",
+      "counted": "the device's timeline",
+      "in": [
+        "transport.md"
+      ],
+      "default_text": "24 hours, and at each new network"
+    },
+    {
+      "name": "gossip_interval",
+      "bounds": "head gossip and member addresses, per attach",
+      "default": 5,
+      "minimum": 5,
+      "maximum": null,
+      "set_by": "the implementation",
+      "counted": "monotonic",
+      "in": [
+        "transport.md"
+      ]
+    },
+    {
+      "name": "withholding_grace",
+      "bounds": "a peer's Missing for a head statement's heads before it shows withholding",
+      "default": 300,
+      "minimum": 60,
+      "maximum": 3600,
+      "set_by": "the implementation",
+      "counted": "monotonic, from the peer's first Missing for them",
+      "in": [
+        "units.md"
+      ]
+    },
+    {
+      "name": "present_retry",
+      "bounds": "presenting a refused read credential again",
+      "default": 1,
+      "minimum": 1,
+      "maximum": 30,
+      "set_by": "the implementation",
+      "counted": "monotonic",
+      "in": [
+        "transport.md"
+      ]
+    },
+    {
+      "name": "reconnect_wait",
+      "bounds": "the random wait before the first attempt after a reconnect close",
+      "default": 5,
+      "minimum": 5,
+      "maximum": 5,
+      "set_by": "protocol",
+      "counted": "monotonic",
+      "in": [
+        "transport.md"
+      ]
+    },
+    {
+      "name": "reconnect_wait_cap",
+      "bounds": "the bound of that wait, doubled after each failed attempt",
+      "default": 60,
+      "minimum": 60,
+      "maximum": 60,
+      "set_by": "protocol",
+      "counted": "monotonic",
+      "in": [
+        "transport.md"
+      ]
+    },
+    {
+      "name": "reconnect_drain",
+      "bounds": "a stopping peer's wait for an import or a pending create before it drops the connection",
+      "default": 60,
+      "minimum": 0,
+      "maximum": 600,
+      "set_by": "the operator",
+      "counted": "monotonic",
+      "in": [
+        "transport.md"
+      ]
+    },
+    {
+      "name": "pairing_deadline",
+      "bounds": "nearby pairing",
+      "default": 90,
+      "minimum": 90,
+      "maximum": 90,
+      "set_by": "protocol",
+      "counted": "monotonic",
+      "in": [
+        "transport.md"
+      ]
+    },
+    {
+      "name": "mailbox_retention",
+      "bounds": "a person's or a device's mailbox",
+      "default": null,
+      "minimum": null,
+      "maximum": 2592000,
+      "set_by": "the operator",
+      "counted": "the peer's timeline",
+      "in": [
+        "transport.md"
+      ],
+      "default_text": "the operator's"
+    },
+    {
+      "name": "uncollected_retention",
+      "bounds": "an item of a device mailbox that is not claimed",
+      "default": 259200,
+      "minimum": 3600,
+      "maximum": 2592000,
+      "set_by": "the operator",
+      "counted": "the peer's timeline, from the deposit",
+      "in": [
+        "transport.md"
+      ]
+    },
+    {
+      "name": "link_lifetime",
+      "bounds": "an invite, ended by a revocation",
+      "default": 604800,
+      "minimum": 900,
+      "maximum": 604800,
+      "set_by": "the inviter's client",
+      "counted": "wall, the inviter's clock; lower, from each administering device's first sight, for the maximum",
+      "in": [
+        "ext-invite-links.md"
+      ]
+    },
+    {
+      "name": "session_lifetime",
+      "bounds": "a guest session, ended by a removal",
+      "default": null,
+      "minimum": 900,
+      "maximum": 2592000,
+      "set_by": "the granter's client",
+      "counted": "as link_lifetime",
+      "in": [
+        "ext-guests.md"
+      ],
+      "default_text": "none"
+    },
+    {
+      "name": "bounded_window",
+      "bounds": "writing without hearing from another member",
+      "default": null,
+      "minimum": 3600,
+      "maximum": 7776000,
+      "set_by": "space policy",
+      "counted": "upper, from the signing of this device's newest event another member has followed",
+      "in": [
+        "ext-guests.md"
+      ],
+      "default_text": "off"
+    },
+    {
+      "name": "online_freshness",
+      "bounds": "writing without a recent sync with a peer of the space",
+      "default": null,
+      "minimum": 30,
+      "maximum": 3600,
+      "set_by": "space policy",
+      "counted": "upper, from the last completed sync",
+      "in": [
+        "ext-guests.md"
+      ],
+      "default_text": "off; 300 when on"
+    },
+    {
+      "name": "agent_waiting_period",
+      "bounds": "trusting a device an agent added",
+      "default": 259200,
+      "minimum": 259200,
+      "maximum": 2592000,
+      "set_by": "space policy",
+      "counted": "lower, from each verifier's first sight of the add",
+      "in": [
+        "ext-recovery-agent.md"
+      ]
+    },
+    {
+      "name": "ephemeral_send_deadline",
+      "bounds": "an ephemeral frame in its sender's queue",
+      "default": 2,
+      "minimum": 2,
+      "maximum": 2,
+      "set_by": "protocol",
+      "counted": "monotonic",
+      "in": [
+        "ext-ephemeral.md"
+      ]
+    },
+    {
+      "name": "ephemeral_key_wait",
+      "bounds": "ephemeral frames held for a rotation the receiver lacks",
+      "default": 5,
+      "minimum": 5,
+      "maximum": 5,
+      "set_by": "protocol",
+      "counted": "monotonic",
+      "in": [
+        "ext-ephemeral.md"
+      ]
+    },
+    {
+      "name": "ticket_lifetime",
+      "bounds": "a library ticket",
+      "default": null,
+      "minimum": null,
+      "maximum": 86400,
+      "set_by": "the issuer",
+      "counted": "wall, the peer's clock",
+      "in": [
+        "ext-libraries.md"
+      ],
+      "default_text": "the issuer's"
+    },
+    {
+      "name": "ticket_skew",
+      "bounds": "a library ticket",
+      "default": 60,
+      "minimum": 60,
+      "maximum": 60,
+      "set_by": "protocol",
+      "counted": "wall",
+      "in": [
+        "ext-libraries.md"
+      ]
+    },
+    {
+      "name": "detached_grace",
+      "bounds": "a detached space's data at a peer",
+      "default": 2592000,
+      "minimum": 86400,
+      "maximum": 31536000,
+      "set_by": "the operator",
+      "counted": "lower, the peer's, from detachment",
+      "in": [
+        "ext-libraries.md"
+      ]
+    },
+    {
+      "name": "token_period",
+      "bounds": "a deposit key's issuing, then its accepting only",
+      "default": 604800,
+      "minimum": 86400,
+      "maximum": 2592000,
+      "set_by": "the operator",
+      "counted": "upper, the keys' shard's, from the key's start: issuing for one period, then accepting only until two have passed",
+      "in": [
+        "ext-deposit-tokens.md"
+      ]
+    },
+    {
+      "name": "allowance_window",
+      "bounds": "a library's deposit allowance",
+      "default": 86400,
+      "minimum": 86400,
+      "maximum": 86400,
+      "set_by": "protocol",
+      "counted": "lower, the library's, from the window's first draw",
+      "in": [
+        "ext-deposit-tokens.md"
+      ]
+    },
+    {
+      "name": "signed_request_lifetime",
+      "bounds": "a device-signed request",
+      "default": 60,
+      "minimum": 60,
+      "maximum": 60,
+      "set_by": "protocol",
+      "counted": "wall, the signer's clock",
+      "in": [
+        "ext-app-requests.md"
+      ]
+    },
+    {
+      "name": "signed_request_skew",
+      "bounds": "a device-signed request",
+      "default": 60,
+      "minimum": 60,
+      "maximum": 60,
+      "set_by": "protocol",
+      "counted": "wall",
+      "in": [
+        "ext-app-requests.md"
+      ]
+    }
+  ],
+  "online_freshness_when_on": 300,
+  "policy_values": [
+    "gap_key_timeout",
+    "bounded_window",
+    "online_freshness",
+    "agent_waiting_period"
+  ],
+  "timelines": [
+    {
+      "description": "a run with no jumps",
+      "steps": [
+        {
+          "action": "start",
+          "wall": 1790000000,
+          "mono": 50
+        },
+        {
+          "action": "read",
+          "mono": 50,
+          "wall": 1790000000,
+          "reading": {
+            "timeline": 0,
+            "wall": 1790000000,
+            "run": 1
+          }
+        },
+        {
+          "action": "read",
+          "mono": 110,
+          "wall": 1790000060,
+          "reading": {
+            "timeline": 60,
+            "wall": 1790000060,
+            "run": 1
+          }
+        },
+        {
+          "action": "read",
+          "mono": 3650,
+          "wall": 1790003600,
+          "reading": {
+            "timeline": 3600,
+            "wall": 1790003600,
+            "run": 1
+          }
+        }
+      ]
+    },
+    {
+      "description": "the wall clock jumps forward an hour while the device runs: not counted",
+      "steps": [
+        {
+          "action": "start",
+          "wall": 1790000000,
+          "mono": 0
+        },
+        {
+          "action": "read",
+          "mono": 10,
+          "wall": 1790000010,
+          "reading": {
+            "timeline": 10,
+            "wall": 1790000010,
+            "run": 1
+          }
+        },
+        {
+          "action": "read",
+          "mono": 20,
+          "wall": 1790003620,
+          "reading": {
+            "timeline": 20,
+            "wall": 1790003620,
+            "run": 1
+          }
+        },
+        {
+          "action": "read",
+          "mono": 30,
+          "wall": 1790003630,
+          "reading": {
+            "timeline": 30,
+            "wall": 1790003630,
+            "run": 1
+          }
+        }
+      ]
+    },
+    {
+      "description": "the wall clock jumps back an hour while the device runs: not counted",
+      "steps": [
+        {
+          "action": "start",
+          "wall": 1790000000,
+          "mono": 0
+        },
+        {
+          "action": "read",
+          "mono": 10,
+          "wall": 1790000010,
+          "reading": {
+            "timeline": 10,
+            "wall": 1790000010,
+            "run": 1
+          }
+        },
+        {
+          "action": "read",
+          "mono": 20,
+          "wall": 1789996420,
+          "reading": {
+            "timeline": 20,
+            "wall": 1789996420,
+            "run": 1
+          }
+        },
+        {
+          "action": "read",
+          "mono": 30,
+          "wall": 1789996430,
+          "reading": {
+            "timeline": 30,
+            "wall": 1789996430,
+            "run": 1
+          }
+        }
+      ]
+    },
+    {
+      "description": "a restart after a day switched off: the day counts",
+      "steps": [
+        {
+          "action": "start",
+          "wall": 1790000000,
+          "mono": 0
+        },
+        {
+          "action": "read",
+          "mono": 100,
+          "wall": 1790000100,
+          "reading": {
+            "timeline": 100,
+            "wall": 1790000100,
+            "run": 1
+          }
+        },
+        {
+          "action": "start",
+          "wall": 1790086500,
+          "mono": 7
+        },
+        {
+          "action": "read",
+          "mono": 7,
+          "wall": 1790086500,
+          "reading": {
+            "timeline": 86500,
+            "wall": 1790086500,
+            "run": 2
+          }
+        },
+        {
+          "action": "read",
+          "mono": 67,
+          "wall": 1790086560,
+          "reading": {
+            "timeline": 86560,
+            "wall": 1790086560,
+            "run": 2
+          }
+        }
+      ]
+    },
+    {
+      "description": "a restart after the clock was set back while off: the time off counts as zero",
+      "steps": [
+        {
+          "action": "start",
+          "wall": 1790000000,
+          "mono": 0
+        },
+        {
+          "action": "read",
+          "mono": 100,
+          "wall": 1790000100,
+          "reading": {
+            "timeline": 100,
+            "wall": 1790000100,
+            "run": 1
+          }
+        },
+        {
+          "action": "start",
+          "wall": 1789992800,
+          "mono": 3
+        },
+        {
+          "action": "read",
+          "mono": 3,
+          "wall": 1789992800,
+          "reading": {
+            "timeline": 100,
+            "wall": 1789992800,
+            "run": 2
+          }
+        },
+        {
+          "action": "read",
+          "mono": 63,
+          "wall": 1789992860,
+          "reading": {
+            "timeline": 160,
+            "wall": 1789992860,
+            "run": 2
+          }
+        }
+      ]
+    },
+    {
+      "description": "a jump while running, then a restart: only the time off counts",
+      "steps": [
+        {
+          "action": "start",
+          "wall": 1790000000,
+          "mono": 0
+        },
+        {
+          "action": "read",
+          "mono": 100,
+          "wall": 1790000100,
+          "reading": {
+            "timeline": 100,
+            "wall": 1790000100,
+            "run": 1
+          }
+        },
+        {
+          "action": "read",
+          "mono": 110,
+          "wall": 1790003710,
+          "reading": {
+            "timeline": 110,
+            "wall": 1790003710,
+            "run": 1
+          }
+        },
+        {
+          "action": "start",
+          "wall": 1790004310,
+          "mono": 0
+        },
+        {
+          "action": "read",
+          "mono": 0,
+          "wall": 1790004310,
+          "reading": {
+            "timeline": 710,
+            "wall": 1790004310,
+            "run": 2
+          }
+        }
+      ]
+    },
+    {
+      "description": "a device whose wall clock is not known (no battery-backed clock, no time sync)",
+      "steps": [
+        {
+          "action": "start",
+          "wall": null,
+          "mono": 0
+        },
+        {
+          "action": "read",
+          "mono": 100,
+          "wall": null,
+          "reading": {
+            "timeline": 100,
+            "wall": null,
+            "run": 1
+          }
+        },
+        {
+          "action": "start",
+          "wall": null,
+          "mono": 0
+        },
+        {
+          "action": "read",
+          "mono": 0,
+          "wall": null,
+          "reading": {
+            "timeline": 100,
+            "wall": null,
+            "run": 2
+          }
+        },
+        {
+          "action": "read",
+          "mono": 50,
+          "wall": null,
+          "reading": {
+            "timeline": 150,
+            "wall": null,
+            "run": 2
+          }
+        }
+      ]
+    },
+    {
+      "description": "a suspend that stops the monotonic clock is a resume",
+      "steps": [
+        {
+          "action": "start",
+          "wall": 1790000000,
+          "mono": 0
+        },
+        {
+          "action": "read",
+          "mono": 100,
+          "wall": 1790000100,
+          "reading": {
+            "timeline": 100,
+            "wall": 1790000100,
+            "run": 1
+          }
+        },
+        {
+          "action": "resume",
+          "wall": 1790003700,
+          "mono": 100
+        },
+        {
+          "action": "read",
+          "mono": 100,
+          "wall": 1790003700,
+          "reading": {
+            "timeline": 3700,
+            "wall": 1790003700,
+            "run": 2
+          }
+        },
+        {
+          "action": "read",
+          "mono": 160,
+          "wall": 1790003760,
+          "reading": {
+            "timeline": 3760,
+            "wall": 1790003760,
+            "run": 2
+          }
+        }
+      ]
+    },
+    {
+      "description": "a wall clock that becomes known while the device runs is read from then on",
+      "steps": [
+        {
+          "action": "start",
+          "wall": null,
+          "mono": 0
+        },
+        {
+          "action": "read",
+          "mono": 100,
+          "wall": null,
+          "reading": {
+            "timeline": 100,
+            "wall": null,
+            "run": 1
+          }
+        },
+        {
+          "action": "read",
+          "mono": 200,
+          "wall": 1790000200,
+          "reading": {
+            "timeline": 200,
+            "wall": 1790000200,
+            "run": 1
+          }
+        },
+        {
+          "action": "start",
+          "wall": 1790003800,
+          "mono": 0
+        },
+        {
+          "action": "read",
+          "mono": 0,
+          "wall": 1790003800,
+          "reading": {
+            "timeline": 3800,
+            "wall": 1790003800,
+            "run": 2
+          }
+        }
+      ]
+    }
+  ],
+  "estimates": [
+    {
+      "scenario": "the wall clock jumps forward an hour while the device runs: not counted",
+      "since": {
+        "timeline": 10,
+        "wall": 1790000010,
+        "run": 1
+      },
+      "now": {
+        "timeline": 30,
+        "wall": 1790003630,
+        "run": 1
+      },
+      "lower": 20,
+      "upper": 3620
+    },
+    {
+      "scenario": "a restart after a day switched off: the day counts",
+      "since": {
+        "timeline": 100,
+        "wall": 1790000100,
+        "run": 1
+      },
+      "now": {
+        "timeline": 86500,
+        "wall": 1790086500,
+        "run": 2
+      },
+      "lower": 86400,
+      "upper": 86400
+    },
+    {
+      "scenario": "a restart after a day switched off: the day counts",
+      "since": {
+        "timeline": 100,
+        "wall": 1790000100,
+        "run": 1
+      },
+      "now": {
+        "timeline": 86560,
+        "wall": 1790086560,
+        "run": 2
+      },
+      "lower": 86460,
+      "upper": 86460
+    },
+    {
+      "scenario": "a restart after the clock was set back while off: the time off counts as zero",
+      "since": {
+        "timeline": 100,
+        "wall": 1790000100,
+        "run": 1
+      },
+      "now": {
+        "timeline": 160,
+        "wall": 1789992860,
+        "run": 2
+      },
+      "lower": 60,
+      "upper": 60
+    },
+    {
+      "scenario": "a device whose wall clock is not known (no battery-backed clock, no time sync)",
+      "since": {
+        "timeline": 100,
+        "wall": null,
+        "run": 1
+      },
+      "now": {
+        "timeline": 150,
+        "wall": null,
+        "run": 2
+      },
+      "lower": 50,
+      "upper": "unbounded"
+    },
+    {
+      "scenario": "a device whose wall clock is not known (no battery-backed clock, no time sync)",
+      "since": {
+        "timeline": 100,
+        "wall": null,
+        "run": 2
+      },
+      "now": {
+        "timeline": 150,
+        "wall": null,
+        "run": 2
+      },
+      "lower": 50,
+      "upper": 50
+    }
+  ],
+  "check_expiry": [
+    {
+      "value": "an admission code request",
+      "case": "the receiver's wall clock is not known",
+      "expires_at": 1790000010,
+      "now_wall": null,
+      "lifetime": 900,
+      "skew": 60,
+      "outcome": "Expired"
+    },
+    {
+      "value": "an admission code request",
+      "case": "at the furthest expires_at",
+      "expires_at": 1790000960,
+      "now_wall": 1790000000,
+      "lifetime": 900,
+      "skew": 60,
+      "outcome": "ok"
+    },
+    {
+      "value": "an admission code request",
+      "case": "one second beyond the furthest",
+      "expires_at": 1790000961,
+      "now_wall": 1790000000,
+      "lifetime": 900,
+      "skew": 60,
+      "outcome": "Malformed"
+    },
+    {
+      "value": "an admission code request",
+      "case": "at expires_at",
+      "expires_at": 1790000010,
+      "now_wall": 1790000010,
+      "lifetime": 900,
+      "skew": 60,
+      "outcome": "ok"
+    },
+    {
+      "value": "an admission code request",
+      "case": "one second after expires_at",
+      "expires_at": 1790000010,
+      "now_wall": 1790000011,
+      "lifetime": 900,
+      "skew": 60,
+      "outcome": "Expired"
+    },
+    {
+      "value": "a library ticket's not_after",
+      "case": "the receiver's wall clock is not known",
+      "expires_at": 1790000010,
+      "now_wall": null,
+      "lifetime": 86400,
+      "skew": 60,
+      "outcome": "Expired"
+    },
+    {
+      "value": "a library ticket's not_after",
+      "case": "at the furthest expires_at",
+      "expires_at": 1790086460,
+      "now_wall": 1790000000,
+      "lifetime": 86400,
+      "skew": 60,
+      "outcome": "ok"
+    },
+    {
+      "value": "a library ticket's not_after",
+      "case": "one second beyond the furthest",
+      "expires_at": 1790086461,
+      "now_wall": 1790000000,
+      "lifetime": 86400,
+      "skew": 60,
+      "outcome": "Malformed"
+    },
+    {
+      "value": "a library ticket's not_after",
+      "case": "at expires_at",
+      "expires_at": 1790000010,
+      "now_wall": 1790000010,
+      "lifetime": 86400,
+      "skew": 60,
+      "outcome": "ok"
+    },
+    {
+      "value": "a library ticket's not_after",
+      "case": "one second after expires_at",
+      "expires_at": 1790000010,
+      "now_wall": 1790000011,
+      "lifetime": 86400,
+      "skew": 60,
+      "outcome": "Expired"
+    },
+    {
+      "value": "a device-signed request",
+      "case": "the receiver's wall clock is not known",
+      "expires_at": 1790000010,
+      "now_wall": null,
+      "lifetime": 60,
+      "skew": 60,
+      "outcome": "Expired"
+    },
+    {
+      "value": "a device-signed request",
+      "case": "at the furthest expires_at",
+      "expires_at": 1790000120,
+      "now_wall": 1790000000,
+      "lifetime": 60,
+      "skew": 60,
+      "outcome": "ok"
+    },
+    {
+      "value": "a device-signed request",
+      "case": "one second beyond the furthest",
+      "expires_at": 1790000121,
+      "now_wall": 1790000000,
+      "lifetime": 60,
+      "skew": 60,
+      "outcome": "Malformed"
+    },
+    {
+      "value": "a device-signed request",
+      "case": "at expires_at",
+      "expires_at": 1790000010,
+      "now_wall": 1790000010,
+      "lifetime": 60,
+      "skew": 60,
+      "outcome": "ok"
+    },
+    {
+      "value": "a device-signed request",
+      "case": "one second after expires_at",
+      "expires_at": 1790000010,
+      "now_wall": 1790000011,
+      "lifetime": 60,
+      "skew": 60,
+      "outcome": "Expired"
+    }
+  ],
+  "check_policy": [
+    {
+      "name": "gap_key_timeout",
+      "value": 3599,
+      "outcome": "Malformed"
+    },
+    {
+      "name": "gap_key_timeout",
+      "value": 3600,
+      "outcome": "ok"
+    },
+    {
+      "name": "gap_key_timeout",
+      "value": 7776000,
+      "outcome": "ok"
+    },
+    {
+      "name": "gap_key_timeout",
+      "value": 7776001,
+      "outcome": "Malformed"
+    },
+    {
+      "name": "bounded_window",
+      "value": 3599,
+      "outcome": "Malformed"
+    },
+    {
+      "name": "bounded_window",
+      "value": 3600,
+      "outcome": "ok"
+    },
+    {
+      "name": "bounded_window",
+      "value": 7776000,
+      "outcome": "ok"
+    },
+    {
+      "name": "bounded_window",
+      "value": 7776001,
+      "outcome": "Malformed"
+    },
+    {
+      "name": "online_freshness",
+      "value": 29,
+      "outcome": "Malformed"
+    },
+    {
+      "name": "online_freshness",
+      "value": 30,
+      "outcome": "ok"
+    },
+    {
+      "name": "online_freshness",
+      "value": 3600,
+      "outcome": "ok"
+    },
+    {
+      "name": "online_freshness",
+      "value": 3601,
+      "outcome": "Malformed"
+    },
+    {
+      "name": "agent_waiting_period",
+      "value": 259199,
+      "outcome": "Malformed"
+    },
+    {
+      "name": "agent_waiting_period",
+      "value": 259200,
+      "outcome": "ok"
+    },
+    {
+      "name": "agent_waiting_period",
+      "value": 2592000,
+      "outcome": "ok"
+    },
+    {
+      "name": "agent_waiting_period",
+      "value": 2592001,
+      "outcome": "Malformed"
+    },
+    {
+      "name": "link_lifetime",
+      "value": 899,
+      "outcome": "Malformed"
+    },
+    {
+      "name": "link_lifetime",
+      "value": 900,
+      "outcome": "ok"
+    },
+    {
+      "name": "link_lifetime",
+      "value": 604800,
+      "outcome": "ok"
+    },
+    {
+      "name": "link_lifetime",
+      "value": 604801,
+      "outcome": "Malformed"
+    },
+    {
+      "name": "session_lifetime",
+      "value": 899,
+      "outcome": "Malformed"
+    },
+    {
+      "name": "session_lifetime",
+      "value": 900,
+      "outcome": "ok"
+    },
+    {
+      "name": "session_lifetime",
+      "value": 2592000,
+      "outcome": "ok"
+    },
+    {
+      "name": "session_lifetime",
+      "value": 2592001,
+      "outcome": "Malformed"
+    },
+    {
+      "name": "agent_waiting_period",
+      "value": "259200",
+      "outcome": "Malformed"
+    },
+    {
+      "name": "bounded_window",
+      "value": -3600,
+      "outcome": "Malformed"
+    }
+  ],
+  "cbor_nesting": [
+    {
+      "name": "an array nested 16 deep",
+      "depth": 16,
+      "encoding": "8181818181818181818181818181818100",
+      "result": "accepted"
+    },
+    {
+      "name": "an array nested 17 deep",
+      "depth": 17,
+      "encoding": "818181818181818181818181818181818100",
+      "result": "Malformed"
+    },
+    {
+      "name": "a map nested 16 deep",
+      "depth": 16,
+      "encoding": "a100a100a100a100a100a100a100a100a100a100a100a100a100a100a100a10000",
+      "result": "accepted"
+    },
+    {
+      "name": "a map nested 17 deep",
+      "depth": 17,
+      "encoding": "a100a100a100a100a100a100a100a100a100a100a100a100a100a100a100a100a10000",
+      "result": "Malformed"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+# Use with compose.yaml: object chunks in an S3-compatible bucket instead of
+# /data. Create the bucket first; the peer never provisions it.
+services:
+  relay:
+    environment:
+      FRASIL_OBJECTS: s3
+      FRASIL_S3_ENDPOINT: ${FRASIL_S3_ENDPOINT:?Set the HTTPS S3 endpoint}
+      FRASIL_S3_REGION: ${FRASIL_S3_REGION:-auto}
+      FRASIL_S3_BUCKET: ${FRASIL_S3_BUCKET:?Set an existing private bucket}
+      FRASIL_S3_ACCESS_KEY: ${FRASIL_S3_ACCESS_KEY:?Set the bucket access key}
+      FRASIL_S3_SECRET_KEY: ${FRASIL_S3_SECRET_KEY:?Set the bucket secret key}
+      FRASIL_S3_PREFIX: ${FRASIL_S3_PREFIX:-frasil/}
+      FRASIL_S3_PATH_STYLE: ${FRASIL_S3_PATH_STYLE:-true}

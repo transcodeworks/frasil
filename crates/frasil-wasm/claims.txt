@@ -1,0 +1,3 @@
+# No family of its own. tests/vectors.rs runs again, on wasm32 in Node.js,
+# the vector tests of frasil-crypto, frasil-events, frasil-store and
+# frasil-units, whose claims.txt files claim their families.

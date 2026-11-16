@@ -1,0 +1,46 @@
+[package]
+name = "frasil-units"
+description = "Frasil's units, streams, objects, compaction, snapshots and sync messages. An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+# Whole-buffer record oracle for conformance and fuzz checks.
+oracle = ["frasil-space/oracle"]
+# ext-restricted-spaces.md: sealed key 4 (`copied_from`) reaches the
+# adapter's context, which without it a core implementation ignores
+# (units.md, section 2.5); the restricted key reference and its key; the
+# move record, moved streams, late writes and their re-application. Off by
+# default.
+ext-restricted-spaces = ["frasil-keys/ext-restricted-spaces", "frasil-space/ext-restricted-spaces"]
+# ext-guests.md: the writer's decision (the bounded window, online-only),
+# followed events and heartbeats. Off by default.
+ext-guests = ["frasil-space/ext-guests"]
+
+[dependencies]
+frasil-adapter = { path = "../frasil-adapter", version = "0.1.0" }
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
+frasil-events = { path = "../frasil-events", version = "0.1.0" }
+frasil-identity = { path = "../frasil-identity", version = "0.1.0" }
+frasil-keys = { path = "../frasil-keys", version = "0.1.0" }
+frasil-peers = { path = "../frasil-peers", version = "0.1.0" }
+frasil-space = { path = "../frasil-space", version = "0.1.0" }
+zeroize.workspace = true
+
+[dev-dependencies]
+frasil-units = { path = ".", features = ["oracle"] }
+frasil-adapter-loro = { path = "../frasil-adapter-loro" }
+frasil-adapter-records = { path = "../frasil-adapter-records" }
+frasil-testkit = { path = "../frasil-testkit" }
+loro.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,24 @@
+# keys.md, sections 2.1 to 2.5, 2.9 and 3.1: tests/formats.rs
+keys.json labels
+keys.json parameters
+keys.json rotation_sets
+keys.json derivations
+keys.json bundles
+keys.json bundle_wraps
+keys.json space_wraps
+keys.json removal_wraps
+keys.json links
+# keys.md, sections 2.6, 3.2 and 3.3: tests/bodies.rs
+keys.json space_event_bodies
+keys.json visible_refusals
+keys.json sealed_refusals
+keys.json context_refusals
+# keys.md, sections 2.8 and 3.16: tests/sealed_names.rs
+keys.json sealed_names
+# ext-restricted-spaces.md, sections 2.2, 2.3 and 3.2: a restricted
+# space's keys, its key reference and its sealed names:
+# tests/ext_restricted_spaces.rs
+[ext-restricted-spaces] ext-restricted-spaces.json restricted_keys
+[ext-restricted-spaces] ext-restricted-spaces.json reference_refusals
+[ext-restricted-spaces] ext-restricted-spaces.json restricted_space_event
+[ext-restricted-spaces] ext-restricted-spaces.json restricted_names

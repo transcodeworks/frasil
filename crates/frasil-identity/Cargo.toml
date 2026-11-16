@@ -1,0 +1,32 @@
+[package]
+name = "frasil-identity"
+description = "Frasil's identity: device keys, device lists, recovery, passkeys, fingerprints and pins. An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+# ext-recovery-agent.md: the waiting period after which a verifier vouches
+# for a list member rooted in an agent, the relay, the raise and the veto.
+# Off by default.
+ext-recovery-agent = []
+
+[dependencies]
+frasil-base = { path = "../frasil-base", version = "0.1.0" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
+frasil-events = { path = "../frasil-events", version = "0.1.0" }
+frasil-resolve = { path = "../frasil-resolve", version = "0.1.0" }
+zeroize.workspace = true
+
+[dev-dependencies]
+frasil-testkit = { path = "../frasil-testkit" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

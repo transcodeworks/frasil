@@ -1,0 +1,28 @@
+[package]
+name = "frasil-iroh"
+description = "Frasil's iroh binding. An internal building block of Frasil, less stable than the `frasil` crate: depend on `frasil` instead."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
+frasil-transport = { path = "../frasil-transport", version = "0.1.0" }
+iroh.workspace = true
+rustls.workspace = true
+socket2.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+
+[dev-dependencies]
+frasil-base = { path = "../frasil-base" }
+frasil-testkit = { path = "../frasil-testkit" }
+iroh-relay = { workspace = true, features = ["server", "test-utils"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,8 @@
+
+# at-rest.md, held objects: tests/held_vectors.rs
+at-rest.json held
+# ext-space-files.md, the files and the roads in: tests/space_file_vectors.rs
+[space-files] ext-space-files.json fixtures
+[space-files] ext-space-files.json files
+[space-files] ext-space-files.json snapshot_file
+[space-files] ext-space-files.json held_object

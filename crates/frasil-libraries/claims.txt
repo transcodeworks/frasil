@@ -1,0 +1,12 @@
+# ext-libraries.md, 2.1 The library ID, 2.2 The library ticket, 2.4
+# Settings, 2.6 Error classes and 3.2 Checking a ticket: tests/tickets.rs
+ext-libraries.json parameters
+ext-libraries.json tickets
+ext-libraries.json ticket_checks
+# 2.3 LibraryAttach: tests/attach.rs
+ext-libraries.json library_attach
+# 2.7 Object keys and access keys, 2.8 HoldObject and 3.7 Registering a
+# hold: tests/holds.rs
+ext-libraries.json access_keys
+ext-libraries.json hold_object
+ext-libraries.json holds

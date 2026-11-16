@@ -1,0 +1,8 @@
+[bindings.swift]
+module_name = "Frasil"
+ffi_module_name = "FrasilFFI"
+generate_module_map = true
+
+[bindings.kotlin]
+package_name = "frasil"
+cdylib_name = "frasil_uniffi"

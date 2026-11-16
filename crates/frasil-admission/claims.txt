@@ -1,0 +1,37 @@
+# admission.md, sections 2.2 to 2.8, 3.1, 3.2 and 3.6: tests/exchange.rs
+admission.json parameters
+admission.json transcript
+admission.json negative
+admission.json exchange_mailbox
+# admission.md, section 3.4: tests/new_device.rs
+admission.json new_device
+# admission.md, sections 2.9 and 3.8: tests/setup.rs
+admission.json setup
+# admission.md, sections 2.10, 3.3 and 3.10: tests/welcome.rs
+admission.json welcome
+# admission.md, sections 3.11 and 3.12: tests/top_up.rs
+admission.json top_up
+# admission.md, sections 2.11, 2.12, 3.9 and 3.14: tests/records.rs
+admission.json lookup
+admission.json access_request
+admission.json welcome_request
+# ext-invite-links.md: tests/ext_invite_links.rs.
+# "The secret, its keys and the link", "The drop and its messages", "Making
+# an invite and keeping drops", "Invites in the roster", "Raced claims",
+# "Claiming" and "Administering devices"
+[ext-invite-links] ext-invite-links.json derivations
+[ext-invite-links] ext-invite-links.json links
+[ext-invite-links] ext-invite-links.json drops
+[ext-invite-links] ext-invite-links.json histories
+[ext-invite-links] ext-invite-links.json claims
+[ext-invite-links] ext-invite-links.json expiry
+# ext-guests.md: tests/ext_guests.rs. "Names, labels and error classes",
+# "The guest preset", "Admitting a guest", "Ending a session", "A leave
+# request", "Followed", "A session with no peer" and "A carve-out's guest"
+[ext-guests] ext-guests.json parameters
+[ext-guests] ext-guests.json sessions
+[ext-guests] ext-guests.json nothing_at_rest_meet
+[ext-guests] ext-guests.json leave_requests
+[ext-guests] ext-guests.json followed
+[ext-guests] ext-guests.json off_grid
+[ext-guests] ext-guests.json carve_out_guest

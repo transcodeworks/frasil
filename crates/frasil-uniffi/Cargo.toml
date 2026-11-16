@@ -1,0 +1,34 @@
+[package]
+name = "frasil-uniffi"
+description = "Frasil's client for Swift and Kotlin, through UniFFI."
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+publish = false
+
+[lib]
+# cdylib and staticlib for the Swift package and the Kotlin library; rlib so
+# that the workspace's Clippy and tests build it.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+# The generator binary, `frasil-uniffi-bindgen`, which writes the Swift and
+# Kotlin glue from the built library (scripts/bindings.sh).
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+# Deposit tokens (ext-deposit-tokens.md): grants, drawing ahead of need,
+# paid deposits.
+frasil = { path = "../frasil", version = "0.1.0", features = ["ext-deposit-tokens"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+uniffi.workspace = true
+# Wipes the unlock key that crosses the boundary.
+zeroize.workspace = true
+
+[[bin]]
+name = "frasil-uniffi-bindgen"
+path = "src/bin/bindgen.rs"
+required-features = ["bindgen"]
+
+[lints]
+workspace = true
