@@ -114,6 +114,15 @@ fn spawn_datagrams(connection: Arc<Connection>, incoming: mpsc::UnboundedSender<
     });
 }
 
+/// The channel starts on an attach both sides have sent `Admit` for: this
+/// device's receiver nonce, and its live ephemeral slots for the other side
+/// (ext-ephemeral.md, "Sending", "Freshness across restarts").
+#[cfg(feature = "ephemeral")]
+async fn start_ephemeral(device: &Engine, space: EventId) {
+    let _ = device.start_receiving(space).await;
+    let _ = device.republish_slots(space, true).await;
+}
+
 /// Reads an ephemeral stream's `Ephemeral` messages.
 #[cfg(feature = "ephemeral")]
 fn spawn_ephemeral(mut receiver: FrameReceiver, incoming: mpsc::UnboundedSender<Incoming>) {
@@ -603,8 +612,14 @@ impl Driver {
                         pending.extend(self.check(attach, &device).await?);
                     }
                     Event::Admitted { attach } => {
-                        if let Some(state) = self.attaches.get_mut(&attach) {
+                        #[cfg_attr(not(feature = "ephemeral"), allow(unused_variables))]
+                        let both = self.attaches.get_mut(&attach).and_then(|state| {
                             state.remote_admitted = true;
+                            (state.local == Local::Admitted).then_some(state.space)
+                        });
+                        #[cfg(feature = "ephemeral")]
+                        if let Some(space) = both {
+                            start_ephemeral(&self.device, space).await;
                         }
                         self.share(attach).await?;
                     }
@@ -730,15 +745,12 @@ impl Driver {
             Verdict::Admit => {
                 state.local = Local::Admitted;
                 state.sync.set_serving(Serving::Everything);
-                // The channel starts: this device's receiver nonce, and its
-                // live ephemeral slots for the newly admitted side
-                // (ext-ephemeral.md, "Sending", "Freshness across
-                // restarts").
+                // The channel starts once both sides have sent `Admit`;
+                // the other side takes no frame before its own.
                 #[cfg(feature = "ephemeral")]
-                {
+                if state.remote_admitted {
                     let space = state.space;
-                    let _ = self.device.start_receiving(space).await;
-                    let _ = self.device.republish_slots(space, true).await;
+                    start_ephemeral(&self.device, space).await;
                 }
             }
             Verdict::Probation => {
