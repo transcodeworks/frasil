@@ -105,11 +105,11 @@ openraft = { version = "=0.9.26", default-features = false, features = ["serde"]
 
 # 7. WebAssembly. wasm-bindgen is pinned exactly: the CLI that generates the
 # JavaScript glue must be the macro's version. Then property tests.
-wasm-bindgen = "=0.2.129"
-wasm-bindgen-futures = "=0.4.79"
-js-sys = "=0.3.106"
-web-sys = "=0.3.106"
-wasm-bindgen-test = "=0.3.79"
+wasm-bindgen = "=0.2.130"
+wasm-bindgen-futures = "=0.4.80"
+js-sys = "=0.3.107"
+web-sys = "=0.3.107"
+wasm-bindgen-test = "=0.3.80"
 # Without the default features, which fork processes to time out cases, it
 # also builds for wasm32.
 proptest = { version = "=1.12.0", default-features = false, features = ["std"] }

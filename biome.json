@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.6.6/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",
@@ -12,6 +12,9 @@
       "!**/node_modules",
       "!**/target",
       "!**/pnpm-lock.yaml",
+      "!**/*.md",
+      "!**/*.yml",
+      "!**/*.yaml",
       "!docs/spec/vectors",
       "!docs/spec/reference/kats"
     ]
@@ -35,6 +38,18 @@
       "preset": "recommended"
     }
   },
+  "overrides": [
+    {
+      "includes": ["**/test/**"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noComponentHookFactories": "off"
+          }
+        }
+      }
+    }
+  ],
   "assist": {
     "actions": {
       "source": {
