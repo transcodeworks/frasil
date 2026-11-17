@@ -90,11 +90,11 @@ updates:
           - version-update:semver-minor
           - version-update:semver-major
 
-  # The pnpm workspace's root (the lint) and the browser package.
+  # The pnpm workspace, from its root: the lint and the browser package
+  # share one lockfile.
   - package-ecosystem: npm
     directories:
       - /
-      - /packages/frasil
     schedule:
       interval: weekly
       day: monday

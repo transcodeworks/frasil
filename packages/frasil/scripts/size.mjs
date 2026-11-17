@@ -38,7 +38,10 @@ const budgets = {
   // votes, worlds, forgetting, skeleton cuts) and administrators' ranks. 9,878,065 and 3,061,958
   // later that day, each budget a tenth above: maps collected by insertion, which compiles no
   // sort per call site, and unstable sorts over keys that tell every element apart.
-  module: { raw: 10_865_872, gzip: 3_368_154 },
+  // 10,868,761 and 3,275,710 on 2026-11-17, each budget a tenth above: 93,961 raw are
+  // wasm-bindgen 0.2.130; the rest (10,774,800 before it) came with roster checkpoints, the
+  // raised limits and streamed record reading, before any budget was raised.
+  module: { raw: 11_955_637, gzip: 3_603_281 },
   // 118,346 and 17,923 on 2026-10-27 (85,780 and 14,309 on 2026-10-22): the glue of the root API's
   // bindings with those extensions; 2,721 and 520 of the growth are the space-files bindings.
   // 132,346 and 20,036 on 2026-11-04, each budget a tenth above: the drive's versions, conflicts,
