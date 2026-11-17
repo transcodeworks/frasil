@@ -22,7 +22,10 @@ fuzz_target!(|data: &[u8]| {
         Err(class) => assert!(
             matches!(
                 class,
-                ErrorClass::Malformed | ErrorClass::UnsupportedVersion | ErrorClass::TooLarge
+                ErrorClass::Malformed
+                    | ErrorClass::UnsupportedVersion
+                    | ErrorClass::RevisionMismatch
+                    | ErrorClass::TooLarge
             ),
             "{class:?}"
         ),
