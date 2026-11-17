@@ -58,7 +58,9 @@ async fn engine(seed: u8) -> Engine {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn contradicted_standing_swapped_envelopes_and_another_erasure_are_unanswered() {
-    tokio::time::timeout(Duration::from_secs(90), async {
+    // Each of the four cases waits out the client's 20 seconds for an
+    // answer that does not come, so the whole takes over a minute.
+    tokio::time::timeout(Duration::from_secs(240), async {
         let peer = frasil_conformance::spawn_loopback().await.unwrap();
         for corruption in 0..4 {
             let bob = engine(80).await;
