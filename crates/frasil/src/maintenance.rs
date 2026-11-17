@@ -276,16 +276,16 @@ impl Engine {
         }
         if due.iter().any(|o| o.rotates) {
             let breaks = due.iter().any(|o| o.breaks);
-            let id = self.rotate(&mut state, space, &owed, breaks).await?;
+            let id = Box::pin(self.rotate(&mut state, space, &owed, breaks)).await?;
             drop(state);
-            self.after_rotation(space, &owed).await?;
+            Box::pin(self.after_rotation(space, &owed)).await?;
             return Ok(Maintained {
                 rotation: Some(id),
                 delivery: None,
             });
         }
         if !due.is_empty() {
-            let id = self.deliver_responses(&mut state, space, &due).await?;
+            let id = Box::pin(self.deliver_responses(&mut state, space, &due)).await?;
             return Ok(Maintained {
                 rotation: None,
                 delivery: Some(id),
@@ -341,10 +341,11 @@ impl Engine {
                 // marks the devices reached, so it goes in only once they
                 // are. A delivery that fails leaves the add unpublished,
                 // and the next maintenance tries again.
-                let (delivery, wraps) = self.deliver_with(space, added.recipients).await?;
-                self.publish_list(space, &added.person).await?;
+                let (delivery, wraps) =
+                    Box::pin(self.deliver_with(space, added.recipients)).await?;
+                Box::pin(self.publish_list(space, &added.person)).await?;
                 #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
-                self.welcome_person(space, added.person, added.level, delivery, &wraps)
+                Box::pin(self.welcome_person(space, added.person, added.level, delivery, &wraps))
                     .await?;
                 #[cfg(not(any(feature = "server", feature = "iroh", feature = "server-socket")))]
                 let _ = (wraps, added.level);
@@ -389,9 +390,9 @@ impl Engine {
             heal_due = false;
         }
         if heal_due {
-            let id = self.rotate(&mut state, space, &owed, false).await?;
+            let id = Box::pin(self.rotate(&mut state, space, &owed, false)).await?;
             drop(state);
-            self.after_rotation(space, &owed).await?;
+            Box::pin(self.after_rotation(space, &owed)).await?;
             return Ok(Maintained {
                 rotation: Some(id),
                 delivery: None,
@@ -564,7 +565,7 @@ impl Engine {
         // The person's device list: late revocations re-signed, its
         // pending checkpoint voted for, a checkpoint proposed when due
         // (identity.md, 3.16 List checkpoints).
-        match self.maintain_list_checkpoint().await {
+        match Box::pin(self.maintain_list_checkpoint()).await {
             Ok(_) | Err(Error::NotAllowed(_) | Error::Class(_)) => {}
             Err(error) => return Err(error),
         }
@@ -588,14 +589,14 @@ impl Engine {
                 Ok(()) | Err(Error::UnknownSpace | Error::NotAllowed(_)) => {}
                 Err(error) => return Err(error),
             }
-            match self.maintain(space).await {
+            match Box::pin(self.maintain(space)).await {
                 Ok(done) if done != Maintained::default() => out.push((space, done)),
                 Ok(_) | Err(Error::UnknownSpace | Error::NotAllowed(_)) => {}
                 Err(error) => return Err(error),
             }
             // Checkpoints: votes, late work, proposals and forgetting
             // (roster.md, 3.15.7 Clients).
-            match self.maintain_checkpoints(space).await {
+            match Box::pin(self.maintain_checkpoints(space)).await {
                 Ok(_)
                 | Err(
                     Error::UnknownSpace

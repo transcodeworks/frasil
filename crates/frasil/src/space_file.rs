@@ -476,6 +476,15 @@ impl Engine {
         kinds: &[&str],
         key: Option<&[u8; 32]>,
     ) -> Result<Imported> {
+        Box::pin(self.import_space_file_inner(data, kinds, key)).await
+    }
+
+    async fn import_space_file_inner(
+        &self,
+        data: &[u8],
+        kinds: &[&str],
+        key: Option<&[u8; 32]>,
+    ) -> Result<Imported> {
         // 1 and 2.
         let read = file::read(data).map_err(refused)?;
         let space = read.manifest.space;
@@ -486,7 +495,7 @@ impl Engine {
         // claim waits for the person's consent is not held: the import
         // offers it again.
         if self.presentable_spaces().await.contains(&space) {
-            let placed = self.take_in(space, &read, false).await?;
+            let placed = Box::pin(self.take_in(space, &read, false)).await?;
             let me = self.device_id();
             let member = self
                 .read(&space, |replica| replica.level_of(&me).is_some())
@@ -519,7 +528,7 @@ impl Engine {
         let mut refused: Option<Error> = None;
         #[cfg(feature = "ext-invite-links")]
         for fragment in &way_in.fragments {
-            match self.prepare_claim_from_file(space, fragment, &read).await {
+            match Box::pin(self.prepare_claim_from_file(space, fragment, &read)).await {
                 Ok((offer, placed)) => {
                     return Ok(Imported {
                         space,
@@ -536,7 +545,7 @@ impl Engine {
         }
         // 6. A reader by keys.
         if !way_in.secrets.is_empty() {
-            let placed = self.read_by_keys(space, &way_in.secrets, &read).await?;
+            let placed = Box::pin(self.read_by_keys(space, &way_in.secrets, &read)).await?;
             return Ok(Imported {
                 space,
                 road: Road::Reading,

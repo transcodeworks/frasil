@@ -3315,7 +3315,7 @@ impl Replica {
                     added,
                 )) = appended.take()
             {
-                let mut world = *world;
+                let mut world = world;
                 let c = world.checkpoint;
                 let Some(presets) = crate::checkpoints::presets_after(
                     log,

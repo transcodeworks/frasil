@@ -223,7 +223,7 @@ impl Engine {
         }
         // A refresh first: the snapshots checked at the last one are judged
         // for stability at this one.
-        self.settle_one(&mut state, space, Vec::new(), now).await?;
+        Box::pin(self.settle_one(&mut state, space, Vec::new(), now)).await?;
         let outbox: BTreeSet<EventId> = state
             .outboxes
             .get(&space)

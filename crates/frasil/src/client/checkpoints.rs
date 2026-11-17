@@ -114,7 +114,7 @@ impl Engine {
         // it enrols first if it has not yet (peers.md, "Enrolment").
         let _ = self.enrol(&space).await;
         let mut state = self.lock().await;
-        self.propose_locked(&mut state, space).await
+        Box::pin(self.propose_locked(&mut state, space)).await
     }
 
     async fn propose_locked(&self, state: &mut State, space: EventId) -> Result<EventId> {
@@ -417,7 +417,7 @@ impl Engine {
     /// The store's.
     pub async fn acknowledge_checkpoint(&self, space: EventId) -> Result<Option<EventId>> {
         let mut state = self.lock().await;
-        self.acknowledge_locked(&mut state, space).await
+        Box::pin(self.acknowledge_locked(&mut state, space)).await
     }
 
     async fn acknowledge_locked(
@@ -791,28 +791,28 @@ impl Engine {
         // "A late enrolment").
         let _ = self.enrol(&space).await;
         let mut work = CheckpointWork {
-            acknowledged: self.acknowledge_checkpoint(space).await?,
+            acknowledged: Box::pin(self.acknowledge_checkpoint(space)).await?,
             ..CheckpointWork::default()
         };
-        work.resubmitted = match self.resubmit_late_units(space).await {
+        work.resubmitted = match Box::pin(self.resubmit_late_units(space)).await {
             Ok(units) => units,
             Err(Error::NotAllowed(_) | Error::Class(_)) => Vec::new(),
             Err(error) => return Err(error),
         };
         // Units refused by a removal, sent again once the device writes
         // again (roster.md, 3.14, "Re-submission").
-        match self.resubmit_refused_units(space).await {
+        match Box::pin(self.resubmit_refused_units(space)).await {
             Ok(units) => work.resubmitted.extend(units),
             Err(Error::NotAllowed(_) | Error::Class(_)) => {}
             Err(error) => return Err(error),
         }
         // Erasures, releases and restores of this device's made late, signed
         // again after the checkpoint.
-        match self.resign_late_requests(space).await {
+        match Box::pin(self.resign_late_requests(space)).await {
             Ok(_) | Err(Error::NotAllowed(_) | Error::Class(_)) => {}
             Err(error) => return Err(error),
         }
-        work.resigned = match self.resign_late_removals(space).await {
+        work.resigned = match Box::pin(self.resign_late_removals(space)).await {
             Ok(events) => events,
             Err(Error::NotAllowed(_) | Error::Invalid(_) | Error::Class(_)) => Vec::new(),
             Err(error) => return Err(error),
@@ -823,7 +823,7 @@ impl Engine {
                 self.proposes_now(&mut state, &space).await?
             };
             if due {
-                work.proposed = match self.propose_checkpoint(space).await {
+                work.proposed = match Box::pin(self.propose_checkpoint(space)).await {
                     Ok(id) => Some(id),
                     Err(Error::NotAllowed(_) | Error::Class(_) | Error::SyncBeforeWriting) => None,
                     Err(error) => return Err(error),
@@ -1218,8 +1218,7 @@ impl Engine {
         let reading = self.read_timeline(&mut state).await?;
         let spaces: Vec<EventId> = state.replicas.keys().copied().collect();
         for space in spaces {
-            self.settle_one(&mut state, space, Vec::new(), reading)
-                .await?;
+            Box::pin(self.settle_one(&mut state, space, Vec::new(), reading)).await?;
         }
         Ok(total)
     }
