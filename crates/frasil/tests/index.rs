@@ -693,7 +693,7 @@ async fn forgetting_a_space_removes_its_cached_rows() {
     writer.space().forget().await.unwrap();
     index.sync().await.unwrap();
     assert!(index.all::<List>().unwrap().is_empty());
-    std::fs::remove_dir_all(dir).unwrap();
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -733,7 +733,7 @@ async fn row_change_time_comes_from_records_without_an_application_cell() {
     );
     assert_eq!(row.author, Some(device.id()));
     device.close().await.unwrap();
-    std::fs::remove_dir_all(directory).unwrap();
+    let _ = std::fs::remove_dir_all(directory);
 }
 
 #[tokio::test]

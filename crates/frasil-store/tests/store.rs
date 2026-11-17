@@ -508,5 +508,5 @@ fn a_copy_of_the_database_reads_as_it_was() {
     assert_eq!(std::fs::read(&copy).unwrap(), before, "read without change");
     assert_eq!(store.next_address(b"a").unwrap(), Some(b"c".to_vec()));
     assert_eq!(store.next_address(b"c").unwrap(), None);
-    std::fs::remove_dir_all(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
 }

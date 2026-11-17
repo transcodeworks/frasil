@@ -1212,6 +1212,6 @@ mod tests {
         assert_eq!(status, 503, "{why}");
         assert!(why.contains("another node"), "{why}");
         running.shutdown().await;
-        std::fs::remove_dir_all(dir).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

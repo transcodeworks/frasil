@@ -7,6 +7,8 @@ on:
   # A merge queue, when the repository uses one: the queued change runs
   # every job, as a push to main does.
   merge_group:
+  # By hand, on any branch: every job runs, macOS and Windows included.
+  workflow_dispatch:
 
 # A new push to a pull request cancels its earlier run; runs on main finish.
 concurrency:

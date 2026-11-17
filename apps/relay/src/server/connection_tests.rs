@@ -81,13 +81,18 @@ async fn connections_are_capped_overall_and_per_source() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(shared.connections.open(), 2);
-    let head = "GET /healthz HTTP/1.1\r\nHost: peer\r\n\r\n";
-    let status = super::tests::status_without_body(peer.http, head).await;
-    assert!(
-        status.as_deref().is_some_and(|line| line.contains(" 503")),
-        "{status:?}"
-    );
+    // The refusal is written as the connection is taken, before any
+    // request: read it without sending one, so that nothing unread is left
+    // on the peer's side when it closes.
+    let mut refused = TcpStream::connect(peer.http).await.unwrap();
+    let mut answer = Vec::new();
+    let read = tokio::time::timeout(Duration::from_secs(5), refused.read_to_end(&mut answer)).await;
+    assert!(matches!(read, Ok(Ok(_))), "{read:?}");
+    let answer = String::from_utf8_lossy(&answer);
+    assert!(answer.starts_with("HTTP/1.1 503 "), "{answer}");
+    assert!(answer.ends_with(r#"{"code":"busy"}"#), "{answer}");
     drop(first);
+    let head = "GET /healthz HTTP/1.1\r\nHost: peer\r\n\r\n";
     for _ in 0..100 {
         if shared.connections.open() < 2 {
             break;
