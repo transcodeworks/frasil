@@ -28,6 +28,8 @@ ignore = [
     # A TOML reader in UniFFI's generator, which runs at build time only
     # (uniffi =0.31.0).
     { id = "RUSTSEC-2026-0374", reason = "basic-toml, through askama under uniffi_bindgen (uniffi =0.31.0)" },
+    # Under openraft, and under the ACME client of iroh's relay server.
+    { id = "RUSTSEC-2026-0543", reason = "chrono, through openraft (=0.9.26) and tokio-rustls-acme under iroh-relay (iroh =1.4.1)" },
 ]
 
 [licenses]
