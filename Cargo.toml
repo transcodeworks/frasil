@@ -101,7 +101,7 @@ tokio = "=1.54.1"
 futures-util = "=0.3.34"
 # Raft among a region's peer nodes, for membership and node leases only:
 # no record goes through it. Default features off, so no clap.
-openraft = { version = "=0.9.25", default-features = false, features = ["serde"] }
+openraft = { version = "=0.9.26", default-features = false, features = ["serde"] }
 
 # 7. WebAssembly. wasm-bindgen is pinned exactly: the CLI that generates the
 # JavaScript glue must be the macro's version. Then property tests.
@@ -118,7 +118,7 @@ proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
 # the Swift and Kotlin glue from crates/frasil-uniffi; the generator binary
 # and the library must be one version, pinned so that Frasil's bindings can
 # be loaded in one process with other UniFFI libraries built at this version.
-uniffi = { version = "=0.31.0", features = ["tokio"] }
+uniffi = { version = "=0.31.2", features = ["tokio"] }
 
 [workspace.lints.rust]
 missing_docs = "deny"
