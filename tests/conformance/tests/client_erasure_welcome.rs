@@ -37,6 +37,25 @@ impl frasil::advanced::Tasks for ForegroundTasks {
     }
 }
 
+/// Runs a test's body on a thread with room for it: unoptimised, these
+/// bodies take more stack than a test thread has.
+fn with_room<F: Future<Output = ()>>(body: impl FnOnce() -> F + Send + 'static) {
+    let thread = std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(body());
+        })
+        .unwrap();
+    if let Err(panic) = thread.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
 async fn late_reentry(standing: u8, void: bool, named: bool) {
     use frasil::advanced::{AdapterRegistry, Engine, Platform};
     use frasil_store::{Commit, MemorySlot, MemoryStore, Store};
@@ -397,23 +416,27 @@ async fn late_reentry(standing: u8, void: bool, named: bool) {
     .expect("late erasure re-entry within the deadline");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_late_erasure_with_standing_zero_is_erased_again() {
-    Box::pin(late_reentry(0, false, false)).await;
+#[test]
+fn a_late_erasure_with_standing_zero_is_erased_again() {
+    with_room(|| late_reentry(0, false, false));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_late_erasure_with_standing_one_reports_the_held_slot() {
-    Box::pin(late_reentry(1, false, false)).await;
+#[test]
+fn a_late_erasure_with_standing_one_reports_the_held_slot() {
+    with_room(|| late_reentry(1, false, false));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_late_erasure_can_be_void_after_the_welcome() {
-    Box::pin(late_reentry(0, true, false)).await;
+#[test]
+fn a_late_erasure_can_be_void_after_the_welcome() {
+    with_room(|| late_reentry(0, true, false));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_late_erasure_with_standing_two_retains_its_residue() {
+#[test]
+fn a_late_erasure_with_standing_two_retains_its_residue() {
+    with_room(standing_two);
+}
+
+async fn standing_two() {
     tokio::time::timeout(Duration::from_secs(90), async {
         let store = std::sync::Arc::new(frasil_store::MemoryStore::new());
         let blobs = std::sync::Arc::new(frasil_relay::blobs::MemoryBlobs::new());
@@ -470,7 +493,7 @@ async fn a_late_erasure_with_standing_two_retains_its_residue() {
     }).await.expect("standing two reported within the deadline");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_named_held_slot_requests_no_welcome() {
-    Box::pin(late_reentry(1, false, true)).await;
+#[test]
+fn a_named_held_slot_requests_no_welcome() {
+    with_room(|| late_reentry(1, false, true));
 }
