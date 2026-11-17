@@ -406,14 +406,14 @@ impl Node {
             &ticket,
             hosting.confirm,
         );
-        let result = within_pairing_deadline(&connection, pairing).await;
+        let result = within_pairing_deadline(&connection, Box::pin(pairing)).await;
         let _ = hosting.done.send(result);
     }
 
     async fn provision(&self, connection: Connection, mut setup: AwaitingSetup) {
         let setting_up =
             crate::pairing::serve_setup(&self.shared.device, &connection, &mut setup.headless);
-        let result = within_pairing_deadline(&connection, setting_up).await;
+        let result = within_pairing_deadline(&connection, Box::pin(setting_up)).await;
         // A connection that ended before an Offer bound the device, or whose
         // Offer's MAC failed, changes nothing: the device awaits the next
         // administrator (admission.md, 3.8 Setup).
@@ -590,8 +590,13 @@ impl Node {
     {
         let pairing = self.pairing_endpoint().await?;
         let connection = pairing.dial(nearby).await.map_err(failed)?;
-        let joined =
-            crate::pairing::join_nearby(&self.shared.device, &connection, display, confirm).await;
+        let joined = Box::pin(crate::pairing::join_nearby(
+            &self.shared.device,
+            &connection,
+            display,
+            confirm,
+        ))
+        .await;
         pairing.close().await;
         let joined = joined?;
         self.dial(&joined.ticket, vec![joined.space]).await?;

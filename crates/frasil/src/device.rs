@@ -1028,7 +1028,7 @@ impl Engine {
             let reading = self.read_timeline(state).await?;
             let spaces: Vec<EventId> = state.replicas.keys().copied().collect();
             for space in spaces {
-                self.settle_one(state, space, Vec::new(), reading).await?;
+                Box::pin(self.settle_one(state, space, Vec::new(), reading)).await?;
             }
             Self::check_provisional_snapshots(state);
         }
@@ -2134,6 +2134,15 @@ impl Engine {
         policy: Policy,
         descriptor: frasil_space::Descriptor,
     ) -> Result<EventId> {
+        // Keep creation temporaries out of the caller's future.
+        Box::pin(self.create_space_as_inner(policy, descriptor)).await
+    }
+
+    async fn create_space_as_inner(
+        &self,
+        policy: Policy,
+        descriptor: frasil_space::Descriptor,
+    ) -> Result<EventId> {
         let platform = &self.shared.platform;
         let made = writer::new_space(
             platform,
@@ -2220,7 +2229,7 @@ impl Engine {
         reading: Reading,
     ) -> Result<()> {
         let lists = list_events(&state.lists);
-        self.settle_one(state, space, new, reading).await?;
+        Box::pin(self.settle_one(state, space, new, reading)).await?;
         // Every other space reads this one's roster, if it grants it, and
         // the lists this one carried. Each is judged again only when what
         // it reads changed: the lists, what the spaces settled here offer
@@ -2263,7 +2272,7 @@ impl Engine {
             if !due {
                 continue;
             }
-            self.settle_one(state, other, Vec::new(), reading).await?;
+            Box::pin(self.settle_one(state, other, Vec::new(), reading)).await?;
             if let Some(replica) = state.replicas.get_mut(&other) {
                 let (for_others, log) = replica.take_changes();
                 sources.push((other, for_others, log));
@@ -3435,7 +3444,7 @@ impl Engine {
                 }
                 Action::SnapshotWanted => {
                     if let Acknowledger::Member(remote) = by {
-                        out.extend(self.snapshot_for(space, &DeviceId(remote)).await?);
+                        out.extend(Box::pin(self.snapshot_for(space, &DeviceId(remote))).await?);
                     }
                 }
                 Action::SnapshotOffered(signed) => {
@@ -3448,8 +3457,7 @@ impl Engine {
                     if from_asked
                         && wants
                         && offered_by(&signed, &space, by)
-                        && self
-                            .adopt_snapshot(space, &signed, Vec::new())
+                        && Box::pin(self.adopt_snapshot(space, &signed, Vec::new()))
                             .await
                             .is_ok()
                     {
@@ -3460,7 +3468,7 @@ impl Engine {
                 }
                 Action::Ingest(events) => {
                     names_more = true;
-                    self.ingest(space, events).await?;
+                    Box::pin(self.ingest(space, events)).await?;
                     let state = self.lock().await;
                     let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
                     out.extend(sends(session.stored(replica)));
@@ -3475,7 +3483,7 @@ impl Engine {
                         .get_mut(&space)
                         .ok_or(Error::UnknownSpace)?
                         .take_carried(&pairs);
-                    self.settle(&mut state, space, Vec::new(), reading).await?;
+                    Box::pin(self.settle(&mut state, space, Vec::new(), reading)).await?;
                     let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
                     out.extend(sends(session.stored(replica)));
                 }
@@ -3483,7 +3491,7 @@ impl Engine {
                 Action::Path { .. } => {}
                 #[cfg(feature = "partial-replicas")]
                 Action::Path { from, to, events } => {
-                    self.add_path(space, from, to, events).await?;
+                    Box::pin(self.add_path(space, from, to, events)).await?;
                     let state = self.lock().await;
                     let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
                     out.extend(sends(session.stored(replica)));
@@ -4038,6 +4046,17 @@ impl Engine {
     }
 
     async fn sign_roster_full(
+        &self,
+        space: EventId,
+        changes: Vec<Change>,
+        cited: Vec<frasil_events::Ref>,
+        keep: impl FnOnce(EventId) -> Vec<(Table, Vec<u8>, TableValue)>,
+    ) -> Result<(EventId, BTreeMap<DeviceId, writer::WrapOf>)> {
+        // Roster signing must fit beside the caller's other work in debug builds.
+        Box::pin(self.sign_roster_full_inner(space, changes, cited, keep)).await
+    }
+
+    async fn sign_roster_full_inner(
         &self,
         space: EventId,
         changes: Vec<Change>,

@@ -1181,7 +1181,7 @@ impl Device {
     where
         F: std::future::Future<Output = bool> + frasil_store::store::MaybeSend + 'static,
     {
-        invite::join(self, invitation, name, confirm).await
+        Box::pin(invite::join(self, invitation, name, confirm)).await
     }
 
     /// Vetoes a device that a recovery agent added to this device's person
@@ -1502,7 +1502,7 @@ fn start_upkeep(inner: &Arc<Inner>) {
             if inner.closed.load(Ordering::SeqCst) {
                 return;
             }
-            let _ = inner.engine.maintain_all().await;
+            let _ = Box::pin(inner.engine.maintain_all()).await;
             #[cfg(feature = "ext-file-versions")]
             inner.engine.compact_versions(inner.version_interval).await;
             // Each space that grants the person gets its recovery entry

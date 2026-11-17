@@ -198,7 +198,7 @@ impl Engine {
                 agents.decide(&state.lists, replica.policy()) != *replica.vouched()
             });
             if changed {
-                self.settle_one(&mut state, space, Vec::new(), now).await?;
+                Box::pin(self.settle_one(&mut state, space, Vec::new(), now)).await?;
             }
         }
         let writes = self

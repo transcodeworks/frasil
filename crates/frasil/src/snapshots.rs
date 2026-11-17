@@ -569,7 +569,7 @@ impl Engine {
                 put_body_key(&state.vault, &mut batch, &granted, id, key, adopted.sender)?;
             }
             state.vault.commit(batch).await?;
-            self.settle_one(state, granted, ids, reading).await?;
+            Box::pin(self.settle_one(state, granted, ids, reading)).await?;
         }
         Ok(())
     }

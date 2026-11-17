@@ -1122,7 +1122,9 @@ impl Engine {
     /// fails is dropped, and is missing again.
     #[cfg_attr(not(feature = "space-files"), allow(dead_code))]
     pub(crate) async fn keep_parts(&self, space: EventId, parts: &[ObjectPart]) -> Result<()> {
-        self.keep_parts_with(space, parts, false).await.map(drop)
+        Box::pin(self.keep_parts_with(space, parts, false))
+            .await
+            .map(drop)
     }
 
     /// [`keep_parts`](Self::keep_parts) for the parts of whole objects
@@ -1133,7 +1135,9 @@ impl Engine {
         space: EventId,
         parts: &[ObjectPart],
     ) -> Result<()> {
-        self.keep_parts_with(space, parts, true).await.map(drop)
+        Box::pin(self.keep_parts_with(space, parts, true))
+            .await
+            .map(drop)
     }
 
     /// One part of an object another party sent, as sync carries it
@@ -1184,9 +1188,8 @@ impl Engine {
             return Ok(Received::Refused);
         }
         let locator = part.locator;
-        let dropped = self
-            .keep_parts_with(space, std::slice::from_ref(&part), false)
-            .await?;
+        let dropped =
+            Box::pin(self.keep_parts_with(space, std::slice::from_ref(&part), false)).await?;
         if dropped.contains(&locator) {
             return Ok(Received::Refused);
         }
@@ -1379,8 +1382,7 @@ impl Engine {
         }
         if awaited.is_some() || streams || records {
             let reading = self.read_timeline(&mut state).await?;
-            self.settle_one(&mut state, space, Vec::new(), reading)
-                .await?;
+            Box::pin(self.settle_one(&mut state, space, Vec::new(), reading)).await?;
         }
         drop(state);
         // A blob whose entry is current now, stored sealed, is held.
