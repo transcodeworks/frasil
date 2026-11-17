@@ -150,7 +150,7 @@ jobs:
           toolchain: ${{ steps.rust.outputs.version }}
           components: rustfmt, clippy
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check formatting
@@ -202,7 +202,7 @@ jobs:
         with:
           toolchain: ${{ steps.rust.outputs.version }}
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           key: test-${{ matrix.features == 'default features' && 'default' || 'every' }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -251,7 +251,7 @@ jobs:
         with:
           toolchain: ${{ steps.rust.outputs.version }}
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Fetch the pinned Wycheproof files
@@ -330,7 +330,7 @@ jobs:
           toolchain: ${{ steps.rust.outputs.version }}
           targets: ${{ matrix.targets }}
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           key: mobile-${{ matrix.name }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -363,7 +363,7 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Clippy, each feature combination
@@ -393,7 +393,7 @@ jobs:
           toolchain: ${{ steps.rust.outputs.version }}
           components: rustfmt, clippy
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           workspaces: |
             fuzz -> target
@@ -430,7 +430,7 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Setup Node.js
@@ -469,7 +469,7 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # The pnpm version comes from `packageManager` in package.json.
