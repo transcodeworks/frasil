@@ -101,7 +101,7 @@ tokio = "=1.54.1"
 futures-util = "=0.3.34"
 # Raft among a region's peer nodes, for membership and node leases only:
 # no record goes through it. Default features off, so no clap.
-openraft = { version = "=0.9.26", default-features = false, features = ["serde"] }
+openraft = { version = "=0.10.0", default-features = false, features = ["serde"] }
 
 # 7. WebAssembly. wasm-bindgen is pinned exactly: the CLI that generates the
 # JavaScript glue must be the macro's version. Then property tests.
