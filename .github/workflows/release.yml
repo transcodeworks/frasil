@@ -124,7 +124,7 @@ jobs:
           targets: wasm32-unknown-unknown
       # The pnpm version comes from `packageManager` in package.json.
       - name: Setup pnpm and Node.js
-        uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
           runtime: node@24
           install: false
