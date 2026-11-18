@@ -1474,6 +1474,15 @@
     "may_sign": {
       "the space, synced since": true,
       "alice's list, not yet synced": false
+    },
+    "originated": {
+      "head": "a60150f5cd22d1a0ecc5619ebe1beea2d9e44902040381845820a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed3535820dd054c7a4faa5a9050847f5e5ba15e5a226b01a99f52341b91c24efe89e5a13c015820f5f35992b526114066c12da1cdd34bb85d7af23e82709499b1cf31a31a3fc99c0404058258200cd718bf354d542ccd93333500d71f0f365f4c7ed25159d1caa27e8fe7c086845820a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed3530601",
+      "originated_log": "0cd718bf354d542ccd93333500d71f0f365f4c7ed25159d1caa27e8fe7c08684",
+      "learned_log": "57cc743a2d88be66708490a5503615e4a3a2b02670505c259a7e0bfe683b9c4a",
+      "may_sign": {
+        "an originated genesis, added in its commit": true,
+        "a learned genesis, not added": false
+      }
     }
   },
   "head_revisions": [

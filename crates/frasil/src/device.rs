@@ -2192,6 +2192,19 @@ impl Engine {
                 &pending_record(event),
             )?;
         }
+        // The device originates this space: `new_space` drew the genesis and
+        // its fresh rotation here, so the device holds the only replica of
+        // the log. It marks the new log write-ready in the same commit as the
+        // genesis and may sign there at once, with nothing to sync first
+        // (at-rest.md, "After a restore"). Only a genesis the device itself
+        // generates reaches this path; one learned from another party keeps
+        // the sync-before-writing rule. With no restore in effect `add_synced`
+        // does nothing, so the mark is harmless.
+        debug_assert!(
+            made.genesis.fresh.is_some(),
+            "an originated genesis carries its fresh rotation"
+        );
+        batch.synced.push(space.0);
         state.vault.commit(batch).await?;
 
         let mut replica = Replica::new(space);

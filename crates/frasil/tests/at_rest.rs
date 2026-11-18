@@ -158,3 +158,101 @@ async fn a_restored_device_syncs_before_it_signs() {
     let seen = bob.document(&space, &doc.stream()).await.unwrap();
     assert_eq!(text(&seen), "one two three");
 }
+
+/// A space the device originates after a restore is write-ready at once: it
+/// holds the only replica of the log, so `create_space_of_kind` finishes,
+/// granting the creator's person with no sync first. A space that predates
+/// the restore still waits for a sync before the device writes there, and a
+/// second restore leaves a newly originated space write-ready just the same
+/// (at-rest.md, "After a restore").
+#[cfg(all(feature = "sqlite", feature = "adapter-records"))]
+#[tokio::test]
+async fn a_restored_device_finishes_a_space_it_originates() {
+    use frasil::{Device, Storage};
+
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("frasil-originate-restore-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let unlock = [8; 32];
+
+    // A first run with no restore: a person, and a space of a kind with a
+    // record written into it.
+    let device = Device::open(Storage::directory(&dir), &unlock)
+        .await
+        .unwrap();
+    device.make_person(&unlock).await.unwrap();
+    let first = device
+        .create_space_of_kind("com.example.notes")
+        .await
+        .unwrap();
+    assert!(first.is_write_ready().await);
+    let first_id = first.id();
+    first
+        .create_records()
+        .unwrap()
+        .write(|tx| {
+            tx.insert("notes", b"n1").set("notes", b"n1", "text", "one");
+        })
+        .await
+        .unwrap();
+    device.close().await.unwrap();
+    drop(first);
+
+    // Reopened: a directory store counts every start as a restore. The space
+    // that predates the restore is not write-ready until it syncs, and a
+    // write there is refused.
+    let device = Device::open(Storage::directory(&dir), &unlock)
+        .await
+        .unwrap();
+    let pre_existing = device.space(first_id).await.unwrap();
+    assert!(!pre_existing.is_write_ready().await);
+    let refused = pre_existing
+        .create_records()
+        .unwrap()
+        .write(|tx| {
+            tx.set("notes", b"n1", "text", "two");
+        })
+        .await;
+    assert_eq!(refused.unwrap_err(), Error::SyncBeforeWriting);
+
+    // A space this device originates after the restore finishes and is
+    // write-ready at once: the grant of the creator's person goes through,
+    // and a record is written with no sync first.
+    let second = device
+        .create_space_of_kind("com.example.notes")
+        .await
+        .unwrap();
+    assert!(second.is_write_ready().await);
+    second
+        .create_records()
+        .unwrap()
+        .write(|tx| {
+            tx.insert("notes", b"n2")
+                .set("notes", b"n2", "text", "fresh");
+        })
+        .await
+        .unwrap();
+    device.close().await.unwrap();
+    drop((pre_existing, second));
+
+    // A second restore: a newly originated space still finishes.
+    let device = Device::open(Storage::directory(&dir), &unlock)
+        .await
+        .unwrap();
+    let third = device
+        .create_space_of_kind("com.example.notes")
+        .await
+        .unwrap();
+    assert!(third.is_write_ready().await);
+    third
+        .create_records()
+        .unwrap()
+        .write(|tx| {
+            tx.insert("notes", b"n3")
+                .set("notes", b"n3", "text", "again");
+        })
+        .await
+        .unwrap();
+    device.close().await.unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -450,6 +450,34 @@ fn after_restore_head() {
         };
         assert_eq!(head.may_sign(&log), expected.as_bool().unwrap(), "{name}");
     }
+
+    // A space the device originates after the restore: it adds that log to
+    // key 5 in the genesis commit, as `synced` does, so it may sign there at
+    // once; a genesis learned from another party is not added and still
+    // waits for a sync (at-rest.md, "After a restore", step 2).
+    let originated = &a["originated"];
+    let originated_head = Head::read(&bytes(originated, "head")).unwrap();
+    assert_eq!(originated_head.encode(), bytes(originated, "head"));
+    let originated_log: [u8; 32] = array(originated, "originated_log");
+    let learned_log: [u8; 32] = array(originated, "learned_log");
+    assert!(!head.may_sign(&originated_log));
+    let mut committed = head.clone();
+    committed.add_synced(&originated_log);
+    assert_eq!(committed, originated_head);
+    let originated_may_sign = originated["may_sign"].as_object().unwrap();
+    assert_eq!(originated_may_sign.len(), 2);
+    for (name, expected) in originated_may_sign {
+        let log = match name.as_str() {
+            "an originated genesis, added in its commit" => originated_log,
+            "a learned genesis, not added" => learned_log,
+            other => panic!("an unknown log: {other}"),
+        };
+        assert_eq!(
+            originated_head.may_sign(&log),
+            expected.as_bool().unwrap(),
+            "{name}"
+        );
+    }
 }
 
 #[test]
