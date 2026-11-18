@@ -24,14 +24,14 @@ ext-restricted-spaces = ["frasil-keys/ext-restricted-spaces", "frasil-space/ext-
 ext-guests = ["frasil-space/ext-guests"]
 
 [dependencies]
-frasil-adapter = { path = "../frasil-adapter", version = "0.1.0" }
-frasil-base = { path = "../frasil-base", version = "0.1.0" }
-frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
-frasil-events = { path = "../frasil-events", version = "0.1.0" }
-frasil-identity = { path = "../frasil-identity", version = "0.1.0" }
-frasil-keys = { path = "../frasil-keys", version = "0.1.0" }
-frasil-peers = { path = "../frasil-peers", version = "0.1.0" }
-frasil-space = { path = "../frasil-space", version = "0.1.0" }
+frasil-adapter = { path = "../frasil-adapter", version = "0.1.1" }
+frasil-base = { path = "../frasil-base", version = "0.1.1" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.1" }
+frasil-events = { path = "../frasil-events", version = "0.1.1" }
+frasil-identity = { path = "../frasil-identity", version = "0.1.1" }
+frasil-keys = { path = "../frasil-keys", version = "0.1.1" }
+frasil-peers = { path = "../frasil-peers", version = "0.1.1" }
+frasil-space = { path = "../frasil-space", version = "0.1.1" }
 zeroize.workspace = true
 
 [dev-dependencies]

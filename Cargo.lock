@@ -1512,7 +1512,7 @@ dependencies = [
 
 [[package]]
 name = "frasil"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "diesel",
  "frasil-adapter",
@@ -1563,14 +1563,14 @@ dependencies = [
 
 [[package]]
 name = "frasil-adapter"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
 ]
 
 [[package]]
 name = "frasil-adapter-blobs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-adapter",
  "frasil-adapter-records",
@@ -1585,7 +1585,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-adapter-loro"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-adapter",
  "frasil-base",
@@ -1599,7 +1599,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-adapter-records"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-adapter",
  "frasil-base",
@@ -1611,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-admission"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -1630,7 +1630,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-app-requests"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "curve25519-dalek",
  "frasil-base",
@@ -1644,7 +1644,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-base"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-testkit",
  "serde",
@@ -1653,7 +1653,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-conformance"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil",
  "frasil-admission",
@@ -1682,7 +1682,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-crypto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chacha20poly1305",
  "curve25519-dalek",
@@ -1708,7 +1708,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-deposit-tokens"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "curve25519-dalek",
  "frasil-base",
@@ -1725,7 +1725,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-drive"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-testkit",
  "loro",
@@ -1735,7 +1735,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-ephemeral"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -1748,7 +1748,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-events"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -1759,7 +1759,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-identity"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -1773,7 +1773,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-index-derive"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1782,7 +1782,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-iroh"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -1798,7 +1798,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-keys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -1811,7 +1811,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-libraries"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -1823,7 +1823,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-peers"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -1837,7 +1837,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-record-memory"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-crypto",
  "frasil-events",
@@ -1848,7 +1848,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-relay"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "frasil-adapter",
@@ -1883,7 +1883,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-resolve"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-testkit",
@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-space"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -1911,7 +1911,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-space-file"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-adapter",
  "frasil-base",
@@ -1924,7 +1924,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -1940,7 +1940,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-testkit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil",
  "hex",
@@ -1951,7 +1951,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-transport"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -1967,7 +1967,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-uniffi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil",
  "tokio",
@@ -1977,7 +1977,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-units"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-adapter",
  "frasil-adapter-loro",
@@ -1998,7 +1998,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-wasm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "curve25519-dalek",
  "frasil",

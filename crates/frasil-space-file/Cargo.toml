@@ -11,10 +11,10 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-frasil-adapter = { path = "../frasil-adapter", version = "0.1.0" }
-frasil-base = { path = "../frasil-base", version = "0.1.0" }
-frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
-frasil-events = { path = "../frasil-events", version = "0.1.0" }
+frasil-adapter = { path = "../frasil-adapter", version = "0.1.1" }
+frasil-base = { path = "../frasil-base", version = "0.1.1" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.1" }
+frasil-events = { path = "../frasil-events", version = "0.1.1" }
 zeroize.workspace = true
 
 [dev-dependencies]

@@ -16,9 +16,9 @@ categories.workspace = true
 ext-file-versions = []
 
 [dependencies]
-frasil-adapter = { path = "../frasil-adapter", version = "0.1.0" }
-frasil-adapter-records = { path = "../frasil-adapter-records", version = "0.1.0" }
-frasil-base = { path = "../frasil-base", version = "0.1.0" }
+frasil-adapter = { path = "../frasil-adapter", version = "0.1.1" }
+frasil-adapter-records = { path = "../frasil-adapter-records", version = "0.1.1" }
+frasil-base = { path = "../frasil-base", version = "0.1.1" }
 
 [dev-dependencies]
 frasil-events = { path = "../frasil-events" }
