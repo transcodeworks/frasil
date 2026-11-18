@@ -17,10 +17,10 @@ categories.workspace = true
 ext-restricted-spaces = ["frasil-keys/ext-restricted-spaces"]
 
 [dependencies]
-frasil-base = { path = "../frasil-base", version = "0.1.0" }
-frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
-frasil-keys = { path = "../frasil-keys", version = "0.1.0" }
-frasil-transport = { path = "../frasil-transport", version = "0.1.0" }
+frasil-base = { path = "../frasil-base", version = "0.1.1" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.1" }
+frasil-keys = { path = "../frasil-keys", version = "0.1.1" }
+frasil-transport = { path = "../frasil-transport", version = "0.1.1" }
 zeroize.workspace = true
 
 [dev-dependencies]

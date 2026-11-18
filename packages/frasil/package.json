@@ -1,6 +1,6 @@
 {
   "name": "@frasil/client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Frasil's client for browsers: devices that share spaces of documents, tables and files, end to end encrypted, online and offline, through always-on peers that hold no key. WebAssembly inside; one install, no setup.",
   "license": "MIT",
   "homepage": "https://github.com/transcodeworks/frasil",

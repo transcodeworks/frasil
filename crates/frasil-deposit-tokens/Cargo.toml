@@ -14,10 +14,10 @@ categories.workspace = true
 # `rand_core` re-exports the RNG traits the VOPRF draws through, so that a
 # draw's bytes can be replayed; it names no crate voprf does not bring.
 curve25519-dalek = { workspace = true, features = ["rand_core"] }
-frasil-base = { path = "../frasil-base", version = "0.1.0" }
-frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
-frasil-libraries = { path = "../frasil-libraries", version = "0.1.0", features = ["ext-deposit-tokens"] }
-frasil-transport = { path = "../frasil-transport", version = "0.1.0", features = ["ext-deposit-tokens"] }
+frasil-base = { path = "../frasil-base", version = "0.1.1" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.1" }
+frasil-libraries = { path = "../frasil-libraries", version = "0.1.1", features = ["ext-deposit-tokens"] }
+frasil-transport = { path = "../frasil-transport", version = "0.1.1", features = ["ext-deposit-tokens"] }
 subtle.workspace = true
 voprf.workspace = true
 zeroize.workspace = true

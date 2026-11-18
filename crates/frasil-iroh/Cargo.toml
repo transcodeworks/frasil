@@ -11,8 +11,8 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
-frasil-transport = { path = "../frasil-transport", version = "0.1.0" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.1" }
+frasil-transport = { path = "../frasil-transport", version = "0.1.1" }
 iroh.workspace = true
 rustls.workspace = true
 socket2.workspace = true

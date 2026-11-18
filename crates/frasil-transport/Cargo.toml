@@ -27,9 +27,9 @@ ext-next-endpoints = []
 ext-deposit-tokens = []
 
 [dependencies]
-frasil-base = { path = "../frasil-base", version = "0.1.0" }
-frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
-frasil-peers = { path = "../frasil-peers", version = "0.1.0" }
+frasil-base = { path = "../frasil-base", version = "0.1.1" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.1" }
+frasil-peers = { path = "../frasil-peers", version = "0.1.1" }
 subtle.workspace = true
 zeroize.workspace = true
 
