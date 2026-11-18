@@ -553,7 +553,12 @@ When `continuity` gives `Restored`, the device:
    member that holds the log the newest event of each of its signers
    there, places it, sets each tip to the newer of the two, and adds the
    log to key 5 ([events.md](events.md), restored devices). A log it has
-   never heard of is no exception.
+   never heard of is no exception. A log the device originates after the
+   restore is the one exception: when the device creates a space, writing
+   its own genesis and holding the only replica, it adds that log to key 5
+   in the same commit as the genesis, so it may sign there at once with
+   nothing to fetch. This holds only for a genesis the device generates
+   itself; a genesis learned from another party stays subject to this step.
 3. **Waits, or returns as a new device,** if no reachable party holds a log.
 4. **Restarts its ephemeral epoch** above any it used
    ([ext-ephemeral.md](ext-ephemeral.md)).

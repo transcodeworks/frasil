@@ -443,6 +443,10 @@ relying on the device, for example by wrapping nothing for it.
   events it signed, MUST NOT sign in a log until it has fetched its own
   latest event there from a peer that holds the log. It then continues from
   that event's `seq`.
+- A log the device itself originates after the restore is the exception: a
+  genesis it writes locally starts a log no other party holds and in which
+  it has lost nothing, so it MAY sign there at once. This covers only a
+  genesis the device generates itself, not one it learns from another party.
 - If no reachable peer holds the log, it waits, or returns as a new device.
   A device that cannot tell whether its state is current MUST treat itself
   as restored.

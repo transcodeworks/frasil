@@ -1424,6 +1424,22 @@ def at_rest_vectors(persons: dict | None = None) -> dict:
         "may_sign": {"the space, synced since": may_sign(restored_head, space),
                      "alice's list, not yet synced": may_sign(restored_head, alice)},
     }
+    # A space the device originates after the restore: it writes its own
+    # genesis and adds that log to key 5 in the genesis commit, so it may sign
+    # there at once; a genesis learned from another party is not added and
+    # still waits for a sync (section 3.6, step 2).
+    originated = example("at-rest/originated-space")
+    learned = example("at-rest/learned-space")
+    originated_bytes = head_value(store_id, 4, tips, restored=4, confirmed=[space, originated])
+    originated_head = uncbor(originated_bytes)
+    after["originated"] = {
+        "head": h(originated_bytes),
+        "originated_log": h(originated),
+        "learned_log": h(learned),
+        "may_sign": {"an originated genesis, added in its commit":
+                     may_sign(originated_head, originated),
+                     "a learned genesis, not added": may_sign(originated_head, learned)},
+    }
     revisions = []
     for name, change in [("this revision", lambda m: None),
                          ("no revision", lambda m: m.pop(6)),
@@ -1768,6 +1784,9 @@ def self_test() -> None:
                         "Restored", "Restored", "Current"], outcomes
     assert a["after_restore"]["may_sign"] == {"the space, synced since": True,
                                               "alice's list, not yet synced": False}
+    assert a["after_restore"]["originated"]["may_sign"] == {
+        "an originated genesis, added in its commit": True,
+        "a learned genesis, not added": False}
     mark_errors = {c["name"]: c["error"] for c in a["mark"]["refusals"]}
     assert mark_errors == {"an unknown version": "UnsupportedVersion",
                            "one byte short": "Malformed",
