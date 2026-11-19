@@ -462,8 +462,9 @@ impl Blobs {
         Err(Error::Class("Missing"))
     }
 
-    /// Whether the device can give an object's bytes. Under `held`, a file
-    /// found changed is withdrawn, and its object is no longer stored.
+    /// Whether the device can give an object's bytes, by its first chunk
+    /// alone, as an upload starts: never the whole object. Under `held`, a
+    /// file found changed is withdrawn, and its object is no longer stored.
     #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
     async fn stored(
         &self,
@@ -473,7 +474,7 @@ impl Blobs {
         self.space()
             .device
             .engine()
-            .stored_object(space, locator)
+            .object_upload(space, locator)
             .await
             .is_some()
     }
