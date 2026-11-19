@@ -447,17 +447,31 @@ impl ObjectRead {
         locator: &Locator,
         range: core::ops::Range<u64>,
     ) -> Option<Self> {
+        state
+            .replicas
+            .get(space)?
+            .is_located(locator)
+            .then(|| Self::by_id(state, space, locator, range))
+            .flatten()
+    }
+
+    /// [`of_range`](Self::of_range), for an object the store holds whole
+    /// by its ID whether or not its locator is known yet: what it reads is
+    /// the object's only once its bytes hash to the locator (units.md,
+    /// "Reading an object", step 0).
+    fn by_id(
+        state: &crate::device::State,
+        space: &EventId,
+        locator: &Locator,
+        range: core::ops::Range<u64>,
+    ) -> Option<Self> {
         let replica = state.replicas.get(space)?;
-        if !replica.is_located(locator) {
-            return None;
-        }
         let (header, stored) = replica.stored_parts(locator)?;
         let key = frasil_units::objects::Header::read(&header)
             .ok()
             .and_then(|read| replica.object_key(&read.key_reference))
             .map(|(key, _)| key);
-        let mut memory = replica.chunks_in_memory(locator);
-        memory.retain(|index, _| range.contains(index));
+        let memory = replica.chunks_in_memory_in(locator, range.clone());
         let stored: Vec<u64> = stored
             .into_iter()
             .filter(|index| range.contains(index) && !memory.contains_key(index))
@@ -551,18 +565,37 @@ impl ObjectRead {
     }
 }
 
-/// How many chunks a chunk-by-chunk read takes from the store at once.
+/// How many chunks a chunk-by-chunk read takes from the store at once: a
+/// read holds about twice this many chunks, sealed and opened.
 #[cfg(feature = "adapter-blobs")]
 const READ_BATCH: u64 = 8;
 
-/// An object's plaintext, from [`Engine::plain`]: chunk by chunk from the
-/// store, or whole where the device holds it otherwise.
+/// An object's plaintext chunk by chunk, from [`Engine::plain`]: opened
+/// from the store, or read from the file of an object the application
+/// holds.
 #[cfg(feature = "adapter-blobs")]
 pub(crate) enum Plain {
-    /// Chunk by chunk.
+    /// From the store.
     Chunks(Box<PlainChunks>),
-    /// Whole: a held object, or one the replica keeps in memory.
-    Whole(Vec<u8>),
+    /// From the application's file (at-rest.md, "Held objects").
+    Held(Box<crate::held::HeldChunks>),
+}
+
+#[cfg(feature = "adapter-blobs")]
+impl Plain {
+    /// The next chunk, by index, with its plaintext; `None` after the last
+    /// one asked for.
+    ///
+    /// # Errors
+    ///
+    /// `Missing` when the store or the file no longer holds the object;
+    /// `Decrypt`, `Malformed`, `ObjectMismatch`; the provider's.
+    pub(crate) async fn next(&mut self) -> Result<Option<(u64, Vec<u8>)>> {
+        match self {
+            Self::Chunks(chunks) => chunks.next().await,
+            Self::Held(chunks) => chunks.next().await,
+        }
+    }
 }
 
 /// An object's plaintext chunk by chunk (units.md, 3.3 Reading an object).
@@ -584,6 +617,8 @@ pub(crate) struct PlainChunks {
     end: u64,
     /// Whether the read covers every chunk, so that step 7 runs.
     whole: bool,
+    /// Whether the reader holds `k(S)`, so that step 7 is one of its steps.
+    by_content_key: bool,
     opened: std::collections::VecDeque<(u64, Vec<u8>)>,
 }
 
@@ -620,24 +655,42 @@ impl PlainChunks {
             let plain = reader
                 .open_many(&sealed, crate::parallel::for_bytes(bytes))
                 .map_err(Error::class)?;
-            self.opened
-                .extend(sealed.iter().map(|(index, _)| *index).zip(plain));
+            drop(chunks);
+            self.opened.extend(batch.clone().zip(plain));
             self.next = batch.end;
             // Step 7 before the last chunk is given.
             if self.whole && self.next >= count {
                 if let Some(reader) = self.reader.take() {
                     reader.finish().map_err(Error::class)?;
                 }
-                self.engine.mark_verified(self.holder, self.locator);
+                self.engine
+                    .mark_verified(self.holder, self.locator, self.by_content_key);
             }
         }
     }
 }
 
+/// What one pass over an object's stored chunks found (units.md, 3.3
+/// Reading an object), from [`Engine::pass`].
+#[cfg(feature = "adapter-blobs")]
+struct Pass {
+    /// The SHA-256 of the stored bytes, when the pass hashed them (step 0).
+    digest: Option<[u8; 32]>,
+    /// The first of steps 1 to 7 that failed, by the order of the steps.
+    fault: Option<Error>,
+    /// The reader, when the pass did not open the chunks: ready to open
+    /// them from the first.
+    reader: Option<frasil_units::objects::ChunkReader>,
+    /// The plaintext of the chunks the pass was asked to keep, once every
+    /// step it ran passed.
+    kept: std::collections::VecDeque<(u64, Vec<u8>)>,
+}
+
 #[cfg(feature = "adapter-blobs")]
 impl Engine {
     /// The chunks of a stored object in a range of indices, every one of
-    /// them, read without the device's lock; `None` when one is missing.
+    /// them, read without the device's lock, by the object's ID; `None`
+    /// when one is missing.
     async fn stored_chunks(
         &self,
         space: &EventId,
@@ -646,7 +699,7 @@ impl Engine {
     ) -> Result<Option<BTreeMap<u64, Chunk>>> {
         let read = {
             let state = self.lock().await;
-            ObjectRead::of_range(&state, space, locator, range.clone())
+            ObjectRead::by_id(&state, space, locator, range.clone())
         };
         let Some(read) = read else {
             return Ok(None);
@@ -657,12 +710,125 @@ impl Engine {
         Ok(chunks.keys().copied().eq(range).then_some(chunks))
     }
 
+    /// One pass over every chunk of an object the store holds whole, a few
+    /// chunks at a time, without the device's lock (units.md, 3.3 Reading
+    /// an object): with `digest`, step 0's hash of the stored bytes; step 4
+    /// on each chunk's length; with `open`, steps 6 and 7, keeping the
+    /// plaintext of the chunks in `keep` and nothing else. `reader` is steps
+    /// 1 to 3 and 5 on the header. A fault ends the opening, not the
+    /// hashing, so that step 0 still decides first; the caller runs step 0
+    /// on the digest. `None` when a chunk is missing from the store.
+    #[allow(clippy::too_many_arguments)]
+    async fn pass(
+        &self,
+        holder: &EventId,
+        locator: &Locator,
+        header: &[u8],
+        size: u64,
+        reader: Result<frasil_units::objects::ChunkReader>,
+        digest: bool,
+        open: bool,
+        keep: core::ops::Range<u64>,
+    ) -> Result<Option<Pass>> {
+        use frasil_units::limits::{CHUNK_BYTES, NONCE_BYTES, TAG_BYTES};
+        let count = frasil_units::objects::chunk_count(size, CHUNK_BYTES as u64);
+        let mut hasher = if digest {
+            let length = u32::try_from(header.len()).map_err(|_| Error::Class("Malformed"))?;
+            let mut hasher = frasil_crypto::primitives::Sha256Hasher::new();
+            hasher.update(&length.to_be_bytes());
+            hasher.update(header);
+            Some(hasher)
+        } else {
+            None
+        };
+        // Steps 1 to 3 fail before step 4, and step 5 after it.
+        let (mut reader, header_fault, sealed_fault) = match reader {
+            Ok(reader) => (Some(reader), None, None),
+            Err(Error::Class("Sealed")) => (None, None, Some(Error::Class("Sealed"))),
+            Err(fault) => (None, Some(fault), None),
+        };
+        let mut length_fault = None;
+        let mut open_fault = None;
+        let mut kept = std::collections::VecDeque::new();
+        let mut at = 0;
+        while at < count {
+            // Without step 0 to run, a fault at steps 1 to 4 decides.
+            if hasher.is_none() && (header_fault.is_some() || length_fault.is_some()) {
+                break;
+            }
+            let batch = at..count.min(at + READ_BATCH);
+            let Some(chunks) = self.stored_chunks(holder, locator, batch.clone()).await? else {
+                return Ok(None);
+            };
+            for (index, chunk) in &chunks {
+                let chunk = chunk.bytes();
+                if let Some(hasher) = &mut hasher {
+                    hasher.update(chunk);
+                }
+                let expected =
+                    frasil_units::objects::plain_length(size, CHUNK_BYTES as u64, *index)
+                        + (NONCE_BYTES + TAG_BYTES) as u64;
+                if chunk.len() as u64 != expected {
+                    length_fault.get_or_insert(Error::Class("Malformed"));
+                }
+            }
+            let opening = open && length_fault.is_none() && open_fault.is_none();
+            if let Some(reader) = reader.as_mut().filter(|_| opening) {
+                let sealed: Vec<(u64, &[u8])> = chunks
+                    .iter()
+                    .map(|(index, chunk)| (*index, chunk.bytes()))
+                    .collect();
+                let bytes = sealed.iter().map(|(_, chunk)| chunk.len()).sum();
+                match reader.open_many(&sealed, crate::parallel::for_bytes(bytes)) {
+                    Ok(plain) => kept.extend(
+                        batch
+                            .clone()
+                            .zip(plain)
+                            .filter(|(index, _)| keep.contains(index)),
+                    ),
+                    Err(fault) => open_fault = Some(Error::class(fault)),
+                }
+            }
+            at = batch.end;
+        }
+        let mut id_fault = None;
+        if open
+            && header_fault.is_none()
+            && length_fault.is_none()
+            && open_fault.is_none()
+            && let Some(reader) = reader.take()
+        {
+            // 7.
+            id_fault = reader.finish().err().map(Error::class);
+        }
+        let fault = header_fault
+            .or(length_fault)
+            .or(sealed_fault)
+            .or(open_fault)
+            .or(id_fault);
+        if fault.is_some() {
+            kept.clear();
+        }
+        Ok(Some(Pass {
+            digest: hasher.map(frasil_crypto::primitives::Sha256Hasher::finish),
+            fault,
+            reader,
+            kept,
+        }))
+    }
+
     /// An object's plaintext, chunk by chunk where the store holds it,
     /// for the chunks in `chunks` (units.md, 3.3 Reading an object): the
     /// object of `space`, or for a reference the object of its source
-    /// opened with its object key. A read of some chunks only opens the
-    /// object whole once first, unless a read this session did, so that
-    /// every step ran on it.
+    /// opened with its object key. It holds a few chunks at a time, and
+    /// the chunks of a range it keeps.
+    ///
+    /// Before it gives any plaintext, every step has passed on the whole
+    /// object since the device opened: a read of every chunk runs them as
+    /// it goes, step 0 first in a pass of its own when the stored bytes
+    /// were not hashed yet; a read of some chunks runs them all in one
+    /// pass over the store that keeps only the chunks asked for, unless a
+    /// read this session already ran them.
     ///
     /// # Errors
     ///
@@ -689,51 +855,29 @@ impl Engine {
                     return None;
                 }
                 let checked = replica.is_checked(locator);
-                let read = ObjectRead::of_range(&state, &holder, locator, 0..0)?;
-                Some((holder, read.header, read.key, checked))
+                let located = replica.is_located(locator);
+                let read = ObjectRead::by_id(&state, &holder, locator, 0..0)?;
+                Some((holder, read.header, read.key, checked, located))
             })
         };
-        let whole = || async {
-            let bytes = match &reference {
-                None => self.object(space, locator).await?,
-                Some((source, key)) => self.referenced_object(space, locator, source, key).await?,
-            };
-            Ok(Plain::Whole(bytes))
+        let Some((holder, header, key, checked, located)) = found else {
+            // An object the application holds, or none held whole.
+            for holder in [Some(*space), reference.map(|(source, _)| source)]
+                .into_iter()
+                .flatten()
+            {
+                if let Some(held) = self.held_chunks(&holder, locator, chunks.clone()).await? {
+                    return Ok(Plain::Held(Box::new(held)));
+                }
+            }
+            return Err(Error::Class("Missing"));
         };
-        let Some((holder, header, key, checked)) = found else {
-            return whole().await;
-        };
-        let Ok(size) = frasil_units::objects::Header::read(&header).map(|h| h.size) else {
-            return whole().await;
-        };
+        // A whole object's header reads (`HeldObject::is_whole`).
+        let size = frasil_units::objects::Header::read(&header)
+            .map_err(Error::class)?
+            .size;
         let count =
             frasil_units::objects::chunk_count(size, frasil_units::limits::CHUNK_BYTES as u64);
-        // 0. The stored bytes hash to the locator, before any plaintext
-        // goes out.
-        if !checked {
-            let mut digest = frasil_crypto::primitives::Sha256Hasher::new();
-            let length = u32::try_from(header.len()).map_err(|_| Error::Class("Malformed"))?;
-            digest.update(&length.to_be_bytes());
-            digest.update(&header);
-            let mut at = 0;
-            while at < count {
-                let batch = at..count.min(at + READ_BATCH);
-                let Some(chunks) = self.stored_chunks(&holder, locator, batch.clone()).await?
-                else {
-                    return whole().await;
-                };
-                for chunk in chunks.values() {
-                    digest.update(chunk.bytes());
-                }
-                at = batch.end;
-            }
-            if digest.finish() != locator[32..] {
-                return Err(Error::Class("ObjectMismatch"));
-            }
-            if let Some(replica) = self.lock().await.replicas.get_mut(&holder) {
-                replica.mark_checked(locator);
-            }
-        }
         let (opens, opening) = match &reference {
             None => (
                 *space,
@@ -744,41 +888,73 @@ impl Engine {
                 frasil_units::objects::Opening::ObjectKey(object_key),
             ),
         };
+        let by_content_key = reference.is_none();
+        // 1 to 3, and 5.
         let reader = frasil_units::objects::ChunkReader::new(&header, &opens, opening, locator)
-            .map_err(Error::class)?;
+            .map_err(Error::class);
         let wanted = chunks.start.min(count)..chunks.end.min(count);
+        let whole = wanted == (0..count);
+        // Some chunks only: every step runs on the whole first, once.
+        let open = !whole && !self.is_verified(&holder, locator, by_content_key);
         let mut plain = PlainChunks {
             engine: self.clone(),
             holder,
             locator: *locator,
-            reader: Some(reader),
+            reader: None,
             next: wanted.start,
             end: wanted.end,
-            whole: wanted == (0..count),
+            whole,
+            by_content_key,
             opened: std::collections::VecDeque::new(),
         };
-        if !plain.whole && !self.is_verified(&holder, locator) {
-            // Every step once, keeping the chunks asked for.
-            let mut all = PlainChunks {
-                next: 0,
-                end: count,
-                whole: true,
-                ..plain
-            };
-            let mut kept = std::collections::VecDeque::new();
-            while let Some((index, chunk)) = all.next().await? {
-                if wanted.contains(&index) {
-                    kept.push_back((index, chunk));
+        if checked && !open {
+            plain.reader = Some(reader?);
+            return Ok(Plain::Chunks(Box::new(plain)));
+        }
+        let pass = self
+            .pass(
+                &holder,
+                locator,
+                &header,
+                size,
+                reader,
+                !checked,
+                open,
+                wanted.clone(),
+            )
+            .await?
+            .ok_or(Error::Class("Missing"))?;
+        // 0. The stored bytes hash to the locator, before any plaintext
+        // goes out. Found in the store by its ID, an object is located by
+        // its bytes, and bytes of another locator are not this object.
+        if let Some(digest) = pass.digest {
+            let mut found = *locator;
+            found[32..].copy_from_slice(&digest);
+            if let Some(replica) = self.lock().await.replicas.get_mut(&holder) {
+                if !located {
+                    replica.locate(found);
+                }
+                if found == *locator {
+                    replica.mark_checked(locator);
                 }
             }
-            plain = PlainChunks {
-                reader: None,
-                next: wanted.end,
-                end: wanted.end,
-                whole: false,
-                opened: kept,
-                ..all
-            };
+            if found != *locator {
+                return Err(Error::Class(if located {
+                    "ObjectMismatch"
+                } else {
+                    "Missing"
+                }));
+            }
+        }
+        if let Some(fault) = pass.fault {
+            return Err(fault);
+        }
+        if open {
+            self.mark_verified(holder, *locator, by_content_key);
+            plain.next = wanted.end;
+            plain.opened = pass.kept;
+        } else {
+            plain.reader = pass.reader;
         }
         Ok(Plain::Chunks(Box::new(plain)))
     }
@@ -2166,6 +2342,9 @@ impl Engine {
         Ok(id)
     }
 }
+
+#[cfg(all(test, feature = "adapter-blobs"))]
+mod plain_tests;
 
 #[cfg(test)]
 mod tests {

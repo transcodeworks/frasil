@@ -360,6 +360,46 @@ async fn blobs_read_whole_streamed_and_by_range_alike() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// After the device opens again, a blob it stores is found in the store by
+/// its ID alone, and reads by range, streamed and whole as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_blob_reads_by_range_and_streamed_after_the_device_opens_again() {
+    const CHUNK: usize = 1_048_536;
+    let dir = temp_dir("reopened");
+    let bytes: Vec<u8> = (0..3 * CHUNK + 11).map(|i| (i % 249) as u8).collect();
+    let (space, stream, id) = {
+        let device = Device::open(Storage::directory(&dir), &[7; 32])
+            .await
+            .unwrap();
+        let space = device.create_space().await.unwrap();
+        let blobs = space.create_blobs().unwrap();
+        let id = blobs.put(None, &bytes).await.unwrap();
+        (space.id(), blobs.id(), id)
+    };
+    let device = Device::open(Storage::directory(&dir), &[7; 32])
+        .await
+        .unwrap();
+    let blobs = device
+        .space(space)
+        .await
+        .unwrap()
+        .blobs(stream)
+        .await
+        .unwrap();
+    let offset = 2 * CHUNK as u64 - 5;
+    let range = blobs.get_range(id, offset, 10).await.unwrap().unwrap();
+    assert_eq!(range, bytes[offset as usize..offset as usize + 10]);
+    let mut streamed = Vec::new();
+    blobs
+        .get_stream(id, &mut streamed, |_, _| {})
+        .await
+        .unwrap();
+    assert_eq!(streamed, bytes);
+    assert_eq!(blobs.get(id).await.unwrap().unwrap(), bytes);
+    drop(device);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[cfg(feature = "ext-drive")]
 #[tokio::test]
 async fn a_drive_change_says_where_it_was_made_and_a_drive_observes() {
