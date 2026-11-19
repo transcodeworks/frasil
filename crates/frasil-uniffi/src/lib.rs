@@ -230,6 +230,13 @@ pub trait BlobStatusListener: Send + Sync {
     fn failed(&self, message: String);
 }
 
+/// Hears how far a blob's transfer has gone.
+#[uniffi::export(with_foreign)]
+pub trait BlobProgressListener: Send + Sync {
+    /// `bytes` done, of `total` when known. The count never goes back.
+    fn progress(&self, bytes: u64, total: Option<u64>);
+}
+
 /// Hears what a device holds for the first time.
 #[uniffi::export(with_foreign)]
 pub trait ArrivalListener: Send + Sync {
@@ -1533,6 +1540,62 @@ impl Blobs {
         let id = parse(&id)?;
         let blobs = self.inner.clone();
         Ok(run(async move { blobs.get(id).await }).await?)
+    }
+
+    /// Writes a blob's bytes to a new file at `path`, replacing any file
+    /// there, fetching them first from connected peers or members while
+    /// this device does not hold them whole. It holds a few chunks at a
+    /// time, never the blob. `listener` hears the fetch, then the writing.
+    /// A read that fails deletes the file.
+    pub async fn get_to_file(
+        &self,
+        id: String,
+        path: String,
+        listener: Option<Arc<dyn BlobProgressListener>>,
+    ) -> Result<()> {
+        let id = parse(&id)?;
+        let blobs = self.inner.clone();
+        run(async move {
+            let file =
+                tokio::fs::File::create(&path)
+                    .await
+                    .map_err(|error| FrasilError::Failed {
+                        reason: format!("the file at {path}: {error}"),
+                    })?;
+            let mut file = tokio::io::BufWriter::new(file);
+            let progress = move |bytes, total| {
+                if let Some(listener) = &listener {
+                    listener.progress(bytes, total);
+                }
+            };
+            let read = blobs.get_stream(id, &mut file, progress).await;
+            let read = match read {
+                Ok(()) => file
+                    .into_inner()
+                    .sync_all()
+                    .await
+                    .map_err(|error| FrasilError::Failed {
+                        reason: format!("the file at {path}: {error}"),
+                    }),
+                Err(error) => Err(error.into()),
+            };
+            if read.is_err() {
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+            read
+        })
+        .await
+    }
+
+    /// `length` bytes of a blob from byte `offset`, fewer at its end; none
+    /// while this device does not hold the blob whole. It opens only the
+    /// chunks the range needs, once every check has run on the whole blob
+    /// since the device opened; the first range read of a blob reads it
+    /// through once, holding a few chunks at a time.
+    pub async fn get_range(&self, id: String, offset: u64, length: u64) -> Result<Option<Vec<u8>>> {
+        let id = parse(&id)?;
+        let blobs = self.inner.clone();
+        Ok(run(async move { blobs.get_range(id, offset, length).await }).await?)
     }
 
     /// Where a blob's bytes stand on this device.

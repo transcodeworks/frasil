@@ -76,6 +76,12 @@ private final class Checkpoints: CheckpointListener, @unchecked Sendable {
     #expect(try await statuses.heard.until { _ in true } == .readable)
     let hash = try #require(try await blobs.contentHash(id: blob))
     #expect(hash.count == 32)
+    #expect(try await blobs.getRange(id: blob, offset: 6, length: 4) == Data("from".utf8))
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("frasil-get-to-file-\(UUID().uuidString)")
+    try await blobs.getToFile(id: blob, path: path.path, listener: nil)
+    #expect(try Data(contentsOf: path) == bytes)
+    try? FileManager.default.removeItem(at: path)
     _ = try await arrived.heard.until { $0 == .stream(space: space.id(), stream: blobs.id()) }
 
     space.pauseSync()

@@ -60,6 +60,11 @@ class SmokeTest {
         })
         assertEquals(BlobStatus.Readable, statuses.until { true })
         assertEquals(32, blobs.contentHash(blob)?.size)
+        assertContentEquals("from".toByteArray(), blobs.getRange(blob, 6uL, 4uL))
+        val file = java.io.File.createTempFile("frasil-get-to-file", null)
+        blobs.getToFile(blob, file.path, null)
+        assertContentEquals(bytes, file.readBytes())
+        file.delete()
         arrived.until { it == Arrival.Stream(space.id(), blobs.id()) }
 
         space.pauseSync()

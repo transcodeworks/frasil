@@ -624,6 +624,9 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 internal interface UniffiCallbackInterfaceArrivalListenerMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`arrival`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
+internal interface UniffiCallbackInterfaceBlobProgressListenerMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`bytes`: Long,`total`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
 internal interface UniffiCallbackInterfaceBlobStatusListenerMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`status`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
@@ -667,6 +670,25 @@ internal open class UniffiVTableCallbackInterfaceArrivalListener(
         `uniffiFree` = other.`uniffiFree`
         `uniffiClone` = other.`uniffiClone`
         `arrived` = other.`arrived`
+    }
+
+}
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "progress")
+internal open class UniffiVTableCallbackInterfaceBlobProgressListener(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `progress`: UniffiCallbackInterfaceBlobProgressListenerMethod0? = null,
+) : Structure() {
+    class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `progress`: UniffiCallbackInterfaceBlobProgressListenerMethod0? = null,
+    ): UniffiVTableCallbackInterfaceBlobProgressListener(`uniffiFree`,`uniffiClone`,`progress`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceBlobProgressListener) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `progress` = other.`progress`
     }
 
 }
@@ -818,6 +840,8 @@ internal object IntegrityCheckingUniffiLib {
     }
     external fun uniffi_frasil_uniffi_checksum_method_arrivallistener_arrived(
     ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobprogresslistener_progress(
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobstatuslistener_status(
     ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobstatuslistener_failed(
@@ -825,6 +849,10 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_frasil_uniffi_checksum_method_blobs_content_hash(
     ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobs_get(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobs_get_range(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobs_get_to_file(
     ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobs_id(
     ): Int
@@ -963,6 +991,7 @@ internal object UniffiLib {
     init {
         Native.register(UniffiLib::class.java, findLibraryName(componentName = "frasil_uniffi"))
         uniffiCallbackInterfaceArrivalListener.register(this)
+        uniffiCallbackInterfaceBlobProgressListener.register(this)
         uniffiCallbackInterfaceBlobStatusListener.register(this)
         uniffiCallbackInterfaceCheckpointListener.register(this)
         uniffiCallbackInterfaceDepositListener.register(this)
@@ -978,6 +1007,14 @@ external fun uniffi_frasil_uniffi_fn_free_arrivallistener(`handle`: Long,uniffi_
 external fun uniffi_frasil_uniffi_fn_init_callback_vtable_arrivallistener(`vtable`: UniffiVTableCallbackInterfaceArrivalListener,
 ): Unit
 external fun uniffi_frasil_uniffi_fn_method_arrivallistener_arrived(`ptr`: Long,`arrival`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): Unit
+external fun uniffi_frasil_uniffi_fn_clone_blobprogresslistener(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Long
+external fun uniffi_frasil_uniffi_fn_free_blobprogresslistener(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Unit
+external fun uniffi_frasil_uniffi_fn_init_callback_vtable_blobprogresslistener(`vtable`: UniffiVTableCallbackInterfaceBlobProgressListener,
+): Unit
+external fun uniffi_frasil_uniffi_fn_method_blobprogresslistener_progress(`ptr`: Long,`bytes`: Long,`total`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): Unit
 external fun uniffi_frasil_uniffi_fn_clone_blobstatuslistener(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Long
@@ -996,6 +1033,10 @@ external fun uniffi_frasil_uniffi_fn_free_blobs(`handle`: Long,uniffi_out_err: U
 external fun uniffi_frasil_uniffi_fn_method_blobs_content_hash(`ptr`: Long,`id`: RustBuffer.ByValue,
 ): Long
 external fun uniffi_frasil_uniffi_fn_method_blobs_get(`ptr`: Long,`id`: RustBuffer.ByValue,
+): Long
+external fun uniffi_frasil_uniffi_fn_method_blobs_get_range(`ptr`: Long,`id`: RustBuffer.ByValue,`offset`: Long,`length`: Long,
+): Long
+external fun uniffi_frasil_uniffi_fn_method_blobs_get_to_file(`ptr`: Long,`id`: RustBuffer.ByValue,`path`: RustBuffer.ByValue,`listener`: RustBuffer.ByValue,
 ): Long
 external fun uniffi_frasil_uniffi_fn_method_blobs_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
@@ -1281,6 +1322,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_frasil_uniffi_checksum_method_arrivallistener_arrived() != 19655) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobprogresslistener_progress() != 26501) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_frasil_uniffi_checksum_method_blobstatuslistener_status() != 42635) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1291,6 +1335,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get() != 3798) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get_range() != 52548) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get_to_file() != 13908) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_frasil_uniffi_checksum_method_blobs_id() != 54424) {
@@ -2264,6 +2314,324 @@ public object FfiConverterTypeArrivalListener: FfiConverter<ArrivalListener, Lon
 
 
 /**
+ * Hears how far a blob's transfer has gone.
+ */
+public interface BlobProgressListener {
+
+    /**
+     * `bytes` done, of `total` when known. The count never goes back.
+     */
+    fun `progress`(`bytes`: kotlin.ULong, `total`: kotlin.ULong?)
+
+    companion object
+}
+
+/**
+ * Hears how far a blob's transfer has gone.
+ */
+open class BlobProgressListenerImpl: Disposable, AutoCloseable, BlobProgressListener
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_frasil_uniffi_fn_free_blobprogresslistener(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_frasil_uniffi_fn_clone_blobprogresslistener(handle, status)
+        }
+    }
+
+
+    /**
+     * `bytes` done, of `total` when known. The count never goes back.
+     */override fun `progress`(`bytes`: kotlin.ULong, `total`: kotlin.ULong?)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_frasil_uniffi_fn_method_blobprogresslistener_progress(
+        it,
+        FfiConverterULong.lower(`bytes`),FfiConverterOptionalULong.lower(`total`),_status)
+}
+    }
+
+
+
+
+
+
+
+
+
+
+    /**
+     * @suppress
+     */
+    companion object
+
+}
+
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfaceBlobProgressListener {
+    internal object `progress`: UniffiCallbackInterfaceBlobProgressListenerMethod0 {
+        override fun callback(`uniffiHandle`: Long,`bytes`: Long,`total`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeBlobProgressListener.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`progress`(
+                    FfiConverterULong.lift(`bytes`),
+                    FfiConverterOptionalULong.lift(`total`),
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypeBlobProgressListener.handleMap.remove(handle)
+        }
+    }
+
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeBlobProgressListener.handleMap.clone(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfaceBlobProgressListener.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
+        `progress`,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_frasil_uniffi_fn_init_callback_vtable_blobprogresslistener(vtable)
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeBlobProgressListener: FfiConverter<BlobProgressListener, Long> {
+    internal val handleMap = UniffiHandleMap<BlobProgressListener>()
+
+    override fun lower(value: BlobProgressListener): Long {
+        if (value is BlobProgressListenerImpl) {
+             // Rust-implemented object.  Clone the handle and return it
+            return value.uniffiCloneHandle()
+         } else {
+            // Kotlin object, generate a new vtable handle and return that.
+            return handleMap.insert(value)
+         }
+    }
+
+    override fun lift(value: Long): BlobProgressListener {
+        if ((value and 1.toLong()) == 0.toLong()) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return BlobProgressListenerImpl(UniffiWithHandle, value)
+        } else {
+            // Kotlin-generated handle, get the object from the handle map
+            return handleMap.remove(value)
+        }
+    }
+
+    override fun read(buf: ByteBuffer): BlobProgressListener {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: BlobProgressListener) = 8UL
+
+    override fun write(value: BlobProgressListener, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+/**
  * Hears where a blob's bytes stand.
  */
 public interface BlobStatusListener {
@@ -2630,6 +2998,24 @@ public interface BlobsInterface {
     suspend fun `get`(`id`: kotlin.String): kotlin.ByteArray?
 
     /**
+     * `length` bytes of a blob from byte `offset`, fewer at its end; none
+     * while this device does not hold the blob whole. It opens only the
+     * chunks the range needs, once every check has run on the whole blob
+     * since the device opened; the first range read of a blob reads it
+     * through once, holding a few chunks at a time.
+     */
+    suspend fun `getRange`(`id`: kotlin.String, `offset`: kotlin.ULong, `length`: kotlin.ULong): kotlin.ByteArray?
+
+    /**
+     * Writes a blob's bytes to a new file at `path`, replacing any file
+     * there, fetching them first from connected peers or members while
+     * this device does not hold them whole. It holds a few chunks at a
+     * time, never the blob. `listener` hears the fetch, then the writing.
+     * A read that fails deletes the file.
+     */
+    suspend fun `getToFile`(`id`: kotlin.String, `path`: kotlin.String, `listener`: BlobProgressListener?)
+
+    /**
      * The stream's ID.
      */
     fun `id`(): kotlin.String
@@ -2796,6 +3182,63 @@ open class Blobs: Disposable, AutoCloseable, BlobsInterface
         { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_rust_buffer(future) },
         // lift function
         { FfiConverterOptionalByteArray.lift(it) },
+        // Error FFI converter
+        FrasilException.ErrorHandler,
+    )
+    }
+
+
+    /**
+     * `length` bytes of a blob from byte `offset`, fewer at its end; none
+     * while this device does not hold the blob whole. It opens only the
+     * chunks the range needs, once every check has run on the whole blob
+     * since the device opened; the first range read of a blob reads it
+     * through once, holding a few chunks at a time.
+     */
+    @Throws(FrasilException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `getRange`(`id`: kotlin.String, `offset`: kotlin.ULong, `length`: kotlin.ULong) : kotlin.ByteArray? {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_frasil_uniffi_fn_method_blobs_get_range(
+                uniffiHandle,
+                FfiConverterString.lower(`id`),FfiConverterULong.lower(`offset`),FfiConverterULong.lower(`length`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterOptionalByteArray.lift(it) },
+        // Error FFI converter
+        FrasilException.ErrorHandler,
+    )
+    }
+
+
+    /**
+     * Writes a blob's bytes to a new file at `path`, replacing any file
+     * there, fetching them first from connected peers or members while
+     * this device does not hold them whole. It holds a few chunks at a
+     * time, never the blob. `listener` hears the fetch, then the writing.
+     * A read that fails deletes the file.
+     */
+    @Throws(FrasilException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `getToFile`(`id`: kotlin.String, `path`: kotlin.String, `listener`: BlobProgressListener?) {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_frasil_uniffi_fn_method_blobs_get_to_file(
+                uniffiHandle,
+                FfiConverterString.lower(`id`),FfiConverterString.lower(`path`),FfiConverterOptionalTypeBlobProgressListener.lower(`listener`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+
         // Error FFI converter
         FrasilException.ErrorHandler,
     )
@@ -9089,6 +9532,38 @@ public object FfiConverterOptionalUByte: FfiConverterRustBuffer<kotlin.UByte?> {
 /**
  * @suppress
  */
+public object FfiConverterOptionalULong: FfiConverterRustBuffer<kotlin.ULong?> {
+    override fun read(buf: ByteBuffer): kotlin.ULong? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterULong.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.ULong?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterULong.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.ULong?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterULong.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?> {
     override fun read(buf: ByteBuffer): kotlin.String? {
         if (buf.get().toInt() == 0) {
@@ -9143,6 +9618,38 @@ public object FfiConverterOptionalByteArray: FfiConverterRustBuffer<kotlin.ByteA
         } else {
             buf.put(1)
             FfiConverterByteArray.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeBlobProgressListener: FfiConverterRustBuffer<BlobProgressListener?> {
+    override fun read(buf: ByteBuffer): BlobProgressListener? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeBlobProgressListener.read(buf)
+    }
+
+    override fun allocationSize(value: BlobProgressListener?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeBlobProgressListener.allocationSize(value)
+        }
+    }
+
+    override fun write(value: BlobProgressListener?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeBlobProgressListener.write(value, buf)
         }
     }
 }
