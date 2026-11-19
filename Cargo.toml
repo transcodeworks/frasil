@@ -1,6 +1,6 @@
 [workspace]
 # Every package is MIT.
-members = ["crates/*", "apps/relay", "tests/conformance", "tests/record-memory"]
+members = ["crates/*", "apps/relay", "tests/conformance", "tests/object-memory", "tests/record-memory"]
 resolver = "3"
 
 [workspace.package]
