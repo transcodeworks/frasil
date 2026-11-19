@@ -507,7 +507,8 @@ impl Engine {
     /// from memory: under `held`, the source is copied through the
     /// provider's writer and the file it made is put (at-rest.md, "Held
     /// objects"); otherwise the object is sealed from the source a few
-    /// chunks at a time ([`Engine::put_object_from`]). `progress` hears
+    /// chunks at a time ([`Engine::put_object_from`]). Then the unit that
+    /// names it is written. `progress` hears
     /// `(bytes, size)` as the copy or the sealing goes. Returns the unit,
     /// the locator and the plaintext's length.
     ///
@@ -525,18 +526,11 @@ impl Engine {
     ) -> Result<(EventId, Locator, u64)> {
         use frasil_adapter_blobs::content::Op;
         use frasil_adapter_blobs::entry::Entry;
-        let (locator, key, size, stored) =
-            match self.put_created_from(space, reader, progress).await? {
-                Some((locator, key, size)) => (locator, key, size, Vec::new()),
-                None => {
-                    let put = self.seal_from(space, reader, true, progress).await?;
-                    (put.locator, put.reference, put.size, put.parts)
-                }
-            };
+        let kept = self.keep_object_from(space, reader, true, progress).await?;
         let entry = Entry {
-            object: locator,
-            key,
-            size,
+            object: kept.locator,
+            key: kept.reference,
+            size: kept.size,
             media_type: None,
             name: name.map(str::to_owned),
             reference: None,
@@ -546,12 +540,43 @@ impl Engine {
                 space,
                 stream,
                 Op::put(handle, entry),
-                vec![locator],
+                vec![kept.locator],
                 &[],
-                stored,
+                kept.parts,
             )
             .await?;
-        Ok((id, locator, size))
+        Ok((id, kept.locator, kept.size))
+    }
+
+    /// A blob's object kept from a source read twice, before any unit
+    /// names it: under `held`, the source is copied through the provider's
+    /// writer and the file it made is put (at-rest.md, "Held objects");
+    /// otherwise the object is sealed from the source a few chunks at a
+    /// time ([`Engine::seal_from`]). With `in_unit`, a small sealed
+    /// object's parts are handed back to commit with the unit that names
+    /// it; without, the store or the provider holds the whole object when
+    /// this returns, ready to upload. `progress` hears `(bytes, size)` as
+    /// the copy or the sealing goes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::put_object_from`].
+    pub(crate) async fn keep_object_from(
+        &self,
+        space: EventId,
+        reader: &mut dyn ObjectReader,
+        in_unit: bool,
+        progress: &mut (impl FnMut(u64, u64) + MaybeSend),
+    ) -> Result<Sourced> {
+        match self.put_created_from(space, reader, progress).await? {
+            Some((locator, reference, size)) => Ok(Sourced {
+                locator,
+                reference,
+                size,
+                parts: Vec::new(),
+            }),
+            None => self.seal_from(space, reader, in_unit, progress).await,
+        }
     }
 
     /// [`Engine::put_created`] from a source: under `held`, the source is

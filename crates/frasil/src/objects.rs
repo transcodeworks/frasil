@@ -1592,6 +1592,21 @@ impl Engine {
         self.held_bytes(space, locator).await
     }
 
+    /// The plaintext length an object's header gives, once the replica
+    /// holds the header: read from the header alone.
+    #[cfg(feature = "adapter-blobs")]
+    pub(crate) async fn object_size(&self, space: &EventId, locator: &Locator) -> Option<u64> {
+        let header = self
+            .read(space, |replica| {
+                replica.object_header(locator).map(<[u8]>::to_vec)
+            })
+            .await
+            .ok()??;
+        frasil_units::objects::Header::read(&header)
+            .ok()
+            .map(|header| header.size)
+    }
+
     /// An object's stored bytes as the store keeps them, once whole.
     pub(crate) async fn sealed_object(
         &self,

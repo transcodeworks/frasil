@@ -10,7 +10,7 @@
 //! bytes. The source must not change while it is put: a source that does
 //! fails `Changed`, and nothing is kept.
 
-use super::{BlobId, Blobs};
+use super::{BlobId, Blobs, PutVersion};
 use crate::error::{Error, Result};
 use crate::held::ObjectReader;
 use frasil_store::BoxFuture;
@@ -58,25 +58,8 @@ impl Blobs {
         reader: &mut dyn ObjectReader,
         on_progress: impl FnMut(u64, Option<u64>) + MaybeSend,
     ) -> Result<BlobId> {
-        let engine = self.space().device.engine();
-        let handle = engine.platform().nonce::<16>()?;
-        let name = (!name.is_empty()).then_some(name);
-        let mut progress = Forward {
-            on_progress,
-            reported: None,
-        };
-        let (_, _, size) = engine
-            .put_blob_from(
-                self.space().id().event(),
-                self.opening(),
-                handle,
-                name,
-                reader,
-                &mut |done, total| progress.report(done, total),
-            )
-            .await?;
-        progress.report(size, size);
-        Ok(BlobId::from_bytes(handle))
+        self.put_version_at(reader, &PutVersion::new().named(name), on_progress)
+            .await
     }
 
     /// [`Blobs::put_at`] from a reader that can seek, such as a file:
@@ -93,11 +76,8 @@ impl Blobs {
         reader: impl AsyncRead + AsyncSeek + Unpin + MaybeSend,
         on_progress: impl FnMut(u64, Option<u64>) + MaybeSend,
     ) -> Result<BlobId> {
-        let mut reader = SeekReader {
-            reader,
-            position: None,
-        };
-        self.put_at(name, &mut reader, on_progress).await
+        self.put_version_seekable(reader, &PutVersion::new().named(name), on_progress)
+            .await
     }
 
     /// [`Blobs::put_at`] from the file at `path`. The file is read with
@@ -114,8 +94,113 @@ impl Blobs {
         path: impl AsRef<std::path::Path>,
         on_progress: impl FnMut(u64, Option<u64>) + MaybeSend,
     ) -> Result<BlobId> {
+        self.put_version_file(path, &PutVersion::new().named(name), on_progress)
+            .await
+    }
+
+    /// [`Blobs::put_version`] from a source read twice, as
+    /// [`Blobs::put_at`] reads it: a few chunks in memory, whatever the
+    /// blob's size, and every option of [`PutVersion`] honoured.
+    ///
+    /// Unpublished, the object is kept on this device and the unit that
+    /// names it is written at once, without waiting for any peer: both
+    /// are in the store when this returns, so the device may close or the
+    /// process end. A connected peer is handed the object, then the unit,
+    /// a chunk at a time; after a reopen the device does the same once it
+    /// connects, and an upload a peer holds part of goes on from the
+    /// slices it holds. [`Blobs::is_durable`] says when a peer holds the
+    /// blob, and [`Blobs::pending`] lists those it does not yet.
+    ///
+    /// [`PutVersion::published`]: the object is kept first, in the store
+    /// or the application's file, then uploaded to a connected peer a
+    /// chunk at a time, and the unit is written only once the peer holds
+    /// it whole. Nothing reaches the stream when no peer takes it, and the
+    /// object stays on this device, ready to be put again.
+    ///
+    /// `on_progress(bytes, Some(size))` follows the second reading, and
+    /// ends at `(size, Some(size))` once the blob is put; the upload of a
+    /// published put comes between the two.
+    ///
+    /// # Errors
+    ///
+    /// `Missing` when published and no connected peer took every chunk;
+    /// `Changed` when the source changed while it was read; the reader's;
+    /// then as [`Blobs::put`].
+    pub async fn put_version_at(
+        &self,
+        reader: &mut dyn ObjectReader,
+        how: &PutVersion,
+        on_progress: impl FnMut(u64, Option<u64>) + MaybeSend,
+    ) -> Result<BlobId> {
+        let engine = self.space().device.engine();
+        let space = self.space().id().event();
+        let handle = engine.platform().nonce::<16>()?;
+        let mut progress = Forward {
+            on_progress,
+            reported: None,
+        };
+        // A published object is in the store before the peer is asked for
+        // it; an unpublished small one is committed with its unit.
+        let kept = engine
+            .keep_object_from(space, reader, !how.is_published(), &mut |done, total| {
+                progress.report(done, total);
+            })
+            .await?;
+        let id = self
+            .put_kept(
+                handle,
+                how,
+                kept.locator,
+                kept.reference,
+                kept.size,
+                kept.parts,
+            )
+            .await?;
+        progress.report(kept.size, kept.size);
+        Ok(id)
+    }
+
+    /// [`Blobs::put_version_at`] from a reader that can seek, such as a
+    /// file: it is read to its end, then sought back to its start and read
+    /// again.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Connection`] when the reader fails; then as
+    /// [`Blobs::put_version_at`].
+    pub async fn put_version_seekable(
+        &self,
+        reader: impl AsyncRead + AsyncSeek + Unpin + MaybeSend,
+        how: &PutVersion,
+        on_progress: impl FnMut(u64, Option<u64>) + MaybeSend,
+    ) -> Result<BlobId> {
+        let mut reader = SeekReader {
+            reader,
+            position: None,
+        };
+        self.put_version_at(&mut reader, how, on_progress).await
+    }
+
+    /// [`Blobs::put_version_at`] from the file at `path`, read with the
+    /// platform's blocking reads, one piece at a time. The file must not
+    /// change while it is put; once this returns the device no longer
+    /// reads it, except under the `held` policy, where the provider's copy
+    /// is the blob's.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Connection`] when the file does not open or a read fails;
+    /// then as [`Blobs::put_version_at`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn put_version_file(
+        &self,
+        path: impl AsRef<std::path::Path>,
+        how: &PutVersion,
+        on_progress: impl FnMut(u64, Option<u64>) + MaybeSend,
+    ) -> Result<BlobId> {
         let file = std::fs::File::open(path).map_err(|error| io(&error))?;
-        self.put_at(name, &mut FileReader(file), on_progress).await
+        self.put_version_at(&mut FileReader(file), how, on_progress)
+            .await
     }
 }
 
