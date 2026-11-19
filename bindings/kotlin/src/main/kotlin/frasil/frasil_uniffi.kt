@@ -817,135 +817,135 @@ internal object IntegrityCheckingUniffiLib {
         uniffiCheckApiChecksums(this)
     }
     external fun uniffi_frasil_uniffi_checksum_method_arrivallistener_arrived(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobstatuslistener_status(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobstatuslistener_failed(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobs_content_hash(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobs_get(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobs_id(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobs_observe_status(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobs_put(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobs_status(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_checkpointlistener_reported(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_depositlistener_reported(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_arrivals(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_checkpoint_policy(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_checkpoint_reports(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_connect(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_create_space(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_deposit_reports(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_deposit_tokens(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_give_deposit_grant(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_give_up_space(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_id(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_list_checkpoints(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_loss_reports(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_pause_sync(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_propose_list_checkpoint(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_resume_sync(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_retry_erasure(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_set_checkpoint_policy(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_shutdown(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_space(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_spaces(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_trust_deposit_keys(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_waiting_deposits(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_durablelistener_durable(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_durablelistener_failed(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_losslistener_reported(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_blobs(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_checkpoints(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_create_blobs(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_id(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_is_durable(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_is_sync_paused(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_is_write_ready(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_keeps_nothing_at_rest(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_late_changes(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_make_recovery_member(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_members(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_my_rank(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_observe_durable(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_observe_write_ready(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_pause_sync(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_propose_checkpoint(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_raise(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_rank(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_recovery_members(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_resume_sync(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_set_dormant(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_set_rank(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_wait_durable(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_wait_write_ready(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_subscription_cancel(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_writereadylistener_write_ready(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_writereadylistener_failed(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_constructor_device_open(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_constructor_device_open_in_memory(
-    ): Short
+    ): Int
     external fun ffi_frasil_uniffi_uniffi_contract_version(
     ): Int
 
@@ -1174,7 +1174,7 @@ external fun ffi_frasil_uniffi_rust_future_cancel_u8(`handle`: Long,
 external fun ffi_frasil_uniffi_rust_future_free_u8(`handle`: Long,
 ): Unit
 external fun ffi_frasil_uniffi_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
-): Byte
+): Int
 external fun ffi_frasil_uniffi_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
 external fun ffi_frasil_uniffi_rust_future_cancel_i8(`handle`: Long,
@@ -1190,7 +1190,7 @@ external fun ffi_frasil_uniffi_rust_future_cancel_u16(`handle`: Long,
 external fun ffi_frasil_uniffi_rust_future_free_u16(`handle`: Long,
 ): Unit
 external fun ffi_frasil_uniffi_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
-): Short
+): Int
 external fun ffi_frasil_uniffi_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
 external fun ffi_frasil_uniffi_rust_future_cancel_i16(`handle`: Long,
@@ -1278,199 +1278,199 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if (lib.uniffi_frasil_uniffi_checksum_method_arrivallistener_arrived() != 19655.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_arrivallistener_arrived() != 19655) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobstatuslistener_status() != 42635.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobstatuslistener_status() != 42635) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobstatuslistener_failed() != 6018.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobstatuslistener_failed() != 6018) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_content_hash() != 64733.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_content_hash() != 64733) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get() != 3798.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get() != 3798) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_id() != 54424.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_id() != 54424) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_observe_status() != 33479.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_observe_status() != 33479) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_put() != 65268.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_put() != 65268) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_status() != 56819.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_status() != 56819) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_checkpointlistener_reported() != 61045.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_checkpointlistener_reported() != 61045) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_depositlistener_reported() != 23119.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_depositlistener_reported() != 23119) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_arrivals() != 46067.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_arrivals() != 46067) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_checkpoint_policy() != 62905.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_checkpoint_policy() != 62905) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_checkpoint_reports() != 49596.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_checkpoint_reports() != 49596) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_connect() != 46518.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_connect() != 46518) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_create_space() != 44564.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_create_space() != 44564) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_deposit_reports() != 55454.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_deposit_reports() != 55454) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_deposit_tokens() != 48866.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_deposit_tokens() != 48866) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_give_deposit_grant() != 12964.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_give_deposit_grant() != 12964) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_give_up_space() != 46380.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_give_up_space() != 46380) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_id() != 27177.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_id() != 27177) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_list_checkpoints() != 53594.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_list_checkpoints() != 53594) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_loss_reports() != 59022.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_loss_reports() != 59022) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_pause_sync() != 60548.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_pause_sync() != 60548) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_propose_list_checkpoint() != 50671.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_propose_list_checkpoint() != 50671) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_resume_sync() != 61646.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_resume_sync() != 61646) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_retry_erasure() != 15419.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_retry_erasure() != 15419) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_set_checkpoint_policy() != 8087.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_set_checkpoint_policy() != 8087) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_shutdown() != 51948.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_shutdown() != 51948) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_space() != 10092.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_space() != 10092) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_spaces() != 8021.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_spaces() != 8021) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_trust_deposit_keys() != 30680.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_trust_deposit_keys() != 30680) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_waiting_deposits() != 11885.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_waiting_deposits() != 11885) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_durablelistener_durable() != 34948.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_durablelistener_durable() != 34948) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_durablelistener_failed() != 45463.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_durablelistener_failed() != 45463) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_losslistener_reported() != 62652.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_losslistener_reported() != 62652) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_blobs() != 62151.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_blobs() != 62151) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_checkpoints() != 34958.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_checkpoints() != 34958) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_create_blobs() != 35730.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_create_blobs() != 35730) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_id() != 51407.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_id() != 51407) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_is_durable() != 54191.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_is_durable() != 54191) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_is_sync_paused() != 47918.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_is_sync_paused() != 47918) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_is_write_ready() != 16985.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_is_write_ready() != 16985) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_keeps_nothing_at_rest() != 27635.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_keeps_nothing_at_rest() != 27635) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_late_changes() != 24937.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_late_changes() != 24937) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_make_recovery_member() != 37124.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_make_recovery_member() != 37124) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_members() != 16123.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_members() != 16123) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_my_rank() != 9883.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_my_rank() != 9883) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_observe_durable() != 32970.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_observe_durable() != 32970) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_observe_write_ready() != 15242.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_observe_write_ready() != 15242) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_pause_sync() != 7130.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_pause_sync() != 7130) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_propose_checkpoint() != 4232.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_propose_checkpoint() != 4232) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_raise() != 22098.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_raise() != 22098) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_rank() != 5452.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_rank() != 5452) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_recovery_members() != 52006.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_recovery_members() != 52006) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_resume_sync() != 32930.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_resume_sync() != 32930) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_set_dormant() != 1691.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_set_dormant() != 1691) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_set_rank() != 57764.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_set_rank() != 57764) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_wait_durable() != 14219.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_wait_durable() != 14219) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_wait_write_ready() != 61101.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_wait_write_ready() != 61101) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_subscription_cancel() != 4179.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_subscription_cancel() != 4179) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_writereadylistener_write_ready() != 1217.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_writereadylistener_write_ready() != 1217) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_writereadylistener_failed() != 64503.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_writereadylistener_failed() != 64503) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_constructor_device_open() != 9228.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_constructor_device_open() != 9228) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_constructor_device_open_in_memory() != 20772.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_constructor_device_open_in_memory() != 20772) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
@@ -1706,6 +1706,10 @@ private class JavaLangRefCleanable(
  */
 public object FfiConverterUByte: FfiConverter<UByte, Byte> {
     override fun lift(value: Byte): UByte {
+        return value.toUByte()
+    }
+
+    fun lift(value: Int): UByte {
         return value.toUByte()
     }
 

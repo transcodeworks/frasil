@@ -494,7 +494,11 @@ fileprivate struct FfiConverterString: FfiConverter {
             return String()
         }
         let bytes = UnsafeBufferPointer<UInt8>(start: value.data!, count: Int(value.len))
-        return String(bytes: bytes, encoding: String.Encoding.utf8)!
+        // Use Swift's native UTF-8 decoder; `String(bytes:encoding:.utf8)` goes
+        // through Foundation's NSString and silently strips a leading U+FEFF BOM.
+        // Invalid UTF-8 substitutes U+FFFD instead of trapping (unreachable
+        // given Rust's `String` invariant).
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     public static func lower(_ value: String) -> RustBuffer {
@@ -510,7 +514,8 @@ fileprivate struct FfiConverterString: FfiConverter {
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> String {
         let len: Int32 = try readInt(&buf)
-        return String(bytes: try readBytes(&buf, count: Int(len)), encoding: String.Encoding.utf8)!
+        // See `lift` above for why we avoid Foundation's NSString-backed decoder here.
+        return String(decoding: try readBytes(&buf, count: Int(len)), as: UTF8.self)
     }
 
     public static func write(_ value: String, into buf: inout [UInt8]) {
@@ -631,9 +636,8 @@ fileprivate struct UniffiCallbackInterfaceArrivalListener {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceArrivalListener] = [UniffiVTableCallbackInterfaceArrivalListener(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceArrivalListener = UniffiVTableCallbackInterfaceArrivalListener(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterTypeArrivalListener.handleMap.remove(handle: uniffiHandle)
@@ -672,11 +676,23 @@ fileprivate struct UniffiCallbackInterfaceArrivalListener {
                 writeReturn: writeReturn
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceArrivalListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceArrivalListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitArrivalListener() {
-    uniffi_frasil_uniffi_fn_init_callback_vtable_arrivallistener(UniffiCallbackInterfaceArrivalListener.vtable)
+    uniffi_frasil_uniffi_fn_init_callback_vtable_arrivallistener(UniffiCallbackInterfaceArrivalListener.vtablePtr)
 }
 
 #if swift(>=5.8)
@@ -845,9 +861,8 @@ fileprivate struct UniffiCallbackInterfaceBlobStatusListener {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceBlobStatusListener] = [UniffiVTableCallbackInterfaceBlobStatusListener(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceBlobStatusListener = UniffiVTableCallbackInterfaceBlobStatusListener(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterTypeBlobStatusListener.handleMap.remove(handle: uniffiHandle)
@@ -910,11 +925,23 @@ fileprivate struct UniffiCallbackInterfaceBlobStatusListener {
                 writeReturn: writeReturn
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceBlobStatusListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceBlobStatusListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitBlobStatusListener() {
-    uniffi_frasil_uniffi_fn_init_callback_vtable_blobstatuslistener(UniffiCallbackInterfaceBlobStatusListener.vtable)
+    uniffi_frasil_uniffi_fn_init_callback_vtable_blobstatuslistener(UniffiCallbackInterfaceBlobStatusListener.vtablePtr)
 }
 
 #if swift(>=5.8)
@@ -1319,9 +1346,8 @@ fileprivate struct UniffiCallbackInterfaceCheckpointListener {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceCheckpointListener] = [UniffiVTableCallbackInterfaceCheckpointListener(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceCheckpointListener = UniffiVTableCallbackInterfaceCheckpointListener(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterTypeCheckpointListener.handleMap.remove(handle: uniffiHandle)
@@ -1360,11 +1386,23 @@ fileprivate struct UniffiCallbackInterfaceCheckpointListener {
                 writeReturn: writeReturn
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceCheckpointListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceCheckpointListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitCheckpointListener() {
-    uniffi_frasil_uniffi_fn_init_callback_vtable_checkpointlistener(UniffiCallbackInterfaceCheckpointListener.vtable)
+    uniffi_frasil_uniffi_fn_init_callback_vtable_checkpointlistener(UniffiCallbackInterfaceCheckpointListener.vtablePtr)
 }
 
 #if swift(>=5.8)
@@ -1517,9 +1555,8 @@ fileprivate struct UniffiCallbackInterfaceDepositListener {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceDepositListener] = [UniffiVTableCallbackInterfaceDepositListener(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceDepositListener = UniffiVTableCallbackInterfaceDepositListener(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterTypeDepositListener.handleMap.remove(handle: uniffiHandle)
@@ -1558,11 +1595,23 @@ fileprivate struct UniffiCallbackInterfaceDepositListener {
                 writeReturn: writeReturn
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceDepositListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceDepositListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitDepositListener() {
-    uniffi_frasil_uniffi_fn_init_callback_vtable_depositlistener(UniffiCallbackInterfaceDepositListener.vtable)
+    uniffi_frasil_uniffi_fn_init_callback_vtable_depositlistener(UniffiCallbackInterfaceDepositListener.vtablePtr)
 }
 
 #if swift(>=5.8)
@@ -2415,9 +2464,8 @@ fileprivate struct UniffiCallbackInterfaceDurableListener {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceDurableListener] = [UniffiVTableCallbackInterfaceDurableListener(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceDurableListener = UniffiVTableCallbackInterfaceDurableListener(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterTypeDurableListener.handleMap.remove(handle: uniffiHandle)
@@ -2480,11 +2528,23 @@ fileprivate struct UniffiCallbackInterfaceDurableListener {
                 writeReturn: writeReturn
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceDurableListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceDurableListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitDurableListener() {
-    uniffi_frasil_uniffi_fn_init_callback_vtable_durablelistener(UniffiCallbackInterfaceDurableListener.vtable)
+    uniffi_frasil_uniffi_fn_init_callback_vtable_durablelistener(UniffiCallbackInterfaceDurableListener.vtablePtr)
 }
 
 #if swift(>=5.8)
@@ -2637,9 +2697,8 @@ fileprivate struct UniffiCallbackInterfaceLossListener {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceLossListener] = [UniffiVTableCallbackInterfaceLossListener(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceLossListener = UniffiVTableCallbackInterfaceLossListener(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterTypeLossListener.handleMap.remove(handle: uniffiHandle)
@@ -2678,11 +2737,23 @@ fileprivate struct UniffiCallbackInterfaceLossListener {
                 writeReturn: writeReturn
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceLossListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceLossListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitLossListener() {
-    uniffi_frasil_uniffi_fn_init_callback_vtable_losslistener(UniffiCallbackInterfaceLossListener.vtable)
+    uniffi_frasil_uniffi_fn_init_callback_vtable_losslistener(UniffiCallbackInterfaceLossListener.vtablePtr)
 }
 
 #if swift(>=5.8)
@@ -3690,9 +3761,8 @@ fileprivate struct UniffiCallbackInterfaceWriteReadyListener {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceWriteReadyListener] = [UniffiVTableCallbackInterfaceWriteReadyListener(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceWriteReadyListener = UniffiVTableCallbackInterfaceWriteReadyListener(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterTypeWriteReadyListener.handleMap.remove(handle: uniffiHandle)
@@ -3755,11 +3825,23 @@ fileprivate struct UniffiCallbackInterfaceWriteReadyListener {
                 writeReturn: writeReturn
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWriteReadyListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceWriteReadyListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitWriteReadyListener() {
-    uniffi_frasil_uniffi_fn_init_callback_vtable_writereadylistener(UniffiCallbackInterfaceWriteReadyListener.vtable)
+    uniffi_frasil_uniffi_fn_init_callback_vtable_writereadylistener(UniffiCallbackInterfaceWriteReadyListener.vtablePtr)
 }
 
 #if swift(>=5.8)
