@@ -154,6 +154,9 @@ pub struct PeerHandle {
     status: Arc<Mutex<PeerStatus>>,
     commands: mpsc::UnboundedSender<Command>,
     by: Acknowledger,
+    /// Set once the connection is to close, so that an upload in progress
+    /// stops before its next slice rather than when it ends.
+    closing: Arc<AtomicBool>,
 }
 
 impl PeerHandle {
@@ -219,8 +222,11 @@ impl PeerHandle {
         let _ = self.commands.send(Command::WantStream(space, stream));
     }
 
-    /// Closes the connection.
+    /// Closes the connection. An object upload in progress stops before
+    /// its next slice; the next connection goes on from what the peer
+    /// holds.
     pub fn close(&self) {
+        self.closing.store(true, Ordering::Release);
         let _ = self.commands.send(Command::Close);
     }
 
@@ -1773,15 +1779,18 @@ async fn start(
     // opens.
     let mut held: VecDeque<Command> = spaces.into_iter().map(Command::Attach).collect();
     let first = handshake(&device, opened, &runtime).await?;
+    let closing = Arc::new(AtomicBool::new(false));
     let handle = PeerHandle {
         status: status.clone(),
         commands,
         by,
+        closing: closing.clone(),
     };
     let spawner = runtime.clone();
     match first {
         Some(dialed) => {
-            let (driver, rx) = Driver::new(device, dialed, runtime, by, redial, status, held);
+            let (mut driver, rx) = Driver::new(device, dialed, runtime, by, redial, status, held);
+            driver.closing = closing;
             spawner.spawn(driver.serve_to_end(rx, commands_rx));
         }
         None => {
@@ -1811,6 +1820,7 @@ async fn start(
                             Driver::new(device, dialed, runtime, by, Some(redial), status, held);
                         driver.reconnected = true;
                         driver.last_bound = Some(bound);
+                        driver.closing = closing;
                         driver.serve_to_end(rx, commands_rx).await;
                     }
                     Err(why) => {
@@ -1854,6 +1864,8 @@ struct Driver {
     incoming: mpsc::UnboundedSender<Incoming>,
     /// Whether the transport's readers have ended.
     ended: Arc<AtomicBool>,
+    /// Whether the connection is to close: [`PeerHandle::close`].
+    closing: Arc<AtomicBool>,
     next_request: u64,
     requests: BTreeMap<u64, Request>,
     spaces: BTreeMap<EventId, Attached>,
@@ -1930,6 +1942,7 @@ impl Driver {
             by,
             incoming: tx,
             ended,
+            closing: Arc::new(AtomicBool::new(false)),
             next_request: 1,
             requests: BTreeMap::new(),
             spaces: BTreeMap::new(),
@@ -3645,6 +3658,9 @@ enum Stopped {
     Refused(String),
     /// The device no longer holds a chunk it was to send.
     Gone,
+    /// The connection is closing: the next one goes on from what the peer
+    /// holds.
+    Closing,
 }
 
 impl Driver {
@@ -3735,8 +3751,17 @@ impl Driver {
                     attached.uploading.remove(&locator);
                     return Ok(());
                 };
-                match http.put_object(&token, &space, &locator, source).await {
+                match http
+                    .put_object(&token, &space, &locator, source, &self.closing)
+                    .await
+                {
                     Ok(()) => self.uploaded(space, locator).await,
+                    Err(Stopped::Closing) => {
+                        if let Some(attached) = self.spaces.get_mut(&space) {
+                            attached.uploading.remove(&locator);
+                        }
+                        Ok(())
+                    }
                     Err(Stopped::Gone) => {
                         if let Some(attached) = self.spaces.get_mut(&space) {
                             attached.uploading.remove(&locator);
@@ -3762,11 +3787,24 @@ impl Driver {
                     attached.uploading.remove(&locator);
                     return Ok(());
                 };
-                let put =
-                    socket::put_object(socket.as_ref(), origin, &token, &space, &locator, source)
-                        .await;
+                let put = socket::put_object(
+                    socket.as_ref(),
+                    origin,
+                    &token,
+                    &space,
+                    &locator,
+                    source,
+                    &self.closing,
+                )
+                .await;
                 match put {
                     Ok(()) => self.uploaded(space, locator).await,
+                    Err(Stopped::Closing) => {
+                        if let Some(attached) = self.spaces.get_mut(&space) {
+                            attached.uploading.remove(&locator);
+                        }
+                        Ok(())
+                    }
                     Err(Stopped::Gone) => {
                         if let Some(attached) = self.spaces.get_mut(&space) {
                             attached.uploading.remove(&locator);
@@ -4498,7 +4536,7 @@ mod server {
 
     use super::{AtomicBool, Incoming, Ordering, Stopped, coded_close, connect_url, read, sort};
     use crate::error::{Error, Result};
-    use crate::object_upload::{ObjectUpload, UploadSlices};
+    use crate::object_upload::{ObjectUpload, UploadSlices, held_of};
     use frasil_adapter::Locator;
     use frasil_events::EventId;
     use futures_util::{SinkExt, StreamExt};
@@ -4559,10 +4597,14 @@ mod server {
             space: &EventId,
             locator: &Locator,
             upload: ObjectUpload,
+            closing: &AtomicBool,
         ) -> std::result::Result<(), Stopped> {
             let authorization = frasil_transport::peer::transfer_authorization(token);
             let mut slices = UploadSlices::new(upload, SLICE).map_err(|_| Stopped::Gone)?;
             while let Some((index, slice)) = slices.next().await.map_err(|_| Stopped::Gone)? {
+                if closing.load(Ordering::Acquire) {
+                    return Err(Stopped::Closing);
+                }
                 let index =
                     usize::try_from(index).map_err(|error| Stopped::Refused(error.to_string()))?;
                 let response = self
@@ -4577,6 +4619,12 @@ mod server {
                 let status = response.status().as_u16();
                 if status != 200 && status != 201 {
                     return Err(Stopped::Refused(format!("object upload: {status}")));
+                }
+                // The peer may hold more than this slice already, as when
+                // an upload is resumed after a reopen: it goes on from
+                // there.
+                if let Some(held) = response.bytes().await.ok().and_then(|body| held_of(&body)) {
+                    slices.resume(held);
                 }
             }
             Ok(())
@@ -4944,7 +4992,7 @@ pub mod socket {
     };
     use crate::device::Engine;
     use crate::error::{Error, Result};
-    use crate::object_upload::{ObjectUpload, UploadSlices};
+    use crate::object_upload::{ObjectUpload, UploadSlices, held_of};
     use frasil_adapter::Locator;
     use frasil_events::EventId;
     use frasil_store::BoxFuture;
@@ -5161,13 +5209,17 @@ pub mod socket {
         space: &EventId,
         locator: &Locator,
         upload: ObjectUpload,
+        closing: &AtomicBool,
     ) -> std::result::Result<(), Stopped> {
         let authorization = frasil_transport::peer::transfer_authorization(token);
         let mut slices = UploadSlices::new(upload, SLICE).map_err(|_| Stopped::Gone)?;
         while let Some((index, slice)) = slices.next().await.map_err(|_| Stopped::Gone)? {
+            if closing.load(Ordering::Acquire) {
+                return Err(Stopped::Closing);
+            }
             let index =
                 usize::try_from(index).map_err(|error| Stopped::Refused(error.to_string()))?;
-            let (status, _) = socket
+            let (status, body) = socket
                 .request(
                     "PUT",
                     &url(origin, space, locator, index),
@@ -5178,6 +5230,10 @@ pub mod socket {
                 .map_err(Stopped::Refused)?;
             if status != 200 && status != 201 {
                 return Err(Stopped::Refused(format!("object upload: {status}")));
+            }
+            // As over HTTP: the upload goes on from what the peer holds.
+            if let Some(held) = held_of(&body) {
+                slices.resume(held);
             }
         }
         Ok(())
