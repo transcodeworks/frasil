@@ -2435,6 +2435,13 @@ impl Replica {
         self.objects.contains_key(locator)
     }
 
+    /// Whether the replica holds anything of an object of this ID, under
+    /// any locator: its header or a chunk, in memory or in the store.
+    pub(crate) fn knows_object_id(&self, id: &[u8; 32]) -> bool {
+        self.unlocated.contains_key(id)
+            || self.objects.keys().any(|locator| locator[..32] == id[..])
+    }
+
     /// Marks an object as one the application holds, or no longer holds
     /// (at-rest.md, "Held objects").
     pub(crate) fn mark_held(&mut self, locator: Locator, held: bool) {

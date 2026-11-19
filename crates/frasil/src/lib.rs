@@ -284,6 +284,7 @@ mod member;
 mod next_endpoints;
 #[cfg(feature = "iroh")]
 mod node;
+mod object_source;
 mod objects;
 mod outbox;
 #[cfg(feature = "iroh")]

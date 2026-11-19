@@ -36,7 +36,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// device's lock; a larger object's parts are written before it, without
 /// the lock.
 #[cfg(feature = "adapter-blobs")]
-const OWN_COMMIT_BYTES: usize = 4 << 20;
+pub(crate) const OWN_COMMIT_BYTES: usize = 4 << 20;
 
 /// The bytes of object parts a commit made without the device's lock holds
 /// at most, but for one part larger than that.
@@ -1085,7 +1085,7 @@ impl Engine {
 
     /// Notes parts of objects the store or memory now holds, and uses what
     /// they complete.
-    async fn note_parts(
+    pub(crate) async fn note_parts(
         state: &mut crate::device::State,
         space: EventId,
         parts: &[&ObjectPart],
@@ -2112,7 +2112,7 @@ impl Engine {
 
     /// Writes one op of a `frasil:blobs` stream in a log unit of its own.
     #[cfg(feature = "adapter-blobs")]
-    async fn write_blob_op(
+    pub(crate) async fn write_blob_op(
         &self,
         space: EventId,
         stream: &frasil_units::stream::Opening,

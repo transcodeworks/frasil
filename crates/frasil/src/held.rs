@@ -171,7 +171,11 @@ fn header_item(id: &[u8; 32]) -> Vec<u8> {
 
 /// Reads exactly `length` bytes at `offset`, or fails `Changed`: the
 /// plaintext is shorter than its record says.
-async fn read_exact(reader: &mut dyn ObjectReader, offset: u64, length: usize) -> Result<Vec<u8>> {
+pub(crate) async fn read_exact(
+    reader: &mut dyn ObjectReader,
+    offset: u64,
+    length: usize,
+) -> Result<Vec<u8>> {
     let mut out = vec![0; length];
     let mut filled = 0;
     while filled < length {
@@ -232,6 +236,8 @@ struct Pass {
     digest: Sha256Hasher,
 }
 
+/// With `keep` false, the chunks are hashed and let go, and the pass's
+/// parts are empty.
 #[allow(clippy::too_many_arguments)]
 async fn seal_range(
     reader: &mut dyn ObjectReader,
@@ -242,6 +248,7 @@ async fn seal_range(
     chunk: u64,
     first: u64,
     last: u64,
+    keep: bool,
 ) -> Result<Pass> {
     let object_key = keys.object_key(&header.object_id);
     let mut id = HmacSha256::new(&*keys.id_key);
@@ -260,6 +267,9 @@ async fn seal_range(
         );
         id.update(&plain);
         digest.update(&sealed.sealed);
+        if !keep {
+            continue;
+        }
         parts.push(ObjectPart {
             locator: locator_of(&header.object_id, &[0; 32]),
             header: (index == 0).then(|| header_bytes.to_vec()),
@@ -329,6 +339,31 @@ pub async fn put_with_chunked(
     token: &[u8],
     chunk: u64,
 ) -> Result<HeldPut> {
+    put_passes(
+        provider,
+        space,
+        content_key,
+        key_reference,
+        token,
+        chunk,
+        true,
+    )
+    .await
+}
+
+/// [`put_with_chunked`]; with `keep` false, the chunks sealed in the
+/// second pass are let go as they are hashed, and the put's parts are
+/// empty, so that a put the provider holds needs a chunk's memory at a
+/// time.
+async fn put_passes(
+    provider: &dyn ObjectProvider,
+    space: &EventId,
+    content_key: &[u8; 32],
+    key_reference: &[u8],
+    token: &[u8],
+    chunk: u64,
+    keep: bool,
+) -> Result<HeldPut> {
     if chunk == 0 {
         return Err(Error::Class("Malformed"));
     }
@@ -343,24 +378,8 @@ pub async fn put_with_chunked(
     // 2. Pass one: the object ID over the whole plaintext, which gives
     // exactly the size.
     let mut reader = provider.open(token).await?;
-    let mut id = HmacSha256::new(&*keys.id_key);
-    let mut offset = 0u64;
-    let mut buffer = vec![0; 64 * 1024];
-    while offset < stat.size {
-        let read = reader.read_at(offset, &mut buffer).await?;
-        if read == 0 {
-            return Err(Error::Class("Changed"));
-        }
-        let left = usize::try_from(stat.size - offset).unwrap_or(usize::MAX);
-        let take = read.min(left);
-        id.update(&buffer[..take]);
-        offset += take as u64;
-    }
-    let mut past_end = [0u8; 1];
-    if reader.read_at(stat.size, &mut past_end).await? != 0 {
-        return Err(Error::Class("Changed"));
-    }
-    let object_id = id.finish();
+    let (object_id, _) =
+        crate::object_source::id_pass(reader.as_mut(), &keys, Some(stat.size), &mut |_| {}).await?;
     // 3. Pass two: each chunk sealed and hashed into the digest.
     let header = Header {
         object_id,
@@ -378,6 +397,7 @@ pub async fn put_with_chunked(
         chunk,
         0,
         count,
+        keep,
     )
     .await?;
     if pass.id.finish() != object_id {
@@ -499,6 +519,7 @@ pub async fn serve_with_chunked(
         chunk,
         first,
         last,
+        true,
     )
     .await
     {
@@ -1387,15 +1408,38 @@ impl Engine {
             let (reference, key) = self.sealing(&state, &space)?;
             (held.is_some(), provider, reference, key)
         };
-        let put = put_with(provider.as_ref(), &space, &key, &reference, token).await?;
+        // Under `held`, the store keeps the header alone, so the sealed
+        // chunks are let go as the second pass hashes them.
+        let put = put_passes(
+            provider.as_ref(),
+            &space,
+            &key,
+            &reference,
+            token,
+            CHUNK_BYTES as u64,
+            !held,
+        )
+        .await?;
         let mut state = self.lock().await;
         if !state.replicas.contains_key(&space) {
             return Err(Error::UnknownSpace);
         }
         // The policy may have changed during the passes: a space set back
         // to `sealed` keeps the chunks.
-        let held = held && self.provider_of(&state, &space).is_some();
-        if !held {
+        let now_held = held && self.provider_of(&state, &space).is_some();
+        if !now_held {
+            let put = if held {
+                // The chunks were let go: sealed again to be kept.
+                drop(state);
+                let put = put_with(provider.as_ref(), &space, &key, &reference, token).await?;
+                state = self.lock().await;
+                if !state.replicas.contains_key(&space) {
+                    return Err(Error::UnknownSpace);
+                }
+                put
+            } else {
+                put
+            };
             // Under `sealed`: the chunks kept, as a put from memory keeps
             // them.
             Self::keep_parts_in(&mut state, space, &put.parts.iter().collect::<Vec<_>>()).await?;
