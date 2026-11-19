@@ -53,6 +53,11 @@ class SmokeTest {
         val blob = blobs.put("hello.txt", bytes)
         assertContentEquals(bytes, blobs.get(blob))
         assertEquals(BlobStatus.Readable, blobs.status(blob))
+        val file = java.io.File.createTempFile("frasil", ".txt")
+        file.writeBytes(bytes)
+        val fromFile = blobs.putFile("file.txt", file.path, null)
+        assertContentEquals(bytes, blobs.get(fromFile))
+        file.delete()
         val statuses = CopyOnWriteArrayList<BlobStatus>()
         val watching = blobs.observeStatus(blob, object : BlobStatusListener {
             override fun status(status: BlobStatus) { statuses.add(status) }

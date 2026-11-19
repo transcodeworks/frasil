@@ -230,6 +230,14 @@ pub trait BlobStatusListener: Send + Sync {
     fn failed(&self, message: String);
 }
 
+/// Hears how far a put from a file has gone.
+#[uniffi::export(with_foreign)]
+pub trait PutProgressListener: Send + Sync {
+    /// `done` bytes of the file's `total` are sealed and kept; it ends at
+    /// `total`. Never goes back.
+    fn progress(&self, done: u64, total: u64);
+}
+
 /// Hears what a device holds for the first time.
 #[uniffi::export(with_foreign)]
 pub trait ArrivalListener: Send + Sync {
@@ -1525,6 +1533,31 @@ impl Blobs {
     pub async fn put(&self, name: Option<String>, bytes: Vec<u8>) -> Result<String> {
         let blobs = self.inner.clone();
         let id = run(async move { blobs.put(name.as_deref(), &bytes).await }).await?;
+        Ok(id.to_string())
+    }
+
+    /// Puts a blob from the file at `path`, with a name if given; returns
+    /// its ID. The file is read twice, once for the blob's ID and once to
+    /// seal it a chunk at a time, so a put holds a few chunks in memory
+    /// whatever the file's size. The file must not change during the put:
+    /// one that does fails `Changed`, and nothing is kept.
+    pub async fn put_file(
+        &self,
+        name: Option<String>,
+        path: String,
+        listener: Option<Arc<dyn PutProgressListener>>,
+    ) -> Result<String> {
+        let blobs = self.inner.clone();
+        let id = run(async move {
+            blobs
+                .put_file(name.as_deref().unwrap_or(""), &path, |done, total| {
+                    if let Some(listener) = &listener {
+                        listener.progress(done, total.unwrap_or(done));
+                    }
+                })
+                .await
+        })
+        .await?;
         Ok(id.to_string())
     }
 

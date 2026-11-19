@@ -645,6 +645,9 @@ internal interface UniffiCallbackInterfaceDurableListenerMethod1 : com.sun.jna.C
 internal interface UniffiCallbackInterfaceLossListenerMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`report`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
+internal interface UniffiCallbackInterfacePutProgressListenerMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`done`: Long,`total`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
 internal interface UniffiCallbackInterfaceWriteReadyListenerMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`ready`: Byte,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
@@ -771,6 +774,25 @@ internal open class UniffiVTableCallbackInterfaceLossListener(
     }
 
 }
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "progress")
+internal open class UniffiVTableCallbackInterfacePutProgressListener(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `progress`: UniffiCallbackInterfacePutProgressListenerMethod0? = null,
+) : Structure() {
+    class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `progress`: UniffiCallbackInterfacePutProgressListenerMethod0? = null,
+    ): UniffiVTableCallbackInterfacePutProgressListener(`uniffiFree`,`uniffiClone`,`progress`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfacePutProgressListener) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `progress` = other.`progress`
+    }
+
+}
 @Structure.FieldOrder("uniffiFree", "uniffiClone", "writeReady", "failed")
 internal open class UniffiVTableCallbackInterfaceWriteReadyListener(
     @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
@@ -817,135 +839,139 @@ internal object IntegrityCheckingUniffiLib {
         uniffiCheckApiChecksums(this)
     }
     external fun uniffi_frasil_uniffi_checksum_method_arrivallistener_arrived(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobstatuslistener_status(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobstatuslistener_failed(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobs_content_hash(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobs_get(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobs_id(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobs_observe_status(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobs_put(
-    ): Short
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobs_put_file(
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobs_status(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_checkpointlistener_reported(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_depositlistener_reported(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_arrivals(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_checkpoint_policy(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_checkpoint_reports(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_connect(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_create_space(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_deposit_reports(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_deposit_tokens(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_give_deposit_grant(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_give_up_space(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_id(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_list_checkpoints(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_loss_reports(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_pause_sync(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_propose_list_checkpoint(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_resume_sync(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_retry_erasure(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_set_checkpoint_policy(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_shutdown(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_space(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_spaces(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_trust_deposit_keys(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_waiting_deposits(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_durablelistener_durable(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_durablelistener_failed(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_losslistener_reported(
-    ): Short
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_putprogresslistener_progress(
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_blobs(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_checkpoints(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_create_blobs(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_id(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_is_durable(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_is_sync_paused(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_is_write_ready(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_keeps_nothing_at_rest(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_late_changes(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_make_recovery_member(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_members(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_my_rank(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_observe_durable(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_observe_write_ready(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_pause_sync(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_propose_checkpoint(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_raise(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_rank(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_recovery_members(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_resume_sync(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_set_dormant(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_set_rank(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_wait_durable(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_wait_write_ready(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_subscription_cancel(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_writereadylistener_write_ready(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_writereadylistener_failed(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_constructor_device_open(
-    ): Short
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_constructor_device_open_in_memory(
-    ): Short
+    ): Int
     external fun ffi_frasil_uniffi_uniffi_contract_version(
     ): Int
 
@@ -968,6 +994,7 @@ internal object UniffiLib {
         uniffiCallbackInterfaceDepositListener.register(this)
         uniffiCallbackInterfaceDurableListener.register(this)
         uniffiCallbackInterfaceLossListener.register(this)
+        uniffiCallbackInterfacePutProgressListener.register(this)
         uniffiCallbackInterfaceWriteReadyListener.register(this)
 
     }
@@ -1002,6 +1029,8 @@ external fun uniffi_frasil_uniffi_fn_method_blobs_id(`ptr`: Long,uniffi_out_err:
 external fun uniffi_frasil_uniffi_fn_method_blobs_observe_status(`ptr`: Long,`id`: RustBuffer.ByValue,`listener`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Long
 external fun uniffi_frasil_uniffi_fn_method_blobs_put(`ptr`: Long,`name`: RustBuffer.ByValue,`bytes`: RustBuffer.ByValue,
+): Long
+external fun uniffi_frasil_uniffi_fn_method_blobs_put_file(`ptr`: Long,`name`: RustBuffer.ByValue,`path`: RustBuffer.ByValue,`listener`: RustBuffer.ByValue,
 ): Long
 external fun uniffi_frasil_uniffi_fn_method_blobs_status(`ptr`: Long,`id`: RustBuffer.ByValue,
 ): Long
@@ -1091,6 +1120,14 @@ external fun uniffi_frasil_uniffi_fn_init_callback_vtable_losslistener(`vtable`:
 ): Unit
 external fun uniffi_frasil_uniffi_fn_method_losslistener_reported(`ptr`: Long,`report`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): Unit
+external fun uniffi_frasil_uniffi_fn_clone_putprogresslistener(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Long
+external fun uniffi_frasil_uniffi_fn_free_putprogresslistener(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Unit
+external fun uniffi_frasil_uniffi_fn_init_callback_vtable_putprogresslistener(`vtable`: UniffiVTableCallbackInterfacePutProgressListener,
+): Unit
+external fun uniffi_frasil_uniffi_fn_method_putprogresslistener_progress(`ptr`: Long,`done`: Long,`total`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Unit
 external fun uniffi_frasil_uniffi_fn_clone_space(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Long
 external fun uniffi_frasil_uniffi_fn_free_space(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
@@ -1174,7 +1211,7 @@ external fun ffi_frasil_uniffi_rust_future_cancel_u8(`handle`: Long,
 external fun ffi_frasil_uniffi_rust_future_free_u8(`handle`: Long,
 ): Unit
 external fun ffi_frasil_uniffi_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
-): Byte
+): Int
 external fun ffi_frasil_uniffi_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
 external fun ffi_frasil_uniffi_rust_future_cancel_i8(`handle`: Long,
@@ -1190,7 +1227,7 @@ external fun ffi_frasil_uniffi_rust_future_cancel_u16(`handle`: Long,
 external fun ffi_frasil_uniffi_rust_future_free_u16(`handle`: Long,
 ): Unit
 external fun ffi_frasil_uniffi_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
-): Short
+): Int
 external fun ffi_frasil_uniffi_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
 external fun ffi_frasil_uniffi_rust_future_cancel_i16(`handle`: Long,
@@ -1278,199 +1315,205 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if (lib.uniffi_frasil_uniffi_checksum_method_arrivallistener_arrived() != 19655.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_arrivallistener_arrived() != 19655) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobstatuslistener_status() != 42635.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobstatuslistener_status() != 42635) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobstatuslistener_failed() != 6018.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobstatuslistener_failed() != 6018) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_content_hash() != 64733.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_content_hash() != 64733) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get() != 3798.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get() != 3798) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_id() != 54424.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_id() != 54424) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_observe_status() != 33479.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_observe_status() != 33479) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_put() != 65268.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_put() != 65268) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_status() != 56819.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_put_file() != 45956) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_checkpointlistener_reported() != 61045.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_status() != 56819) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_depositlistener_reported() != 23119.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_checkpointlistener_reported() != 61045) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_arrivals() != 46067.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_depositlistener_reported() != 23119) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_checkpoint_policy() != 62905.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_arrivals() != 46067) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_checkpoint_reports() != 49596.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_checkpoint_policy() != 62905) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_connect() != 46518.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_checkpoint_reports() != 49596) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_create_space() != 44564.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_connect() != 46518) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_deposit_reports() != 55454.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_create_space() != 44564) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_deposit_tokens() != 48866.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_deposit_reports() != 55454) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_give_deposit_grant() != 12964.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_deposit_tokens() != 48866) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_give_up_space() != 46380.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_give_deposit_grant() != 12964) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_id() != 27177.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_give_up_space() != 46380) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_list_checkpoints() != 53594.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_id() != 27177) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_loss_reports() != 59022.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_list_checkpoints() != 53594) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_pause_sync() != 60548.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_loss_reports() != 59022) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_propose_list_checkpoint() != 50671.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_pause_sync() != 60548) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_resume_sync() != 61646.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_propose_list_checkpoint() != 50671) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_retry_erasure() != 15419.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_resume_sync() != 61646) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_set_checkpoint_policy() != 8087.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_retry_erasure() != 15419) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_shutdown() != 51948.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_set_checkpoint_policy() != 8087) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_space() != 10092.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_shutdown() != 51948) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_spaces() != 8021.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_space() != 10092) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_trust_deposit_keys() != 30680.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_spaces() != 8021) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_device_waiting_deposits() != 11885.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_trust_deposit_keys() != 30680) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_durablelistener_durable() != 34948.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_waiting_deposits() != 11885) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_durablelistener_failed() != 45463.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_durablelistener_durable() != 34948) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_losslistener_reported() != 62652.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_durablelistener_failed() != 45463) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_blobs() != 62151.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_losslistener_reported() != 62652) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_checkpoints() != 34958.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_putprogresslistener_progress() != 42435) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_create_blobs() != 35730.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_blobs() != 62151) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_id() != 51407.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_checkpoints() != 34958) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_is_durable() != 54191.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_create_blobs() != 35730) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_is_sync_paused() != 47918.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_id() != 51407) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_is_write_ready() != 16985.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_is_durable() != 54191) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_keeps_nothing_at_rest() != 27635.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_is_sync_paused() != 47918) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_late_changes() != 24937.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_is_write_ready() != 16985) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_make_recovery_member() != 37124.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_keeps_nothing_at_rest() != 27635) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_members() != 16123.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_late_changes() != 24937) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_my_rank() != 9883.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_make_recovery_member() != 37124) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_observe_durable() != 32970.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_members() != 16123) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_observe_write_ready() != 15242.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_my_rank() != 9883) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_pause_sync() != 7130.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_observe_durable() != 32970) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_propose_checkpoint() != 4232.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_observe_write_ready() != 15242) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_raise() != 22098.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_pause_sync() != 7130) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_rank() != 5452.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_propose_checkpoint() != 4232) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_recovery_members() != 52006.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_raise() != 22098) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_resume_sync() != 32930.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_rank() != 5452) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_set_dormant() != 1691.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_recovery_members() != 52006) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_set_rank() != 57764.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_resume_sync() != 32930) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_wait_durable() != 14219.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_set_dormant() != 1691) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_wait_write_ready() != 61101.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_set_rank() != 57764) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_subscription_cancel() != 4179.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_wait_durable() != 14219) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_writereadylistener_write_ready() != 1217.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_wait_write_ready() != 61101) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_writereadylistener_failed() != 64503.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_subscription_cancel() != 4179) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_constructor_device_open() != 9228.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_writereadylistener_write_ready() != 1217) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_constructor_device_open_in_memory() != 20772.toShort()) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_writereadylistener_failed() != 64503) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_constructor_device_open() != 9228) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_constructor_device_open_in_memory() != 20772) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
@@ -1706,6 +1749,10 @@ private class JavaLangRefCleanable(
  */
 public object FfiConverterUByte: FfiConverter<UByte, Byte> {
     override fun lift(value: Byte): UByte {
+        return value.toUByte()
+    }
+
+    fun lift(value: Int): UByte {
         return value.toUByte()
     }
 
@@ -2642,6 +2689,15 @@ public interface BlobsInterface {
     suspend fun `put`(`name`: kotlin.String?, `bytes`: kotlin.ByteArray): kotlin.String
 
     /**
+     * Puts a blob from the file at `path`, with a name if given; returns
+     * its ID. The file is read twice, once for the blob's ID and once to
+     * seal it a chunk at a time, so a put holds a few chunks in memory
+     * whatever the file's size. The file must not change during the put:
+     * one that does fails `Changed`, and nothing is kept.
+     */
+    suspend fun `putFile`(`name`: kotlin.String?, `path`: kotlin.String, `listener`: PutProgressListener?): kotlin.String
+
+    /**
      * Where a blob's bytes stand on this device.
      */
     suspend fun `status`(`id`: kotlin.String): BlobStatus
@@ -2843,6 +2899,34 @@ open class Blobs: Disposable, AutoCloseable, BlobsInterface
             UniffiLib.uniffi_frasil_uniffi_fn_method_blobs_put(
                 uniffiHandle,
                 FfiConverterOptionalString.lower(`name`),FfiConverterByteArray.lower(`bytes`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterString.lift(it) },
+        // Error FFI converter
+        FrasilException.ErrorHandler,
+    )
+    }
+
+
+    /**
+     * Puts a blob from the file at `path`, with a name if given; returns
+     * its ID. The file is read twice, once for the blob's ID and once to
+     * seal it a chunk at a time, so a put holds a few chunks in memory
+     * whatever the file's size. The file must not change during the put:
+     * one that does fails `Changed`, and nothing is kept.
+     */
+    @Throws(FrasilException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `putFile`(`name`: kotlin.String?, `path`: kotlin.String, `listener`: PutProgressListener?) : kotlin.String {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_frasil_uniffi_fn_method_blobs_put_file(
+                uniffiHandle,
+                FfiConverterOptionalString.lower(`name`),FfiConverterString.lower(`path`),FfiConverterOptionalTypePutProgressListener.lower(`listener`),
             )
         },
         { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_rust_buffer(future, callback, continuation) },
@@ -5115,6 +5199,326 @@ public object FfiConverterTypeLossListener: FfiConverter<LossListener, Long> {
     override fun allocationSize(value: LossListener) = 8UL
 
     override fun write(value: LossListener, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+/**
+ * Hears how far a put from a file has gone.
+ */
+public interface PutProgressListener {
+
+    /**
+     * `done` bytes of the file's `total` are sealed and kept; it ends at
+     * `total`. Never goes back.
+     */
+    fun `progress`(`done`: kotlin.ULong, `total`: kotlin.ULong)
+
+    companion object
+}
+
+/**
+ * Hears how far a put from a file has gone.
+ */
+open class PutProgressListenerImpl: Disposable, AutoCloseable, PutProgressListener
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_frasil_uniffi_fn_free_putprogresslistener(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_frasil_uniffi_fn_clone_putprogresslistener(handle, status)
+        }
+    }
+
+
+    /**
+     * `done` bytes of the file's `total` are sealed and kept; it ends at
+     * `total`. Never goes back.
+     */override fun `progress`(`done`: kotlin.ULong, `total`: kotlin.ULong)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_frasil_uniffi_fn_method_putprogresslistener_progress(
+        it,
+        FfiConverterULong.lower(`done`),FfiConverterULong.lower(`total`),_status)
+}
+    }
+
+
+
+
+
+
+
+
+
+
+    /**
+     * @suppress
+     */
+    companion object
+
+}
+
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfacePutProgressListener {
+    internal object `progress`: UniffiCallbackInterfacePutProgressListenerMethod0 {
+        override fun callback(`uniffiHandle`: Long,`done`: Long,`total`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypePutProgressListener.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`progress`(
+                    FfiConverterULong.lift(`done`),
+                    FfiConverterULong.lift(`total`),
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypePutProgressListener.handleMap.remove(handle)
+        }
+    }
+
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypePutProgressListener.handleMap.clone(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfacePutProgressListener.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
+        `progress`,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_frasil_uniffi_fn_init_callback_vtable_putprogresslistener(vtable)
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePutProgressListener: FfiConverter<PutProgressListener, Long> {
+    internal val handleMap = UniffiHandleMap<PutProgressListener>()
+
+    override fun lower(value: PutProgressListener): Long {
+        if (value is PutProgressListenerImpl) {
+             // Rust-implemented object.  Clone the handle and return it
+            return value.uniffiCloneHandle()
+         } else {
+            // Kotlin object, generate a new vtable handle and return that.
+            return handleMap.insert(value)
+         }
+    }
+
+    override fun lift(value: Long): PutProgressListener {
+        if ((value and 1.toLong()) == 0.toLong()) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return PutProgressListenerImpl(UniffiWithHandle, value)
+        } else {
+            // Kotlin-generated handle, get the object from the handle map
+            return handleMap.remove(value)
+        }
+    }
+
+    override fun read(buf: ByteBuffer): PutProgressListener {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: PutProgressListener) = 8UL
+
+    override fun write(value: PutProgressListener, buf: ByteBuffer) {
         buf.putLong(lower(value))
     }
 }
@@ -9139,6 +9543,38 @@ public object FfiConverterOptionalByteArray: FfiConverterRustBuffer<kotlin.ByteA
         } else {
             buf.put(1)
             FfiConverterByteArray.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypePutProgressListener: FfiConverterRustBuffer<PutProgressListener?> {
+    override fun read(buf: ByteBuffer): PutProgressListener? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypePutProgressListener.read(buf)
+    }
+
+    override fun allocationSize(value: PutProgressListener?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypePutProgressListener.allocationSize(value)
+        }
+    }
+
+    override fun write(value: PutProgressListener?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypePutProgressListener.write(value, buf)
         }
     }
 }
