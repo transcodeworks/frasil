@@ -236,8 +236,8 @@ struct Pass {
     digest: Sha256Hasher,
 }
 
-/// With `keep` false, the chunks are hashed and let go, and the pass's
-/// parts are empty.
+/// The chunks in `keep` are kept as the pass's parts; the others are
+/// hashed and let go.
 #[allow(clippy::too_many_arguments)]
 async fn seal_range(
     reader: &mut dyn ObjectReader,
@@ -248,7 +248,7 @@ async fn seal_range(
     chunk: u64,
     first: u64,
     last: u64,
-    keep: bool,
+    keep: core::ops::Range<u64>,
 ) -> Result<Pass> {
     let object_key = keys.object_key(&header.object_id);
     let mut id = HmacSha256::new(&*keys.id_key);
@@ -267,7 +267,7 @@ async fn seal_range(
         );
         id.update(&plain);
         digest.update(&sealed.sealed);
-        if !keep {
+        if !keep.contains(&index) {
             continue;
         }
         parts.push(ObjectPart {
@@ -397,7 +397,7 @@ async fn put_passes(
         chunk,
         0,
         count,
-        keep,
+        if keep { 0..count } else { 0..0 },
     )
     .await?;
     if pass.id.finish() != object_id {
@@ -498,8 +498,11 @@ pub async fn serve_with_chunked(
     }
     let header = Header::read(header_bytes).map_err(Error::class)?;
     let n = chunk_count(header.size, chunk);
+    // The chunks asked for are kept; with no locator yet, every chunk is
+    // read, to find it, and only those are kept.
+    let wanted = first.min(n)..first.saturating_add(count).min(n);
     let (first, last) = match locator {
-        Some(_) => (first.min(n), first.saturating_add(count).min(n)),
+        Some(_) => (wanted.start, wanted.end),
         None => (0, n),
     };
     let whole = first == 0 && last == n;
@@ -519,7 +522,7 @@ pub async fn serve_with_chunked(
         chunk,
         first,
         last,
-        true,
+        wanted,
     )
     .await
     {
@@ -1663,25 +1666,20 @@ impl Engine {
                 return Vec::new();
             };
             Self::resolve_held(&mut state, space, true);
-            let entries: Vec<([u8; 32], bool)> = state
+            let entries: Vec<[u8; 32]> = state
                 .held
                 .objects
                 .get(space)
-                .map(|objects| {
-                    objects
-                        .iter()
-                        .map(|(id, entry)| (*id, entry.locator.is_some()))
-                        .collect()
-                })
+                .map(|objects| objects.keys().copied().collect())
                 .unwrap_or_default();
             (provider, entries)
         };
         let mut out = Vec::new();
-        for (id, known) in entries {
-            let count = if known { 0 } else { u64::MAX };
-            if let Ok(Some((locator, _))) = self
-                .serve_entry(space, &id, provider.as_ref(), 0, count)
-                .await
+        // No chunk is kept: a locator not known yet is found by a pass that
+        // hashes each chunk and lets it go.
+        for id in entries {
+            if let Ok(Some((locator, _))) =
+                self.serve_entry(space, &id, provider.as_ref(), 0, 0).await
             {
                 out.push(locator);
             }
