@@ -174,6 +174,16 @@ keys pending (the key the blob, or the change that adds it, is sealed under
 has not reached this device yet; connecting changes nothing until a member
 or a peer delivers it), or withdrawn.
 
+A blob this device put is readable here at once; whether it has left the
+device is a separate question. In Rust, `blobs.is_durable(id)` is `false`
+while the change that put it waits for an always-on peer's
+acknowledgement, which comes only once the peer holds the blob's bytes,
+and `blobs.pending()` lists the stream's blobs still waiting. Both read the
+device's store, so after a reopen they say what the device uploads once it
+connects; an upload a peer holds part of goes on from there. Ask again on
+`Event::PendingChanges`. In a space with no always-on peer, a member's
+acknowledgement counts instead, and the member fetches the bytes after.
+
 `device.arrivals()` gives each space and each stream the device holds for
 the first time, from the moment it is asked for: `Arrival::Space` once a
 space's first events arrive, then `Arrival::Stream` for each of its streams,
