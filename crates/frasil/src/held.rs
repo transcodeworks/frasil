@@ -1791,6 +1791,75 @@ impl Engine {
         Ok(Some(plaintext))
     }
 
+    /// A held object's plaintext chunk by chunk, for the chunks in
+    /// `chunks`, read through the provider a chunk at a time with the
+    /// object ID checked in the pass, as [`held_plaintext`]
+    /// (Self::held_plaintext) checks it; `None` when the object is not
+    /// held here. A read of every chunk checks the ID before it gives the
+    /// last one; a read of some reads the whole file first, keeping only
+    /// those chunks, and gives them once the ID is checked.
+    ///
+    /// # Errors
+    ///
+    /// `ObjectMismatch` when the plaintext is not the object's; the
+    /// provider's.
+    #[cfg(feature = "adapter-blobs")]
+    pub(crate) async fn held_chunks(
+        &self,
+        space: &EventId,
+        locator: &Locator,
+        chunks: core::ops::Range<u64>,
+    ) -> Result<Option<HeldChunks>> {
+        let id = object_id(locator);
+        let Some((entry, provider, key)) = self.held_for_read(space, &id).await else {
+            return Ok(None);
+        };
+        let header = Header::read(&entry.header).map_err(Error::class)?;
+        if !same_file(
+            provider.stat(&entry.record.token).await?.as_ref(),
+            &entry.record,
+        ) {
+            self.withdraw_if_same(space, &id, &entry.record).await?;
+            return Ok(None);
+        }
+        let reader = provider.open(&entry.record.token).await?;
+        let count = chunk_count(header.size, CHUNK_BYTES as u64);
+        let wanted = chunks.start.min(count)..chunks.end.min(count);
+        let mut read = HeldChunks {
+            engine: self.clone(),
+            space: *space,
+            id,
+            record: entry.record,
+            reader,
+            size: header.size,
+            next: 0,
+            end: count,
+            count,
+            object_id: key.map(|key| {
+                (
+                    HmacSha256::new(&*ObjectKeys::of(&key).id_key),
+                    header.object_id,
+                )
+            }),
+            keep: wanted.clone(),
+            kept: std::collections::VecDeque::new(),
+        };
+        if read.object_id.is_none() {
+            // No ID to check: the chunks asked for alone.
+            read.next = wanted.start;
+            read.end = wanted.end;
+            return Ok(Some(read));
+        }
+        if wanted == (0..count) {
+            return Ok(Some(read));
+        }
+        // Some chunks: the whole file first, the ID checked.
+        while let Some(chunk) = read.read_next().await? {
+            read.kept.push_back(chunk);
+        }
+        Ok(Some(read))
+    }
+
     /// A held object's token, once its provider confirms its size and
     /// stamp: what `Blobs::materialise` returns.
     ///
@@ -2042,5 +2111,81 @@ impl Engine {
         state.held.receiving.retain(|(s, _), _| s != space);
         state.held.hints.retain(|(s, _), _| s != space);
         provider.map(|provider| (provider, tokens))
+    }
+}
+
+/// A held object's plaintext chunk by chunk, from [`Engine::held_chunks`].
+#[cfg(feature = "adapter-blobs")]
+pub(crate) struct HeldChunks {
+    engine: Engine,
+    space: EventId,
+    id: [u8; 32],
+    record: HeldRecord,
+    reader: Box<dyn ObjectReader>,
+    size: u64,
+    /// The next chunk to read from the file, one past the last it reads,
+    /// and their count.
+    next: u64,
+    end: u64,
+    count: u64,
+    /// With `k(S)`: the object ID over the plaintext read so far, and the
+    /// header's.
+    object_id: Option<(HmacSha256, [u8; 32])>,
+    /// The chunks given, and those read ahead to give.
+    keep: core::ops::Range<u64>,
+    kept: std::collections::VecDeque<(u64, Vec<u8>)>,
+}
+
+#[cfg(feature = "adapter-blobs")]
+impl HeldChunks {
+    /// The next chunk asked for, by index, with its plaintext; `None`
+    /// after the last.
+    ///
+    /// # Errors
+    ///
+    /// `Missing` when the file changed meanwhile, which withdraws the
+    /// object; `ObjectMismatch`; the provider's.
+    pub(crate) async fn next(&mut self) -> Result<Option<(u64, Vec<u8>)>> {
+        if let Some(chunk) = self.kept.pop_front() {
+            return Ok(Some(chunk));
+        }
+        self.read_next().await
+    }
+
+    /// Reads the file on to the next chunk asked for.
+    async fn read_next(&mut self) -> Result<Option<(u64, Vec<u8>)>> {
+        while self.next < self.end {
+            let index = self.next;
+            let length = piece(self.size, CHUNK_BYTES as u64, index)?;
+            let plain =
+                match read_exact(self.reader.as_mut(), index * CHUNK_BYTES as u64, length).await {
+                    Ok(plain) => plain,
+                    Err(Error::Class("Changed")) => {
+                        self.engine
+                            .withdraw_if_same(&self.space, &self.id, &self.record)
+                            .await?;
+                        return Err(Error::Class("Missing"));
+                    }
+                    Err(error) => return Err(error),
+                };
+            self.next += 1;
+            if let Some((hmac, _)) = &mut self.object_id {
+                hmac.update(&plain);
+            }
+            // The ID is checked before the last chunk is given.
+            if self.next == self.count
+                && let Some((hmac, expected)) = self.object_id.take()
+                && hmac.finish() != expected
+            {
+                self.engine
+                    .withdraw_if_same(&self.space, &self.id, &self.record)
+                    .await?;
+                return Err(Error::Class("ObjectMismatch"));
+            }
+            if self.keep.contains(&index) {
+                return Ok(Some((index, plain)));
+            }
+        }
+        Ok(None)
     }
 }

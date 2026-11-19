@@ -2346,6 +2346,24 @@ impl Replica {
             .unwrap_or_default()
     }
 
+    /// [`chunks_in_memory`](Self::chunks_in_memory) in a range of indices
+    /// alone, copying no other.
+    pub(crate) fn chunks_in_memory_in(
+        &self,
+        locator: &Locator,
+        range: core::ops::Range<u64>,
+    ) -> BTreeMap<u64, Vec<u8>> {
+        self.held_object(locator)
+            .map(|object| {
+                object
+                    .chunks
+                    .range(range)
+                    .map(|(index, chunk)| (*index, chunk.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Takes chunks read back from the store into memory, for a refresh
     /// that needs the object.
     pub(crate) fn fill_chunks(&mut self, locator: &Locator, chunks: BTreeMap<u64, Vec<u8>>) {

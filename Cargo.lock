@@ -1849,11 +1849,13 @@ dependencies = [
 name = "frasil-record-memory"
 version = "0.1.0"
 dependencies = [
+ "frasil",
  "frasil-crypto",
  "frasil-events",
  "frasil-keys",
  "frasil-space",
  "frasil-units",
+ "tokio",
 ]
 
 [[package]]
