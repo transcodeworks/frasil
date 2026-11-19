@@ -94,9 +94,12 @@ impl Blobs {
     ///
     /// The reader is read in pieces, and the bytes are gathered whole
     /// before the object is sealed in memory: the blob is held whole, with
-    /// its sealed form, until the put returns. [`Blobs::put_from`] reads a
-    /// file the application's provider holds without gathering its
-    /// plaintext.
+    /// its sealed form, until the put returns, since a reader read once
+    /// cannot give the plaintext again for the second pass the object's ID
+    /// needs. A source that can be read twice puts with a few chunks in
+    /// memory: [`Blobs::put_seekable`], [`Blobs::put_file`] and
+    /// [`Blobs::put_at`]. [`Blobs::put_from`] reads a file the
+    /// application's provider holds without gathering its plaintext.
     ///
     /// # Errors
     ///
