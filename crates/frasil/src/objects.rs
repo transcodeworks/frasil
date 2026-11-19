@@ -1439,15 +1439,16 @@ impl Engine {
     }
 
     /// The parts of an object from chunk `first`, `count` of them, to serve
-    /// to another party: the header with chunk 0. Once its stored bytes
-    /// were found to hash to its locator, only those chunks are read,
-    /// without the device's lock; until then, the object is read whole and
-    /// checked first. `None` while the device does not hold it sealed.
+    /// to another party: the header with chunk 0. Only those chunks are
+    /// read, without the device's lock. Until its stored bytes were found
+    /// to hash to its locator, they are hashed first, a few chunks at a
+    /// time ([`check_whole`](Self::check_whole)). `None` while the device
+    /// does not hold it sealed.
     ///
     /// # Errors
     ///
-    /// The object's classes when its bytes do not check
-    /// ([`check_stored`]); the store's.
+    /// `ObjectMismatch` when its bytes do not hash to its locator; the
+    /// store's.
     pub(crate) async fn serve_parts(
         &self,
         space: &EventId,
@@ -1456,44 +1457,45 @@ impl Engine {
         count: u64,
     ) -> Result<Option<Vec<ObjectPart>>> {
         let range = first..first.saturating_add(count);
-        let read = {
+        let checked = {
             let state = self.lock().await;
             state
                 .replicas
                 .get(space)
-                .filter(|replica| replica.is_checked(locator))
-                .and_then(|_| ObjectRead::of_range(&state, space, locator, range.clone()))
+                .is_some_and(|replica| replica.is_checked(locator))
         };
-        if let Some(read) = read {
-            let Some((header, chunks, _)) = read.read(locator).await? else {
-                return Ok(None);
-            };
-            return Ok(Some(
-                chunks
-                    .into_iter()
-                    .map(|(index, chunk)| ObjectPart {
-                        locator: *locator,
-                        header: (index == 0).then(|| header.clone()),
-                        index,
-                        chunk: match chunk {
-                            Chunk::Memory(bytes) => bytes,
-                            Chunk::Stored(opened) => opened.value().to_vec(),
-                        },
-                    })
-                    .collect(),
-            ));
+        if !checked {
+            match self.check_whole(space, locator).await? {
+                None => return Ok(None),
+                Some(false) => return Err(Error::Class("ObjectMismatch")),
+                Some(true) => {}
+            }
+            if let Some(replica) = self.lock().await.replicas.get_mut(space) {
+                replica.mark_checked(locator);
+            }
         }
-        let Some(stored) = self.sealed_object(space, locator).await else {
+        let read = {
+            let state = self.lock().await;
+            ObjectRead::of_range(&state, space, locator, range.clone())
+        };
+        let Some(read) = read else {
             return Ok(None);
         };
-        let parts = parts_of(locator, &stored)?;
-        if let Some(replica) = self.lock().await.replicas.get_mut(space) {
-            replica.mark_checked(locator);
-        }
+        let Some((header, chunks, _)) = read.read(locator).await? else {
+            return Ok(None);
+        };
         Ok(Some(
-            parts
+            chunks
                 .into_iter()
-                .filter(|part| range.contains(&part.index))
+                .map(|(index, chunk)| ObjectPart {
+                    locator: *locator,
+                    header: (index == 0).then(|| header.clone()),
+                    index,
+                    chunk: match chunk {
+                        Chunk::Memory(bytes) => bytes,
+                        Chunk::Stored(opened) => opened.value().to_vec(),
+                    },
+                })
                 .collect(),
         ))
     }

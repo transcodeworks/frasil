@@ -34,6 +34,9 @@ const READ_BYTES: usize = 64 * 1024;
 /// which bound what it holds in memory.
 const COMMIT_BYTES: usize = 4 << 20;
 
+/// How many chunks a check of a whole object's digest reads at once.
+const CHECK_CHUNKS: u64 = 4;
+
 /// The object a put from a source sealed.
 #[derive(Debug)]
 #[cfg_attr(not(feature = "adapter-blobs"), allow(dead_code))]
@@ -403,6 +406,83 @@ impl Engine {
             })
             .collect();
         Self::note_parts(&mut state, space, &parts.iter().collect::<Vec<_>>(), true).await
+    }
+
+    /// Whether an object the replica holds whole, sealed, hashes to its
+    /// locator (units.md, "Reading an object", step 0), read a few chunks
+    /// at a time, each batch under the device's lock and none longer: so
+    /// that a check holds a few chunks, and other work goes on between
+    /// them. An object the store held at load, whose locator was not yet
+    /// known, gets it once its bytes hash to it. `None` while the replica
+    /// does not hold it whole, sealed, or a chunk does not read.
+    ///
+    /// # Errors
+    ///
+    /// The store's.
+    pub(crate) async fn check_whole(
+        &self,
+        space: &EventId,
+        locator: &Locator,
+    ) -> Result<Option<bool>> {
+        let header = {
+            let state = self.lock().await;
+            let Some((header, _)) = state
+                .replicas
+                .get(space)
+                .and_then(|replica| replica.stored_parts(locator))
+            else {
+                return Ok(None);
+            };
+            header
+        };
+        let Ok(read) = frasil_units::objects::Header::read(&header) else {
+            return Ok(Some(false));
+        };
+        let count =
+            frasil_units::objects::chunk_count(read.size, frasil_units::limits::CHUNK_BYTES as u64);
+        let mut digest =
+            frasil_units::objects::stored_bytes_hasher(&header).map_err(Error::class)?;
+        let mut at = 0;
+        while at < count {
+            let end = count.min(at.saturating_add(CHECK_CHUNKS));
+            let state = self.lock().await;
+            let Some(replica) = state.replicas.get(space) else {
+                return Ok(None);
+            };
+            let mut memory = std::collections::BTreeMap::new();
+            let mut wanted = Vec::new();
+            for index in at..end {
+                match replica.record_chunk(locator, index) {
+                    Some(chunk) => {
+                        memory.insert(index, chunk.to_vec());
+                    }
+                    None => wanted.push(index),
+                }
+            }
+            let Some(read) =
+                crate::objects::read_chunks(&state.vault, space, locator, &wanted).await?
+            else {
+                return Ok(None);
+            };
+            drop(state);
+            for index in at..end {
+                let Some(chunk) = memory.get(&index).or_else(|| read.get(&index)) else {
+                    return Ok(None);
+                };
+                digest.update(chunk);
+            }
+            at = end;
+        }
+        let whole = digest.finish()[..] == locator[32..];
+        if whole {
+            let mut state = self.lock().await;
+            if let Some(replica) = state.replicas.get_mut(space)
+                && !replica.is_located(locator)
+            {
+                replica.locate(*locator);
+            }
+        }
+        Ok(Some(whole))
     }
 
     /// After a failed pass two: forgets what it committed, unless the

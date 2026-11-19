@@ -3638,11 +3638,13 @@ fn named(signed: &[u8]) -> BTreeSet<Locator> {
         .unwrap_or_default()
 }
 
-/// How many sealed chunks an object's stored bytes hold.
-fn chunk_total(stored: &[u8], locator: &Locator) -> Option<u64> {
-    frasil_units::objects::check_stored(stored, locator)
-        .ok()
-        .map(|checked| checked.chunks.len() as u64)
+/// Why an upload over the HTTP chunk routes stopped.
+#[cfg(any(feature = "server", feature = "server-socket"))]
+enum Stopped {
+    /// The transfer failed or the peer refused a slice: what it said.
+    Refused(String),
+    /// The device no longer holds a chunk it was to send.
+    Gone,
 }
 
 impl Driver {
@@ -3714,17 +3716,9 @@ impl Driver {
                 })
                 .await;
         }
-        let Some(stored) = self.device.stored_object(&space, &locator).await else {
-            // A held file not served while its space has no provider may
-            // still be the object's copy: the unit waits for it.
-            if self.transport_ended() || self.device.keeps_held(&space, &locator).await {
-                return Ok(());
-            }
-            // An object this device holds no copy of, such as a held one
-            // whose file was saved over: its units go without it (units.md,
-            // 3.4 What a writer does, item 7), and a device that holds it
-            // uploads it when it offers them.
-            return self.release(space, locator).await;
+        // Read a chunk at a time as it is sent, never whole.
+        let Some(source) = self.device.object_upload(&space, &locator).await else {
+            return self.no_copy(space, locator).await;
         };
         if self.transport_ended() {
             // The next transport uploads it, under its own token.
@@ -3741,9 +3735,15 @@ impl Driver {
                     attached.uploading.remove(&locator);
                     return Ok(());
                 };
-                match http.put_object(&token, &space, &locator, &stored).await {
+                match http.put_object(&token, &space, &locator, source).await {
                     Ok(()) => self.uploaded(space, locator).await,
-                    Err(code) => {
+                    Err(Stopped::Gone) => {
+                        if let Some(attached) = self.spaces.get_mut(&space) {
+                            attached.uploading.remove(&locator);
+                        }
+                        self.no_copy(space, locator).await
+                    }
+                    Err(Stopped::Refused(code)) => {
                         if let Some(attached) = self.spaces.get_mut(&space) {
                             attached.uploading.remove(&locator);
                         }
@@ -3763,11 +3763,17 @@ impl Driver {
                     return Ok(());
                 };
                 let put =
-                    socket::put_object(socket.as_ref(), origin, &token, &space, &locator, &stored)
+                    socket::put_object(socket.as_ref(), origin, &token, &space, &locator, source)
                         .await;
                 match put {
                     Ok(()) => self.uploaded(space, locator).await,
-                    Err(code) => {
+                    Err(Stopped::Gone) => {
+                        if let Some(attached) = self.spaces.get_mut(&space) {
+                            attached.uploading.remove(&locator);
+                        }
+                        self.no_copy(space, locator).await
+                    }
+                    Err(Stopped::Refused(code)) => {
                         if let Some(attached) = self.spaces.get_mut(&space) {
                             attached.uploading.remove(&locator);
                         }
@@ -3782,32 +3788,49 @@ impl Driver {
             }
             #[cfg(feature = "iroh")]
             Wire::Iroh(wire) => {
-                let parts = crate::objects::parts_of(&locator, &stored)?;
-                let messages: Vec<Vec<u8>> = parts
-                    .into_iter()
-                    .map(|part| {
-                        Sync {
-                            scope: Scope::Space(space.0),
-                            message: SyncMessage {
-                                space,
-                                message: UnitMessage::ObjectChunks {
-                                    locator,
-                                    header: part.header,
-                                    index: part.index,
-                                    chunk: part.chunk,
-                                },
-                            }
-                            .encode(),
+                let encode = |part: crate::snapshots::ObjectPart| {
+                    Sync {
+                        scope: Scope::Space(space.0),
+                        message: SyncMessage {
+                            space,
+                            message: UnitMessage::ObjectChunks {
+                                locator,
+                                header: part.header,
+                                index: part.index,
+                                chunk: part.chunk,
+                            },
                         }
-                        .encode()
-                    })
-                    .collect();
+                        .encode(),
+                    }
+                    .encode()
+                };
                 // The peer answers `ObjectHave` on the space's sync stream,
                 // which must be open.
                 wire.ensure_sync(space, &self.incoming).await?;
-                wire.object(space, &messages).await
+                if wire.object(space, source, encode).await? {
+                    return Ok(());
+                }
+                if let Some(attached) = self.spaces.get_mut(&space) {
+                    attached.uploading.remove(&locator);
+                }
+                self.no_copy(space, locator).await
             }
         }
+    }
+
+    /// An object to upload of which this device holds no copy it can give,
+    /// or no longer does part way through.
+    async fn no_copy(&mut self, space: EventId, locator: Locator) -> Result<()> {
+        // A held file not served while its space has no provider may
+        // still be the object's copy: the unit waits for it.
+        if self.transport_ended() || self.device.keeps_held(&space, &locator).await {
+            return Ok(());
+        }
+        // An object this device holds no copy of, such as a held one whose
+        // file was saved over: its units go without it (units.md, 3.4 What
+        // a writer does, item 7), and a device that holds it uploads it
+        // when it offers them.
+        self.release(space, locator).await
     }
 
     /// Uploads an object, then answers whether the peer holds it. What an
@@ -3906,10 +3929,12 @@ impl Driver {
             let Some(held) = counts.get(i).copied() else {
                 continue;
             };
-            let Some(stored) = self.device.stored_object(&space, &locator).await else {
+            // Whole here, by the header's chunk count.
+            let Some((have, Some(total))) = self.device.object_progress(&space, &locator).await
+            else {
                 continue;
             };
-            if chunk_total(&stored, &locator).is_some_and(|total| held >= total) {
+            if have >= total && held >= total {
                 self.uploaded(space, locator).await?;
             }
         }
@@ -4471,8 +4496,9 @@ pub(crate) mod library {
 mod server {
     //! The server binding's WebSocket (transport.md, section 3.15).
 
-    use super::{AtomicBool, Incoming, Ordering, coded_close, connect_url, read, sort};
+    use super::{AtomicBool, Incoming, Ordering, Stopped, coded_close, connect_url, read, sort};
     use crate::error::{Error, Result};
+    use crate::object_upload::{ObjectUpload, UploadSlices};
     use frasil_adapter::Locator;
     use frasil_events::EventId;
     use futures_util::{SinkExt, StreamExt};
@@ -4524,29 +4550,33 @@ mod server {
             )
         }
 
-        /// Uploads an object's stored bytes, slice by slice; each is stored
-        /// durably when the peer answers 201, or held already at 200.
+        /// Uploads an object's stored bytes, slice by slice as its chunks
+        /// are read; each is stored durably when the peer answers 201, or
+        /// held already at 200.
         pub(super) async fn put_object(
             &self,
             token: &[u8; 32],
             space: &EventId,
             locator: &Locator,
-            stored: &[u8],
-        ) -> std::result::Result<(), String> {
+            upload: ObjectUpload,
+        ) -> std::result::Result<(), Stopped> {
             let authorization = frasil_transport::peer::transfer_authorization(token);
-            for (index, slice) in stored.chunks(SLICE).enumerate() {
+            let mut slices = UploadSlices::new(upload, SLICE).map_err(|_| Stopped::Gone)?;
+            while let Some((index, slice)) = slices.next().await.map_err(|_| Stopped::Gone)? {
+                let index =
+                    usize::try_from(index).map_err(|error| Stopped::Refused(error.to_string()))?;
                 let response = self
                     .client
                     .put(self.url(space, locator, index))
                     .header("Authorization", &authorization)
                     .header("Content-Type", "application/octet-stream")
-                    .body(slice.to_vec())
+                    .body(slice)
                     .send()
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| Stopped::Refused(error.to_string()))?;
                 let status = response.status().as_u16();
                 if status != 200 && status != 201 {
-                    return Err(format!("object upload: {status}"));
+                    return Err(Stopped::Refused(format!("object upload: {status}")));
                 }
             }
             Ok(())
@@ -4772,16 +4802,32 @@ mod iroh {
         }
 
         /// One object transfer, on an object stream of its own.
-        pub(super) async fn object(&mut self, space: EventId, messages: &[Vec<u8>]) -> Result<()> {
+        /// Sends an object's chunks on an object stream of its own, each
+        /// encoded as it is read: `false` when the device no longer holds
+        /// a chunk part way, and the stream ends there.
+        pub(super) async fn object(
+            &mut self,
+            space: EventId,
+            mut upload: crate::object_upload::ObjectUpload,
+            encode: impl Fn(crate::snapshots::ObjectPart) -> Vec<u8>,
+        ) -> Result<bool> {
             let mut sender = self
                 .connection
                 .open_object(Scope::Space(space.0))
                 .await
                 .map_err(failed)?;
-            for message in messages {
-                sender.send(message).await.map_err(failed)?;
+            loop {
+                match upload.next_part().await {
+                    Ok(Some(part)) => sender.send(&encode(part)).await.map_err(failed)?,
+                    Ok(None) => break,
+                    Err(_) => {
+                        let _ = sender.finish();
+                        return Ok(false);
+                    }
+                }
             }
-            sender.finish().map_err(failed)
+            sender.finish().map_err(failed)?;
+            Ok(true)
         }
 
         pub(super) async fn ensure_sync(
@@ -4893,11 +4939,12 @@ pub mod socket {
     //! WebSocket, its tasks and timers on the socket's own.
 
     use super::{
-        AtomicBool, Incoming, Opened, Ordering, PeerHandle, Redial, Runtime, Wire, administer,
-        coded_close, origin_acknowledger, read, sort, start,
+        AtomicBool, Incoming, Opened, Ordering, PeerHandle, Redial, Runtime, Stopped, Wire,
+        administer, coded_close, origin_acknowledger, read, sort, start,
     };
     use crate::device::Engine;
     use crate::error::{Error, Result};
+    use crate::object_upload::{ObjectUpload, UploadSlices};
     use frasil_adapter::Locator;
     use frasil_events::EventId;
     use frasil_store::BoxFuture;
@@ -5104,28 +5151,33 @@ pub mod socket {
         )
     }
 
-    /// Uploads an object's stored bytes, slice by slice; each is stored
-    /// durably when the peer answers 201, or held already at 200.
+    /// Uploads an object's stored bytes, slice by slice as its chunks are
+    /// read; each is stored durably when the peer answers 201, or held
+    /// already at 200.
     pub(super) async fn put_object(
         socket: &dyn ServerSocket,
         origin: &str,
         token: &[u8; 32],
         space: &EventId,
         locator: &Locator,
-        stored: &[u8],
-    ) -> std::result::Result<(), String> {
+        upload: ObjectUpload,
+    ) -> std::result::Result<(), Stopped> {
         let authorization = frasil_transport::peer::transfer_authorization(token);
-        for (index, slice) in stored.chunks(SLICE).enumerate() {
+        let mut slices = UploadSlices::new(upload, SLICE).map_err(|_| Stopped::Gone)?;
+        while let Some((index, slice)) = slices.next().await.map_err(|_| Stopped::Gone)? {
+            let index =
+                usize::try_from(index).map_err(|error| Stopped::Refused(error.to_string()))?;
             let (status, _) = socket
                 .request(
                     "PUT",
                     &url(origin, space, locator, index),
                     &authorization,
-                    Some(slice),
+                    Some(&slice),
                 )
-                .await?;
+                .await
+                .map_err(Stopped::Refused)?;
             if status != 200 && status != 201 {
-                return Err(format!("object upload: {status}"));
+                return Err(Stopped::Refused(format!("object upload: {status}")));
             }
         }
         Ok(())
