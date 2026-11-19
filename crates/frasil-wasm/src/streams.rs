@@ -975,6 +975,35 @@ impl Blobs {
         })
     }
 
+    /// Puts a blob from a source read at offsets, with a name if given:
+    /// `readAt(offset, length)` resolves to a `Uint8Array` of at most
+    /// `length` bytes from `offset`, empty at the end. The source is read
+    /// twice, once for the blob's ID and once to seal it a chunk at a time,
+    /// so the put holds a few chunks in WebAssembly memory whatever the
+    /// blob's size. `onProgress(done, total)` reports the bytes sealed.
+    /// Resolves to its ID; a source that changes rejects with `Changed`.
+    #[wasm_bindgen(js_name = putAt)]
+    pub fn put_at(
+        &self,
+        name: Option<String>,
+        read_at: Function,
+        on_progress: Option<Function>,
+    ) -> Promise {
+        let blobs = self.inner.clone();
+        promise(async move {
+            let mut reader = ReadAt { read_at };
+            let id = blobs
+                .put_at(
+                    name.as_deref().unwrap_or(""),
+                    &mut reader,
+                    progress(on_progress),
+                )
+                .await
+                .js()?;
+            Ok(JsValue::from_str(&id.to_string()))
+        })
+    }
+
     /// Gets a blob into a sink: `push(chunk)` takes each chunk and resolves
     /// when it may take the next; `onProgress(done, total)` reports
     /// progress. Resolves once the whole blob was pushed.
@@ -1017,6 +1046,48 @@ impl Blobs {
 /// What JavaScript threw or rejected with, as an I/O error.
 fn io_error(thrown: &JsValue) -> std::io::Error {
     std::io::Error::other(message_of(thrown))
+}
+
+/// A source over a JavaScript `readAt(offset, length)` that resolves to
+/// the bytes there.
+struct ReadAt {
+    read_at: Function,
+}
+
+impl frasil::ObjectReader for ReadAt {
+    fn read_at<'a>(
+        &'a mut self,
+        offset: u64,
+        buf: &'a mut [u8],
+    ) -> frasil_store::BoxFuture<'a, frasil::Result<usize>> {
+        Box::pin(async move {
+            let failed = |thrown: &JsValue| {
+                frasil::Error::Connection(format!("the blob's source: {}", message_of(thrown)))
+            };
+            #[allow(clippy::cast_precision_loss)]
+            let (at, length) = (
+                JsValue::from_f64(offset as f64),
+                JsValue::from_f64(buf.len() as f64),
+            );
+            let value = self
+                .read_at
+                .call2(&JsValue::NULL, &at, &length)
+                .map_err(|thrown| failed(&thrown))?;
+            let value = JsFuture::from(Promise::resolve(&value))
+                .await
+                .map_err(|thrown| failed(&thrown))?;
+            let bytes = bytes_in(&value).ok_or_else(|| {
+                frasil::Error::Connection(
+                    "the blob's source gave something other than a Uint8Array".into(),
+                )
+            })?;
+            let read = bytes.len().min(buf.len());
+            buf.get_mut(..read)
+                .unwrap_or_default()
+                .copy_from_slice(bytes.get(..read).unwrap_or_default());
+            Ok(read)
+        })
+    }
 }
 
 /// A reader over a JavaScript `pull()` that resolves to chunks, then

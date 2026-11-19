@@ -107,7 +107,11 @@ export interface Agent {
   ): Promise<string>;
   recordsReview(space: string, id: string, suggestion: string): Promise<Review>;
   recordsAccept(space: string, id: string, suggestion: string): Promise<void>;
-  putBlob(space: string, size: number): Promise<{ stream: string; blob: string; digest: string }>;
+  putBlob(
+    space: string,
+    size: number,
+    fromFile?: boolean,
+  ): Promise<{ stream: string; blob: string; digest: string }>;
   blobDigest(space: string, stream: string, blob: string): Promise<string | null>;
   exportSpaceFile(
     space: string,

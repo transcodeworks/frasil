@@ -180,6 +180,8 @@ test("a blob goes to the peer over its object routes, and another browser fetche
   ] as const);
   // Over one slice of the object routes (1,048,576 bytes), so it takes two requests each way.
   const blob = await alice.page.evaluate((s) => window.agent.putBlob(s, 1_500_000), space);
+  // And one of three chunks put from a file, read a chunk at a time.
+  const file = await alice.page.evaluate((s) => window.agent.putBlob(s, 2_600_000, true), space);
   await alice.page.evaluate(() => window.agent.connect());
   // The change that names the object waits until the peer holds the object.
   await alice.page.evaluate((s) => window.agent.durable(s), space);
@@ -202,11 +204,13 @@ test("a blob goes to the peer over its object routes, and another browser fetche
     ] as const),
   ).toBeNull();
   await bob.page.evaluate(() => window.agent.connect());
-  await bob.page.waitForFunction(
-    async ([s, st, b, d]) => (await window.agent.blobDigest(s, st, b)) === d,
-    [space, blob.stream, blob.blob, blob.digest] as const,
-    { timeout: 30_000, polling: 100 },
-  );
+  for (const put of [blob, file]) {
+    await bob.page.waitForFunction(
+      async ([s, st, b, d]) => (await window.agent.blobDigest(s, st, b)) === d,
+      [space, put.stream, put.blob, put.digest] as const,
+      { timeout: 30_000, polling: 100 },
+    );
+  }
   expect((await bob.page.evaluate(() => window.agent.status())).refused).toEqual([]);
   await alice.page.evaluate(() => window.agent.close());
   await bob.page.evaluate(() => window.agent.close());
