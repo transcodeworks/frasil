@@ -149,6 +149,7 @@ difference: admission by code is not available in browsers yet (see
 | `await document.live()` | live editing with your own `LoroDoc`: `peerId`, `commit`, `suggest`, `exportSince`, `version`, `onChange(cb)` returning its stop function |
 | `document.suggest(update)`, `suggestions()`, `accept(ids)`, `dismiss(ids)`; `records.suggest(write)` and the same three | suggestions |
 | `blobs.putStream(name, readable, onProgress?)`, `blobs.getStream(id, onProgress?)` | blobs as `ReadableStream`s: `getStream` opens a blob chunk by chunk; `putStream` reads its source as a stream but seals the blob whole in memory, so WebAssembly memory bounds what it can put |
+| `blobs.putFile(name, file, onProgress?)` | a blob from a `Blob` or `File`, read twice through `slice` and sealed a chunk at a time, so a put holds a few chunks in WebAssembly memory whatever the file's size; a file that changes meanwhile rejects with `Changed` |
 | `device.signRequest(subject, method, url, body)`; `verifySignedRequest(request, { audience, subject, deviceLists, nonces })` | signed application requests, verified by your server (in a Worker, from `@frasil/client/module`) |
 | `device.advanced` | the direct grant, signed events, continuity, the outbox, making a person |
 | `space.onChange(cb)`, `records.onChange(cb)`, `await blobs.onChange(cb)`, `await drive.onChange(cb)` | change feeds that name the streams, rows, blobs or entries that changed, and whether this device made the change (`origin`) |

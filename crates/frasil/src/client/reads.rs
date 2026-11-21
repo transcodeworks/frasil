@@ -481,6 +481,89 @@ mod blobs {
             })
         }
 
+        /// Whether the change that put a blob is durable, as
+        /// [`Space::is_durable`] counts changes: false while this device
+        /// put it and no always-on peer acknowledged that change. A peer
+        /// takes a put's object before its unit, so once true a peer of the
+        /// space holds the blob; in a space with no always-on peer, a
+        /// member's acknowledgement counts instead, and a member fetches
+        /// the bytes after the unit. A blob another device put is durable
+        /// here. The answer outlives a reopen: the device's record of what
+        /// is not yet acknowledged is kept in its store.
+        ///
+        /// [`Event::PendingChanges`](crate::Event::PendingChanges) tells
+        /// when to ask again.
+        ///
+        /// # Errors
+        ///
+        /// [`Error::Invalid`] when the stream holds no blob of this ID.
+        pub async fn is_durable(&self, id: BlobId) -> Result<bool> {
+            let unit = self
+                .units()
+                .await?
+                .into_iter()
+                .find_map(|(handle, unit)| (handle == id).then_some(unit))
+                .ok_or(Error::Invalid("the stream holds no blob of this ID"))?;
+            let space = self.space().id().event();
+            let outbox = self.space().device.engine().outbox(&space).await;
+            Ok(!outbox.contains(&unit))
+        }
+
+        /// The blobs of the stream whose put is not durable yet, as
+        /// [`Blobs::is_durable`] says: those this device put and no peer
+        /// has acknowledged, ascending by ID. After a reopen it lists what
+        /// the device uploads once it connects.
+        ///
+        /// # Errors
+        ///
+        /// As [`Blobs::list`].
+        pub async fn pending(&self) -> Result<Vec<BlobId>> {
+            let space = self.space().id().event();
+            let outbox = self.space().device.engine().outbox(&space).await;
+            if outbox.is_empty() {
+                return Ok(Vec::new());
+            }
+            Ok(self
+                .units()
+                .await?
+                .into_iter()
+                .filter(|(_, unit)| outbox.contains(unit))
+                .map(|(id, _)| id)
+                .collect())
+        }
+
+        /// Each current blob of the stream, with the event ID of the unit
+        /// that put it.
+        async fn units(&self) -> Result<Vec<(BlobId, frasil_events::EventId)>> {
+            let stream = *self.id().as_bytes();
+            self.space()
+                .read(|replica| {
+                    replica
+                        .stream(&stream)
+                        .and_then(|runtime| {
+                            runtime
+                                .as_any()
+                                .downcast_ref::<frasil_units::runtime::Stream<frasil_adapter_blobs::Blobs>>()
+                        })
+                        .map(|blobs| {
+                            blobs
+                                .state()
+                                .slots()
+                                .iter()
+                                .filter(|(_, slot)| slot.entry.is_some())
+                                .map(|(handle, slot)| {
+                                    (
+                                        BlobId::from_bytes(*handle),
+                                        frasil_events::EventId(slot.stamp.event_id),
+                                    )
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+                .await
+        }
+
         /// A blob's bytes, once this device holds them whole: at once if it
         /// does, else as soon as they arrive, for at most `within`. Under
         /// [`Options::objects_on_demand`](crate::Options::objects_on_demand),

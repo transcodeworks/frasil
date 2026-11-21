@@ -71,11 +71,22 @@ private final class Checkpoints: CheckpointListener, @unchecked Sendable {
     let blob = try await blobs.put(name: "hello.txt", bytes: bytes)
     #expect(try await blobs.get(id: blob) == bytes)
     #expect(try await blobs.status(id: blob) == .readable)
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try bytes.write(to: file)
+    let fromFile = try await blobs.putFile(name: "file.txt", path: file.path, listener: nil)
+    #expect(try await blobs.get(id: fromFile) == bytes)
+    try FileManager.default.removeItem(at: file)
     let statuses = Statuses()
     let watching = try blobs.observeStatus(id: blob, listener: statuses)
     #expect(try await statuses.heard.until { _ in true } == .readable)
     let hash = try #require(try await blobs.contentHash(id: blob))
     #expect(hash.count == 32)
+    #expect(try await blobs.getRange(id: blob, offset: 6, length: 4) == Data("from".utf8))
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("frasil-get-to-file-\(UUID().uuidString)")
+    try await blobs.getToFile(id: blob, path: path.path, listener: nil)
+    #expect(try Data(contentsOf: path) == bytes)
+    try? FileManager.default.removeItem(at: path)
     _ = try await arrived.heard.until { $0 == .stream(space: space.id(), stream: blobs.id()) }
 
     space.pauseSync()

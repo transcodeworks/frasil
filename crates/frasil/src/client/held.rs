@@ -48,7 +48,13 @@ impl Space {
 }
 
 /// How a blob is put as a version of a file (ext-file-versions.md, section
-/// 3.1), for [`Blobs::put_version`](super::Blobs::put_version).
+/// 3.1), for [`Blobs::put_version`](super::Blobs::put_version) from memory,
+/// [`Blobs::put_version_file`](super::Blobs::put_version_file),
+/// [`Blobs::put_version_seekable`](super::Blobs::put_version_seekable) and
+/// [`Blobs::put_version_at`](super::Blobs::put_version_at) from a source
+/// read a few chunks at a time, and
+/// [`Blobs::put_version_from`](super::Blobs::put_version_from) from the
+/// application's provider.
 #[cfg(feature = "adapter-blobs")]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -93,6 +99,11 @@ impl PutVersion {
     pub fn published(mut self) -> Self {
         self.published = true;
         self
+    }
+
+    /// Whether the put waits for a peer to hold the object.
+    pub(crate) fn is_published(&self) -> bool {
+        self.published
     }
 
     fn parent_handles(&self) -> Vec<[u8; 16]> {
@@ -177,28 +188,61 @@ mod blobs {
         /// As [`Blobs::put_from_published`] when published, or else as
         /// [`Blobs::put_from`].
         pub async fn put_version_from(&self, token: &[u8], how: &PutVersion) -> Result<BlobId> {
-            use frasil_adapter_blobs::entry::Entry;
             let engine = self.space().device.engine();
             let space = self.space().id().event();
             let handle = engine.platform().nonce::<16>()?;
             let (locator, key) = engine.put_held(space, token).await?;
-            let size = engine
-                .held_record(&space, &locator)
-                .await
-                .map(|record| record.size);
-            let size = match size {
-                Some(size) => size,
+            let size = match engine.held_record(&space, &locator).await {
+                Some(record) => record.size,
                 None => engine
-                    .stored_object(&space, &locator)
+                    .object_size(&space, &locator)
                     .await
-                    .and_then(|bytes| {
-                        frasil_units::objects::check_stored(&bytes, &locator)
-                            .ok()
-                            .map(|stored| stored.header.size)
-                    })
                     .ok_or(Error::Class("Missing"))?,
             };
+            self.put_kept(handle, how, locator, key, size, Vec::new())
+                .await
+        }
+
+        /// Puts a blob as [`PutVersion`] says: a new version of the blobs
+        /// it was made from, and published only once a peer holds its bytes
+        /// if asked. The bytes are in memory, and sealed whole beside them:
+        /// a large file puts with a few chunks in memory through
+        /// [`Blobs::put_version_file`] or [`Blobs::put_version_seekable`].
+        ///
+        /// # Errors
+        ///
+        /// `Missing` when published and no connected peer took every chunk;
+        /// then as [`Blobs::put`].
+        pub async fn put_version(&self, bytes: &[u8], how: &PutVersion) -> Result<BlobId> {
+            let engine = self.space().device.engine();
+            let space = self.space().id().event();
+            let handle = engine.platform().nonce::<16>()?;
+            let (locator, key) = engine.blob_object(space, bytes).await?;
+            self.put_kept(handle, how, locator, key, bytes.len() as u64, Vec::new())
+                .await
+        }
+
+        /// Names an object this device keeps in a new unit under `handle`,
+        /// as [`PutVersion`] says: once a connected peer holds it when
+        /// published, then with a supersession of each parent. `stored`
+        /// holds a small object's parts to commit with the unit, and must
+        /// be empty when published, so that the peer finds the object in
+        /// the store.
+        pub(crate) async fn put_kept(
+            &self,
+            handle: [u8; 16],
+            how: &PutVersion,
+            locator: frasil_adapter::Locator,
+            key: Vec<u8>,
+            size: u64,
+            stored: Vec<crate::snapshots::ObjectPart>,
+        ) -> Result<BlobId> {
+            use frasil_adapter_blobs::content::Op;
+            use frasil_adapter_blobs::entry::Entry;
+            let engine = self.space().device.engine();
+            let space = self.space().id().event();
             if how.published {
+                debug_assert!(stored.is_empty(), "a published put keeps its object first");
                 self.taken(space, locator).await?;
             }
             let entry = Entry {
@@ -210,38 +254,14 @@ mod blobs {
                 reference: None,
             };
             engine
-                .put_version_entry(space, self.opening(), handle, entry, &how.parent_handles())
-                .await?;
-            Ok(BlobId::from_bytes(handle))
-        }
-
-        /// Puts a blob as [`PutVersion`] says: a new version of the blobs
-        /// it was made from, and published only once a peer holds its bytes
-        /// if asked.
-        ///
-        /// # Errors
-        ///
-        /// `Missing` when published and no connected peer took every chunk;
-        /// then as [`Blobs::put`].
-        pub async fn put_version(&self, bytes: &[u8], how: &PutVersion) -> Result<BlobId> {
-            use frasil_adapter_blobs::entry::Entry;
-            let engine = self.space().device.engine();
-            let space = self.space().id().event();
-            let handle = engine.platform().nonce::<16>()?;
-            let (locator, key) = engine.blob_object(space, bytes).await?;
-            if how.published {
-                self.taken(space, locator).await?;
-            }
-            let entry = Entry {
-                object: locator,
-                key,
-                size: bytes.len() as u64,
-                media_type: None,
-                name: how.name.clone(),
-                reference: None,
-            };
-            engine
-                .put_version_entry(space, self.opening(), handle, entry, &how.parent_handles())
+                .write_blob_op(
+                    space,
+                    self.opening(),
+                    Op::put(handle, entry),
+                    vec![locator],
+                    &how.parent_handles(),
+                    stored,
+                )
                 .await?;
             Ok(BlobId::from_bytes(handle))
         }

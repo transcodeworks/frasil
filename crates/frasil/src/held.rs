@@ -171,7 +171,11 @@ fn header_item(id: &[u8; 32]) -> Vec<u8> {
 
 /// Reads exactly `length` bytes at `offset`, or fails `Changed`: the
 /// plaintext is shorter than its record says.
-async fn read_exact(reader: &mut dyn ObjectReader, offset: u64, length: usize) -> Result<Vec<u8>> {
+pub(crate) async fn read_exact(
+    reader: &mut dyn ObjectReader,
+    offset: u64,
+    length: usize,
+) -> Result<Vec<u8>> {
     let mut out = vec![0; length];
     let mut filled = 0;
     while filled < length {
@@ -232,6 +236,8 @@ struct Pass {
     digest: Sha256Hasher,
 }
 
+/// The chunks in `keep` are kept as the pass's parts; the others are
+/// hashed and let go.
 #[allow(clippy::too_many_arguments)]
 async fn seal_range(
     reader: &mut dyn ObjectReader,
@@ -242,6 +248,7 @@ async fn seal_range(
     chunk: u64,
     first: u64,
     last: u64,
+    keep: core::ops::Range<u64>,
 ) -> Result<Pass> {
     let object_key = keys.object_key(&header.object_id);
     let mut id = HmacSha256::new(&*keys.id_key);
@@ -260,6 +267,9 @@ async fn seal_range(
         );
         id.update(&plain);
         digest.update(&sealed.sealed);
+        if !keep.contains(&index) {
+            continue;
+        }
         parts.push(ObjectPart {
             locator: locator_of(&header.object_id, &[0; 32]),
             header: (index == 0).then(|| header_bytes.to_vec()),
@@ -329,6 +339,31 @@ pub async fn put_with_chunked(
     token: &[u8],
     chunk: u64,
 ) -> Result<HeldPut> {
+    put_passes(
+        provider,
+        space,
+        content_key,
+        key_reference,
+        token,
+        chunk,
+        true,
+    )
+    .await
+}
+
+/// [`put_with_chunked`]; with `keep` false, the chunks sealed in the
+/// second pass are let go as they are hashed, and the put's parts are
+/// empty, so that a put the provider holds needs a chunk's memory at a
+/// time.
+async fn put_passes(
+    provider: &dyn ObjectProvider,
+    space: &EventId,
+    content_key: &[u8; 32],
+    key_reference: &[u8],
+    token: &[u8],
+    chunk: u64,
+    keep: bool,
+) -> Result<HeldPut> {
     if chunk == 0 {
         return Err(Error::Class("Malformed"));
     }
@@ -343,24 +378,8 @@ pub async fn put_with_chunked(
     // 2. Pass one: the object ID over the whole plaintext, which gives
     // exactly the size.
     let mut reader = provider.open(token).await?;
-    let mut id = HmacSha256::new(&*keys.id_key);
-    let mut offset = 0u64;
-    let mut buffer = vec![0; 64 * 1024];
-    while offset < stat.size {
-        let read = reader.read_at(offset, &mut buffer).await?;
-        if read == 0 {
-            return Err(Error::Class("Changed"));
-        }
-        let left = usize::try_from(stat.size - offset).unwrap_or(usize::MAX);
-        let take = read.min(left);
-        id.update(&buffer[..take]);
-        offset += take as u64;
-    }
-    let mut past_end = [0u8; 1];
-    if reader.read_at(stat.size, &mut past_end).await? != 0 {
-        return Err(Error::Class("Changed"));
-    }
-    let object_id = id.finish();
+    let (object_id, _) =
+        crate::object_source::id_pass(reader.as_mut(), &keys, Some(stat.size), &mut |_| {}).await?;
     // 3. Pass two: each chunk sealed and hashed into the digest.
     let header = Header {
         object_id,
@@ -378,6 +397,7 @@ pub async fn put_with_chunked(
         chunk,
         0,
         count,
+        if keep { 0..count } else { 0..0 },
     )
     .await?;
     if pass.id.finish() != object_id {
@@ -478,8 +498,11 @@ pub async fn serve_with_chunked(
     }
     let header = Header::read(header_bytes).map_err(Error::class)?;
     let n = chunk_count(header.size, chunk);
+    // The chunks asked for are kept; with no locator yet, every chunk is
+    // read, to find it, and only those are kept.
+    let wanted = first.min(n)..first.saturating_add(count).min(n);
     let (first, last) = match locator {
-        Some(_) => (first.min(n), first.saturating_add(count).min(n)),
+        Some(_) => (wanted.start, wanted.end),
         None => (0, n),
     };
     let whole = first == 0 && last == n;
@@ -499,6 +522,7 @@ pub async fn serve_with_chunked(
         chunk,
         first,
         last,
+        wanted,
     )
     .await
     {
@@ -1387,15 +1411,38 @@ impl Engine {
             let (reference, key) = self.sealing(&state, &space)?;
             (held.is_some(), provider, reference, key)
         };
-        let put = put_with(provider.as_ref(), &space, &key, &reference, token).await?;
+        // Under `held`, the store keeps the header alone, so the sealed
+        // chunks are let go as the second pass hashes them.
+        let put = put_passes(
+            provider.as_ref(),
+            &space,
+            &key,
+            &reference,
+            token,
+            CHUNK_BYTES as u64,
+            !held,
+        )
+        .await?;
         let mut state = self.lock().await;
         if !state.replicas.contains_key(&space) {
             return Err(Error::UnknownSpace);
         }
         // The policy may have changed during the passes: a space set back
         // to `sealed` keeps the chunks.
-        let held = held && self.provider_of(&state, &space).is_some();
-        if !held {
+        let now_held = held && self.provider_of(&state, &space).is_some();
+        if !now_held {
+            let put = if held {
+                // The chunks were let go: sealed again to be kept.
+                drop(state);
+                let put = put_with(provider.as_ref(), &space, &key, &reference, token).await?;
+                state = self.lock().await;
+                if !state.replicas.contains_key(&space) {
+                    return Err(Error::UnknownSpace);
+                }
+                put
+            } else {
+                put
+            };
             // Under `sealed`: the chunks kept, as a put from memory keeps
             // them.
             Self::keep_parts_in(&mut state, space, &put.parts.iter().collect::<Vec<_>>()).await?;
@@ -1619,25 +1666,20 @@ impl Engine {
                 return Vec::new();
             };
             Self::resolve_held(&mut state, space, true);
-            let entries: Vec<([u8; 32], bool)> = state
+            let entries: Vec<[u8; 32]> = state
                 .held
                 .objects
                 .get(space)
-                .map(|objects| {
-                    objects
-                        .iter()
-                        .map(|(id, entry)| (*id, entry.locator.is_some()))
-                        .collect()
-                })
+                .map(|objects| objects.keys().copied().collect())
                 .unwrap_or_default();
             (provider, entries)
         };
         let mut out = Vec::new();
-        for (id, known) in entries {
-            let count = if known { 0 } else { u64::MAX };
-            if let Ok(Some((locator, _))) = self
-                .serve_entry(space, &id, provider.as_ref(), 0, count)
-                .await
+        // No chunk is kept: a locator not known yet is found by a pass that
+        // hashes each chunk and lets it go.
+        for id in entries {
+            if let Ok(Some((locator, _))) =
+                self.serve_entry(space, &id, provider.as_ref(), 0, 0).await
             {
                 out.push(locator);
             }
@@ -1745,6 +1787,75 @@ impl Engine {
             return Err(Error::Class("ObjectMismatch"));
         }
         Ok(Some(plaintext))
+    }
+
+    /// A held object's plaintext chunk by chunk, for the chunks in
+    /// `chunks`, read through the provider a chunk at a time with the
+    /// object ID checked in the pass, as [`held_plaintext`]
+    /// (Self::held_plaintext) checks it; `None` when the object is not
+    /// held here. A read of every chunk checks the ID before it gives the
+    /// last one; a read of some reads the whole file first, keeping only
+    /// those chunks, and gives them once the ID is checked.
+    ///
+    /// # Errors
+    ///
+    /// `ObjectMismatch` when the plaintext is not the object's; the
+    /// provider's.
+    #[cfg(feature = "adapter-blobs")]
+    pub(crate) async fn held_chunks(
+        &self,
+        space: &EventId,
+        locator: &Locator,
+        chunks: core::ops::Range<u64>,
+    ) -> Result<Option<HeldChunks>> {
+        let id = object_id(locator);
+        let Some((entry, provider, key)) = self.held_for_read(space, &id).await else {
+            return Ok(None);
+        };
+        let header = Header::read(&entry.header).map_err(Error::class)?;
+        if !same_file(
+            provider.stat(&entry.record.token).await?.as_ref(),
+            &entry.record,
+        ) {
+            self.withdraw_if_same(space, &id, &entry.record).await?;
+            return Ok(None);
+        }
+        let reader = provider.open(&entry.record.token).await?;
+        let count = chunk_count(header.size, CHUNK_BYTES as u64);
+        let wanted = chunks.start.min(count)..chunks.end.min(count);
+        let mut read = HeldChunks {
+            engine: self.clone(),
+            space: *space,
+            id,
+            record: entry.record,
+            reader,
+            size: header.size,
+            next: 0,
+            end: count,
+            count,
+            object_id: key.map(|key| {
+                (
+                    HmacSha256::new(&*ObjectKeys::of(&key).id_key),
+                    header.object_id,
+                )
+            }),
+            keep: wanted.clone(),
+            kept: std::collections::VecDeque::new(),
+        };
+        if read.object_id.is_none() {
+            // No ID to check: the chunks asked for alone.
+            read.next = wanted.start;
+            read.end = wanted.end;
+            return Ok(Some(read));
+        }
+        if wanted == (0..count) {
+            return Ok(Some(read));
+        }
+        // Some chunks: the whole file first, the ID checked.
+        while let Some(chunk) = read.read_next().await? {
+            read.kept.push_back(chunk);
+        }
+        Ok(Some(read))
     }
 
     /// A held object's token, once its provider confirms its size and
@@ -1998,5 +2109,81 @@ impl Engine {
         state.held.receiving.retain(|(s, _), _| s != space);
         state.held.hints.retain(|(s, _), _| s != space);
         provider.map(|provider| (provider, tokens))
+    }
+}
+
+/// A held object's plaintext chunk by chunk, from [`Engine::held_chunks`].
+#[cfg(feature = "adapter-blobs")]
+pub(crate) struct HeldChunks {
+    engine: Engine,
+    space: EventId,
+    id: [u8; 32],
+    record: HeldRecord,
+    reader: Box<dyn ObjectReader>,
+    size: u64,
+    /// The next chunk to read from the file, one past the last it reads,
+    /// and their count.
+    next: u64,
+    end: u64,
+    count: u64,
+    /// With `k(S)`: the object ID over the plaintext read so far, and the
+    /// header's.
+    object_id: Option<(HmacSha256, [u8; 32])>,
+    /// The chunks given, and those read ahead to give.
+    keep: core::ops::Range<u64>,
+    kept: std::collections::VecDeque<(u64, Vec<u8>)>,
+}
+
+#[cfg(feature = "adapter-blobs")]
+impl HeldChunks {
+    /// The next chunk asked for, by index, with its plaintext; `None`
+    /// after the last.
+    ///
+    /// # Errors
+    ///
+    /// `Missing` when the file changed meanwhile, which withdraws the
+    /// object; `ObjectMismatch`; the provider's.
+    pub(crate) async fn next(&mut self) -> Result<Option<(u64, Vec<u8>)>> {
+        if let Some(chunk) = self.kept.pop_front() {
+            return Ok(Some(chunk));
+        }
+        self.read_next().await
+    }
+
+    /// Reads the file on to the next chunk asked for.
+    async fn read_next(&mut self) -> Result<Option<(u64, Vec<u8>)>> {
+        while self.next < self.end {
+            let index = self.next;
+            let length = piece(self.size, CHUNK_BYTES as u64, index)?;
+            let plain =
+                match read_exact(self.reader.as_mut(), index * CHUNK_BYTES as u64, length).await {
+                    Ok(plain) => plain,
+                    Err(Error::Class("Changed")) => {
+                        self.engine
+                            .withdraw_if_same(&self.space, &self.id, &self.record)
+                            .await?;
+                        return Err(Error::Class("Missing"));
+                    }
+                    Err(error) => return Err(error),
+                };
+            self.next += 1;
+            if let Some((hmac, _)) = &mut self.object_id {
+                hmac.update(&plain);
+            }
+            // The ID is checked before the last chunk is given.
+            if self.next == self.count
+                && let Some((hmac, expected)) = self.object_id.take()
+                && hmac.finish() != expected
+            {
+                self.engine
+                    .withdraw_if_same(&self.space, &self.id, &self.record)
+                    .await?;
+                return Err(Error::Class("ObjectMismatch"));
+            }
+            if self.keep.contains(&index) {
+                return Ok(Some((index, plain)));
+            }
+        }
+        Ok(None)
     }
 }

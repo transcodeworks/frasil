@@ -321,8 +321,9 @@ struct Shared {
     /// ID, until the device holds them again (at-rest.md, "Held objects").
     withdrawn: std::sync::Mutex<BTreeSet<(EventId, [u8; 32])>>,
     /// Objects read whole since the device opened, every step of units.md,
-    /// 3.3 passed, by the space that stores them.
-    verified: std::sync::Mutex<BTreeSet<(EventId, frasil_adapter::Locator)>>,
+    /// 3.3 passed, by the space that stores them: `true` when step 7 was
+    /// one of them, the reader holding `k(S)`.
+    verified: std::sync::Mutex<BTreeMap<(EventId, frasil_adapter::Locator), bool>>,
     /// What the device's member connections share.
     links: std::sync::Mutex<crate::links::Links>,
     /// The object providers the application gave (at-rest.md, "Held
@@ -489,7 +490,7 @@ impl Engine {
                 checkpoint_policy: std::sync::Mutex::default(),
                 arrivals,
                 withdrawn: std::sync::Mutex::new(BTreeSet::new()),
-                verified: std::sync::Mutex::new(BTreeSet::new()),
+                verified: std::sync::Mutex::new(BTreeMap::new()),
                 providers: std::sync::Mutex::new(crate::held::Providers::default()),
                 #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
                 syncing: std::sync::Mutex::new(Vec::new()),
@@ -1160,26 +1161,42 @@ impl Engine {
         let _ = self.shared.arrivals.send((space, locator));
     }
 
-    /// Notes that an object was read whole, every step passing.
+    /// Notes that an object was read whole, every step passing; with
+    /// `step_7`, by a reader that holds `k(S)`, so that step 7 was one.
     #[cfg_attr(not(feature = "adapter-blobs"), allow(dead_code))]
-    pub(crate) fn mark_verified(&self, space: EventId, locator: frasil_adapter::Locator) {
-        self.shared
+    pub(crate) fn mark_verified(
+        &self,
+        space: EventId,
+        locator: frasil_adapter::Locator,
+        step_7: bool,
+    ) {
+        let mut verified = self
+            .shared
             .verified
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert((space, locator));
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let ran = verified.entry((space, locator)).or_insert(step_7);
+        *ran |= step_7;
     }
 
-    /// Whether an object was read whole since the device opened, and its
-    /// stored bytes have not changed since: the replica still finds them
-    /// to hash to the locator.
+    /// Whether an object was read whole since the device opened, every
+    /// step a reader runs passing, step 7 too when `step_7`. A reader
+    /// that relies on it runs step 0 again first while the replica has not
+    /// found the stored bytes to hash to the locator since a part was
+    /// kept, so that what passed is what it reads.
     #[cfg_attr(not(feature = "adapter-blobs"), allow(dead_code))]
-    pub(crate) fn is_verified(&self, space: &EventId, locator: &frasil_adapter::Locator) -> bool {
+    pub(crate) fn is_verified(
+        &self,
+        space: &EventId,
+        locator: &frasil_adapter::Locator,
+        step_7: bool,
+    ) -> bool {
         self.shared
             .verified
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(&(*space, *locator))
+            .get(&(*space, *locator))
+            .is_some_and(|ran| *ran || !step_7)
     }
 
     /// Records that a held object was withdrawn.

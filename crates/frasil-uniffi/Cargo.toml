@@ -20,7 +20,8 @@ bindgen = ["uniffi/cli"]
 # Deposit tokens (ext-deposit-tokens.md): grants, drawing ahead of need,
 # paid deposits.
 frasil = { path = "../frasil", version = "0.1.0", features = ["ext-deposit-tokens"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+# `fs` and `io-util` write a blob to a file (`Blobs::get_to_file`).
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "fs", "io-util"] }
 uniffi.workspace = true
 # Wipes the unlock key that crosses the boundary.
 zeroize.workspace = true

@@ -251,6 +251,13 @@ typedef void (*UniffiCallbackInterfaceArrivalListenerMethod0)(uint64_t, RustBuff
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_BLOB_PROGRESS_LISTENER_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_BLOB_PROGRESS_LISTENER_METHOD0
+typedef void (*UniffiCallbackInterfaceBlobProgressListenerMethod0)(uint64_t, uint64_t, RustBuffer, void* _Nonnull,
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_BLOB_STATUS_LISTENER_METHOD0
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_BLOB_STATUS_LISTENER_METHOD0
 typedef void (*UniffiCallbackInterfaceBlobStatusListenerMethod0)(uint64_t, RustBuffer, void* _Nonnull,
@@ -321,6 +328,15 @@ typedef struct UniffiVTableCallbackInterfaceArrivalListener {
     UniffiCallbackInterfaceClone _Nonnull uniffiClone;
     UniffiCallbackInterfaceArrivalListenerMethod0 _Nonnull arrived;
 } UniffiVTableCallbackInterfaceArrivalListener;
+
+#endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_BLOB_PROGRESS_LISTENER
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_BLOB_PROGRESS_LISTENER
+typedef struct UniffiVTableCallbackInterfaceBlobProgressListener {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceBlobProgressListenerMethod0 _Nonnull progress;
+} UniffiVTableCallbackInterfaceBlobProgressListener;
 
 #endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_BLOB_STATUS_LISTENER
@@ -400,6 +416,26 @@ void uniffi_frasil_uniffi_fn_init_callback_vtable_arrivallistener(const UniffiVT
 void uniffi_frasil_uniffi_fn_method_arrivallistener_arrived(uint64_t ptr, RustBuffer arrival, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CLONE_BLOBPROGRESSLISTENER
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CLONE_BLOBPROGRESSLISTENER
+uint64_t uniffi_frasil_uniffi_fn_clone_blobprogresslistener(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_FREE_BLOBPROGRESSLISTENER
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_FREE_BLOBPROGRESSLISTENER
+void uniffi_frasil_uniffi_fn_free_blobprogresslistener(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_INIT_CALLBACK_VTABLE_BLOBPROGRESSLISTENER
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_INIT_CALLBACK_VTABLE_BLOBPROGRESSLISTENER
+void uniffi_frasil_uniffi_fn_init_callback_vtable_blobprogresslistener(const UniffiVTableCallbackInterfaceBlobProgressListener* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_BLOBPROGRESSLISTENER_PROGRESS
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_BLOBPROGRESSLISTENER_PROGRESS
+void uniffi_frasil_uniffi_fn_method_blobprogresslistener_progress(uint64_t ptr, uint64_t bytes, RustBuffer total, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CLONE_BLOBSTATUSLISTENER
 #define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CLONE_BLOBSTATUSLISTENER
 uint64_t uniffi_frasil_uniffi_fn_clone_blobstatuslistener(uint64_t handle, RustCallStatus *_Nonnull out_status
@@ -445,6 +481,16 @@ uint64_t uniffi_frasil_uniffi_fn_method_blobs_content_hash(uint64_t ptr, RustBuf
 uint64_t uniffi_frasil_uniffi_fn_method_blobs_get(uint64_t ptr, RustBuffer id
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_BLOBS_GET_RANGE
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_BLOBS_GET_RANGE
+uint64_t uniffi_frasil_uniffi_fn_method_blobs_get_range(uint64_t ptr, RustBuffer id, uint64_t offset, uint64_t length
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_BLOBS_GET_TO_FILE
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_BLOBS_GET_TO_FILE
+uint64_t uniffi_frasil_uniffi_fn_method_blobs_get_to_file(uint64_t ptr, RustBuffer id, RustBuffer path, RustBuffer listener
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_BLOBS_ID
 #define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_BLOBS_ID
 RustBuffer uniffi_frasil_uniffi_fn_method_blobs_id(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -458,6 +504,11 @@ uint64_t uniffi_frasil_uniffi_fn_method_blobs_observe_status(uint64_t ptr, RustB
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_BLOBS_PUT
 #define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_BLOBS_PUT
 uint64_t uniffi_frasil_uniffi_fn_method_blobs_put(uint64_t ptr, RustBuffer name, RustBuffer bytes
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_BLOBS_PUT_FILE
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_BLOBS_PUT_FILE
+uint64_t uniffi_frasil_uniffi_fn_method_blobs_put_file(uint64_t ptr, RustBuffer name, RustBuffer path, RustBuffer listener
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_BLOBS_STATUS
@@ -1116,6 +1167,12 @@ uint16_t uniffi_frasil_uniffi_checksum_method_arrivallistener_arrived(void
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_BLOBPROGRESSLISTENER_PROGRESS
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_BLOBPROGRESSLISTENER_PROGRESS
+uint16_t uniffi_frasil_uniffi_checksum_method_blobprogresslistener_progress(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_BLOBSTATUSLISTENER_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_BLOBSTATUSLISTENER_STATUS
 uint16_t uniffi_frasil_uniffi_checksum_method_blobstatuslistener_status(void
@@ -1140,6 +1197,18 @@ uint16_t uniffi_frasil_uniffi_checksum_method_blobs_get(void
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_BLOBS_GET_RANGE
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_BLOBS_GET_RANGE
+uint16_t uniffi_frasil_uniffi_checksum_method_blobs_get_range(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_BLOBS_GET_TO_FILE
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_BLOBS_GET_TO_FILE
+uint16_t uniffi_frasil_uniffi_checksum_method_blobs_get_to_file(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_BLOBS_ID
 #define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_BLOBS_ID
 uint16_t uniffi_frasil_uniffi_checksum_method_blobs_id(void
@@ -1155,6 +1224,12 @@ uint16_t uniffi_frasil_uniffi_checksum_method_blobs_observe_status(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_BLOBS_PUT
 #define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_BLOBS_PUT
 uint16_t uniffi_frasil_uniffi_checksum_method_blobs_put(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_BLOBS_PUT_FILE
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_BLOBS_PUT_FILE
+uint16_t uniffi_frasil_uniffi_checksum_method_blobs_put_file(void
 
 );
 #endif

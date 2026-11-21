@@ -1,0 +1,17 @@
+[package]
+name = "frasil-object-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dev-dependencies]
+frasil = { path = "../../crates/frasil" }
+frasil-relay = { path = "../../apps/relay" }
+frasil-units = { path = "../../crates/frasil-units" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+# The allocator instrumentation is confined to its integration-test binary.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "deny"

@@ -167,3 +167,78 @@ async fn a_refused_superseding_unit_is_reported() {
     .expect("reported");
     assert_eq!(reported, (space.id(), files.id(), vec![first]));
 }
+
+/// The supersessions of the last unit of a stream in the device's log.
+async fn latest_supersessions(
+    device: &Device,
+    space: &EventId,
+    stream: frasil_units::stream::StreamId,
+) -> Vec<frasil_adapter::Supersession> {
+    device
+        .engine()
+        .events(space)
+        .await
+        .into_iter()
+        .rev()
+        .filter_map(|signed| frasil_events::decode(&signed).ok())
+        .filter(|event| event.kind() == kind::UNIT)
+        .filter_map(|event| Unit::from_event(event).ok())
+        .find(|unit| unit.body.stream == stream)
+        .expect("a unit of the stream")
+        .body
+        .supersedes
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_version_put_from_a_file_or_a_seekable_source_supersedes_its_parents() {
+    let alice = device(1).await;
+    let space = alice.create_space().await.unwrap();
+    let id = EventId(*space.id().as_bytes());
+    let files = space.create_blobs().unwrap();
+    let stream = *files.id().as_bytes();
+    let dir = std::env::temp_dir().join(format!("frasil-versions-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("first.bin");
+    std::fs::write(&path, b"first, from a file").unwrap();
+
+    let first = files
+        .put_version_file(&path, &PutVersion::new().named("notes.txt"), |_, _| {})
+        .await
+        .unwrap();
+    assert!(latest_supersessions(&alice, &id, stream).await.is_empty());
+    let second = files
+        .put_version_seekable(
+            std::io::Cursor::new(b"second, from a seekable source".to_vec()),
+            &PutVersion::new().named("notes.txt").parents(&[first]),
+            |_, _| {},
+        )
+        .await
+        .unwrap();
+    let supersedes = latest_supersessions(&alice, &id, stream).await;
+    assert_eq!(
+        supersedes.len(),
+        1,
+        "the second version supersedes the first"
+    );
+    let info = files.info(second).await.unwrap();
+    assert_eq!(info.name.as_deref(), Some("notes.txt"));
+    assert_eq!(
+        files.get(second).await.unwrap().as_deref(),
+        Some(&b"second, from a seekable source"[..])
+    );
+
+    // Published, with no peer: nothing reaches the stream.
+    let refused = files
+        .put_version_file(
+            &path,
+            &PutVersion::new().parents(&[second]).published(),
+            |_, _| {},
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(frasil::Error::Class("Missing"))),
+        "{refused:?}"
+    );
+    assert_eq!(files.list().await.unwrap().len(), 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
