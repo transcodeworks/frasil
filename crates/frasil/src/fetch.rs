@@ -194,12 +194,20 @@ impl Requests {
     }
 
     /// Whether a request is still wanted, by its number.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
     pub(crate) fn is_live(&self, id: u64) -> bool {
         self.live().requests.contains_key(&id)
     }
 
     /// Follows the requests: the receiver changes when one is made or
     /// ends.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
     pub(crate) fn follow(&self) -> watch::Receiver<u64> {
         self.changed.subscribe()
     }

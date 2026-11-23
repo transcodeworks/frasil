@@ -609,9 +609,12 @@ struct Attached {
     deferred: Vec<(Vec<u8>, BTreeSet<Locator>)>,
     /// Objects the space's units name that are being fetched by slices,
     /// or wait to be.
+    #[cfg(any(feature = "server", feature = "server-socket"))]
     fetching: BTreeSet<Locator>,
     /// Objects whose slices from this peer failed their checks: not asked
-    /// of it again on this connection (units.md, "Sync", objects).
+    /// of it again on this connection (units.md, "Sync", objects). On a
+    /// stream, the space's session keeps them.
+    #[cfg(any(feature = "server", feature = "server-socket"))]
     refused: BTreeSet<Locator>,
     /// States whose upload key was presented.
     uploads: BTreeSet<RotationSet>,
@@ -2472,7 +2475,9 @@ impl Driver {
                 uploading: BTreeSet::new(),
                 upload_answers: BTreeMap::new(),
                 deferred: Vec::new(),
+                #[cfg(any(feature = "server", feature = "server-socket"))]
                 fetching: BTreeSet::new(),
+                #[cfg(any(feature = "server", feature = "server-socket"))]
                 refused: BTreeSet::new(),
                 uploads: BTreeSet::new(),
                 fetch_key: false,

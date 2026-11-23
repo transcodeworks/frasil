@@ -2063,7 +2063,7 @@ impl Engine {
     /// nothing to fetch: it holds the object whole or each of those
     /// chunks, or the application holds the plaintext.
     #[cfg_attr(
-        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        not(any(feature = "server", feature = "server-socket")),
         allow(dead_code)
     )]
     pub(crate) async fn chunks_to_fetch(

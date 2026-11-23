@@ -59,7 +59,7 @@ pub use crate::client::KeepKeys;
 #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
 pub use crate::client::peers::Connect;
 pub use crate::device::{Engine, Ingested, Notice};
-pub use crate::fetch::{Fetch, FetchPriority};
+pub use crate::fetch::{Cancel, Fetch, FetchPriority};
 pub use crate::outbox::{Acknowledger, Outbox};
 pub use crate::platform::{Clock, ManualClock, OsRandom, Platform, Random, SystemClock};
 pub use crate::replica::Replica;
