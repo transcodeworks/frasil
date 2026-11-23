@@ -1044,10 +1044,13 @@ not one of units.md's sealed chunks, which `ObjectWant`, `ObjectChunks`
 and `ObjectHave` count on a stream. A reader learns the stored length from
 slice 0: `4 + len(header) + size + 40 · n`, with `size` from the header and
 `n = max(1, ceil(size / 1,048,536))` ([units.md](units.md), "Objects").
-On a stream, `ObjectChunks` carries the header,
-without its length, at key 3, a sealed chunk's index `i` at key 4 and
-`chunk_i` at key 5. A reader that fetches slices checks each sealed chunk
-once it holds the slices that carry it.
+On a stream, `ObjectChunks` carries a sealed chunk's index `i` at key 4
+and `chunk_i` at key 5; the first `ObjectChunks` of each answer to an
+`ObjectWant` carries the header as well, without its length, at key 3,
+whichever chunk index the answer starts at ([units.md](units.md), section
+3.14). On these routes the header is in slice 0 alone, so a reader that
+holds no header fetches slice 0 first. A reader that fetches slices checks
+each sealed chunk once it holds the slices that carry it.
 
 **Mailbox routes.** `{kind}` is 1, 2 or 3, or 4 with
 [ext-invite-links.md](ext-invite-links.md); a peer without that extension
