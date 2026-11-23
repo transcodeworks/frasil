@@ -4278,6 +4278,9 @@ enum SliceFetch {
     Stopped,
     /// The request was cancelled: the fetch stopped before its next slice.
     Cancelled,
+    /// It gave way to a more urgent request: it waits again, and goes on
+    /// from what the device holds by then.
+    GaveWay,
     /// A chunk failed its check, and the device dropped what it held.
     Refused,
     /// A slice did not read as the header gives it, and the device
@@ -4290,12 +4293,20 @@ enum SliceFetch {
 /// A fetch by slices that ended.
 #[cfg(any(feature = "server", feature = "server-socket"))]
 struct Fetched {
-    space: EventId,
-    locator: Locator,
-    /// The number of the device's request it served; 0 for an object the
-    /// space's units name.
-    id: u64,
+    /// The request it served: the device's, or, with number 0, an object
+    /// the space's units name.
+    request: crate::fetch::Request,
+    /// The transport's number for the fetch.
+    serial: u64,
     ended: SliceFetch,
+}
+
+/// A fetch by slices that runs.
+#[cfg(any(feature = "server", feature = "server-socket"))]
+struct Running {
+    priority: crate::fetch::FetchPriority,
+    /// Signalled when a more urgent request waits for its place.
+    gives_way: crate::fetch::Cancel,
 }
 
 /// The slices that the fetches of one transport share, by space, locator
@@ -4309,8 +4320,11 @@ type SharedSlices = crate::fetch::Slices<(EventId, Locator, u64), Vec<u8>>;
 struct SliceFetches {
     /// Those that wait for a task, most urgent first.
     queue: crate::fetch::Queue,
-    /// How many run, each one slice request at a time.
-    running: usize,
+    /// Those that run, each one slice request at a time, by the numbers
+    /// the transport gave them.
+    running: BTreeMap<u64, Running>,
+    /// Counts the fetches started.
+    started: u64,
     /// The slices they share.
     slices: Arc<SharedSlices>,
     /// Signalled when the transport ends: each stops before its next
@@ -4446,6 +4460,8 @@ struct SliceTask {
     claims: Claims,
     /// Signalled when the transport ends.
     stop: crate::fetch::Cancel,
+    /// Signalled when a more urgent request waits for this fetch's place.
+    gives_way: crate::fetch::Cancel,
     /// Set once the transport's readers end.
     ended: Arc<AtomicBool>,
     /// Set once the connection is to close.
@@ -4455,7 +4471,7 @@ struct SliceTask {
 
 #[cfg(any(feature = "server", feature = "server-socket"))]
 impl SliceTask {
-    async fn run(mut self) -> SliceFetch {
+    async fn run(&mut self) -> SliceFetch {
         use crate::objects::{Received, SliceReader};
         let (space, locator) = (self.request.space, self.request.locator);
         let end = self.request.chunks.end;
@@ -4463,6 +4479,9 @@ impl SliceTask {
         loop {
             if self.request.cancel.is_cancelled() {
                 return SliceFetch::Cancelled;
+            }
+            if self.gives_way.is_cancelled() {
+                return SliceFetch::GaveWay;
             }
             if self.stop.is_cancelled()
                 || self.ended.load(Ordering::Acquire)
@@ -4501,6 +4520,12 @@ impl SliceTask {
                 () = self.stop.cancelled() => {
                     abort.cancel();
                     return SliceFetch::Stopped;
+                }
+                // What a reader waits for goes first: the slice under way
+                // is given up, and asked for again later.
+                () = self.gives_way.cancelled() => {
+                    abort.cancel();
+                    return SliceFetch::GaveWay;
                 }
             };
             let Ok(slice) = slice else {
@@ -4558,11 +4583,17 @@ impl Driver {
 
     /// Starts the fetches that wait, most urgent first, each on a task of
     /// its own, while fewer than [`SLICES_AT_ONCE`] run: the connection
-    /// goes on reading messages, and hears of each as it ends.
+    /// goes on reading messages, and hears of each as it ends. When as
+    /// many run as may, and a request waits that is more urgent than one
+    /// of them, the least urgent gives way.
     ///
     /// [`SLICES_AT_ONCE`]: crate::fetch::SLICES_AT_ONCE
     async fn pump(&mut self) {
-        while self.fetches.running < crate::fetch::SLICES_AT_ONCE {
+        loop {
+            if self.fetches.running.len() >= crate::fetch::SLICES_AT_ONCE {
+                self.give_way();
+                return;
+            }
             let Some(request) = self.fetches.queue.pop() else {
                 return;
             };
@@ -4599,8 +4630,17 @@ impl Driver {
             // of the neighbouring chunks started beside it shares them.
             let mut claims = Claims::new(self.fetches.slices.clone(), space, locator);
             claims.window(if header.is_some() { first } else { 0 });
-            let id = request.id;
-            let task = SliceTask {
+            let gives_way = crate::fetch::Cancel::new();
+            self.fetches.started += 1;
+            let serial = self.fetches.started;
+            self.fetches.running.insert(
+                serial,
+                Running {
+                    priority: request.priority,
+                    gives_way: gives_way.clone(),
+                },
+            );
+            let mut task = SliceTask {
                 device: self.device.clone(),
                 routes,
                 token,
@@ -4610,21 +4650,39 @@ impl Driver {
                 slices: self.fetches.slices.clone(),
                 claims,
                 stop: self.fetches.stop.clone(),
+                gives_way,
                 ended: self.ended.clone(),
                 closing: self.closing.clone(),
                 status: self.status.clone(),
             };
             let incoming = self.incoming.clone();
-            self.fetches.running += 1;
             self.runtime.spawn(async move {
                 let ended = task.run().await;
                 let _ = incoming.send(Incoming::Fetched(Fetched {
-                    space,
-                    locator,
-                    id,
+                    request: task.request,
+                    serial,
                     ended,
                 }));
             });
+        }
+    }
+
+    /// Makes room for a request that waits and is more urgent than a
+    /// fetch that runs: the least urgent of those, and the last started
+    /// among them, stops and waits again. One at a time: the next gives
+    /// way once this one is heard of.
+    fn give_way(&mut self) {
+        let Some(waiting) = self.fetches.queue.most_urgent() else {
+            return;
+        };
+        let running = &self.fetches.running;
+        if running.values().any(|fetch| fetch.gives_way.is_cancelled()) {
+            return;
+        }
+        if let Some(least) = running.values().max_by_key(|fetch| fetch.priority)
+            && least.priority > waiting
+        {
+            least.gives_way.cancel();
         }
     }
 
@@ -4644,13 +4702,19 @@ impl Driver {
     /// A fetch ended: the next one that waits starts.
     async fn on_fetched(&mut self, fetched: Fetched) -> Result<()> {
         let Fetched {
-            space,
-            locator,
-            id,
+            request,
+            serial,
             ended,
         } = fetched;
-        self.fetches.running = self.fetches.running.saturating_sub(1);
+        self.fetches.running.remove(&serial);
+        let (space, locator, id) = (request.space, request.locator, request.id);
         self.status().fetching.remove(&locator);
+        if matches!(ended, SliceFetch::GaveWay) {
+            // It waits again, behind the request it gave way to.
+            self.fetches.queue.push(request);
+            self.pump().await;
+            return Ok(());
+        }
         if let Some(attached) = self.spaces.get_mut(&space) {
             if id == 0 {
                 attached.fetching.remove(&locator);

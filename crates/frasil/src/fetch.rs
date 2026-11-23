@@ -274,6 +274,18 @@ impl Queue {
         None
     }
 
+    /// The priority of the most urgent request still wanted; cancelled
+    /// ones are dropped on the way.
+    pub(crate) fn most_urgent(&mut self) -> Option<FetchPriority> {
+        while let Some(first) = self.waiting.first_entry() {
+            if !first.get().cancel.is_cancelled() {
+                return Some(first.key().0);
+            }
+            first.remove();
+        }
+        None
+    }
+
     /// Whether no request waits.
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
@@ -729,6 +741,7 @@ mod tests {
         queue.push(request(4, FetchPriority::Position));
         queue.push(request(5, FetchPriority::ReadAhead));
         queue.push(request(6, FetchPriority::Position));
+        assert_eq!(queue.most_urgent(), Some(FetchPriority::Position));
         let order: Vec<u64> = std::iter::from_fn(|| queue.pop())
             .map(|request| request.id)
             .collect();
@@ -745,7 +758,9 @@ mod tests {
         queue.push(first);
         queue.push(request(2, FetchPriority::Background));
         cancel.cancel();
+        assert_eq!(queue.most_urgent(), Some(FetchPriority::Background));
         assert_eq!(queue.pop().map(|request| request.id), Some(2));
+        assert_eq!(queue.most_urgent(), None);
         assert!(queue.pop().is_none());
         assert!(queue.is_empty());
     }

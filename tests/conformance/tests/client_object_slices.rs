@@ -54,9 +54,9 @@ struct Faults {
     cut_from: Mutex<Option<u64>>,
     /// This slice is served with its first byte flipped.
     corrupt: Mutex<Option<u64>>,
-    /// Requests for this slice wait, once counted, until it is no longer
-    /// held back.
-    hold: Mutex<Option<u64>>,
+    /// Requests for these slices wait, once counted, until they are no
+    /// longer held back.
+    hold: Mutex<Vec<u64>>,
     /// How many requests the proxy cut.
     cut: AtomicUsize,
 }
@@ -76,6 +76,11 @@ impl Faults {
 
     fn clear(&self) {
         self.asked.lock().unwrap().clear();
+    }
+
+    /// Holds back the requests for these slices, and no others.
+    fn hold(&self, slices: &[u64]) {
+        *self.hold.lock().unwrap() = slices.to_vec();
     }
 }
 
@@ -156,7 +161,7 @@ async fn serve(
             faults.cut.fetch_add(1, Ordering::SeqCst);
             return;
         }
-        while *faults.hold.lock().unwrap() == Some(index) {
+        while faults.hold.lock().unwrap().contains(&index) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         let authorization = lines
@@ -379,7 +384,7 @@ async fn a_range_is_fetched_ahead_of_a_download_that_runs_beside_the_connection(
         setup_with(&peer.origin, SIX_CHUNKS).await;
 
     // The download takes slice 0 and waits for slice 1, which ends chunk 0.
-    *faults.hold.lock().unwrap() = Some(1);
+    faults.hold(&[1]);
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
     until(|| async { faults.asked(&locator) == vec![0, 1] }).await;
 
@@ -407,7 +412,7 @@ async fn a_range_is_fetched_ahead_of_a_download_that_runs_beside_the_connection(
 
     // The download goes on to the end, and asks for no slice on account of
     // chunk 4: slice 4 ends chunk 3, and slice 5 is the last chunk.
-    *faults.hold.lock().unwrap() = None;
+    faults.hold(&[]);
     until(|| async { bob.object(&space, &locator).await.is_ok() }).await;
     assert_eq!(bob.object(&space, &locator).await.unwrap(), big);
     assert_eq!(faults.asked(&locator), vec![0, 1, 0, 4, 5, 2, 3, 4, 5]);
@@ -434,13 +439,13 @@ async fn a_cancelled_fetch_stops_before_its_next_slice() {
     assert!(faults.asked(&locator).is_empty());
 
     // The whole object, at a reader's position; slice 2 is held back.
-    *faults.hold.lock().unwrap() = Some(2);
+    faults.hold(&[2]);
     let fetch = bob.fetch_chunks(space, locator, 0..u64::MAX, FetchPriority::Position);
     until(|| async { faults.asked(&locator) == vec![0, 1, 2] }).await;
     until(|| async { holds(&bob, &space, &locator, 0).await }).await;
     fetch.cancel();
     assert!(fetch.is_cancelled());
-    *faults.hold.lock().unwrap() = None;
+    faults.hold(&[]);
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(faults.asked(&locator), vec![0, 1, 2]);
     assert!(holds(&bob, &space, &locator, 0).await);
@@ -470,7 +475,7 @@ async fn a_fetch_resumes_over_the_chunks_held_wherever_they_are() {
     bob.fetch_objects_on_demand();
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
     // Chunks 3 and 4, with slice 5, which ends chunk 4, held back.
-    *faults.hold.lock().unwrap() = Some(5);
+    faults.hold(&[5]);
     let ahead = bob.fetch_chunks(space, locator, 3..5, FetchPriority::Position);
     until(|| async { holds(&bob, &space, &locator, 3).await }).await;
     until(|| async { faults.asked(&locator) == vec![0, 3, 4, 5] }).await;
@@ -485,7 +490,7 @@ async fn a_fetch_resumes_over_the_chunks_held_wherever_they_are() {
     let (held, prefix) = stored(link.status().fetching.get(&locator).copied());
     assert_eq!(held, 1 << 20);
     assert!(prefix > 4 && prefix < 1024, "{prefix}");
-    *faults.hold.lock().unwrap() = None;
+    faults.hold(&[]);
     until(|| async { holds(&bob, &space, &locator, 4).await }).await;
     assert_eq!(faults.asked(&locator), vec![0, 3, 4, 5]);
     drop(ahead);
@@ -529,16 +534,73 @@ async fn a_range_with_no_header_starts_at_slice_0_and_neighbours_share_a_slice()
     // Chunk 1 is in slices 1 and 2, chunk 2 in slices 2 and 3. The first
     // fetch waits for slice 1; the second takes slice 2, which is kept
     // for the first.
-    *faults.hold.lock().unwrap() = Some(1);
+    faults.hold(&[1]);
     let first = bob.fetch_chunks(space, locator, 1..2, FetchPriority::Position);
     until(|| async { faults.asked(&locator) == vec![0, 5, 1] }).await;
     let second = bob.fetch_chunks(space, locator, 2..3, FetchPriority::ReadAhead);
     until(|| async { holds(&bob, &space, &locator, 2).await }).await;
     assert!(!holds(&bob, &space, &locator, 1).await);
-    *faults.hold.lock().unwrap() = None;
+    faults.hold(&[]);
     until(|| async { holds(&bob, &space, &locator, 1).await }).await;
     assert_eq!(faults.asked(&locator), vec![0, 5, 1, 2, 3]);
     drop((last, first, second));
+    link.close();
+    alice_link.close();
+    peer.shutdown().await;
+}
+
+/// A reader's position does not wait for background fetches: when as many
+/// fetches run as a connection runs at once, the last started of the least
+/// urgent gives up its slice and waits again, and goes on once the
+/// reader's chunk is in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_readers_position_takes_the_place_of_a_background_fetch() {
+    let peer = spawn_loopback().await.unwrap();
+    let (proxy, faults) = spawn_proxy(&peer.origin).await;
+    let (_alice, alice_link, bob, _store, space, locator, _big) =
+        setup_with(&peer.origin, SIX_CHUNKS).await;
+    bob.fetch_objects_on_demand();
+    let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
+    let last = bob.fetch_chunks(space, locator, 5..6, FetchPriority::Position);
+    until(|| async { holds(&bob, &space, &locator, 5).await }).await;
+    assert_eq!(faults.asked(&locator), vec![0, 5]);
+
+    // Four background fetches, one chunk each, whose first slices are
+    // held back: as many as the connection runs at once.
+    faults.hold(&[0, 1, 2, 3]);
+    let mut background = Vec::new();
+    for chunk in 0..4 {
+        background.push(bob.fetch_chunks(
+            space,
+            locator,
+            chunk..chunk + 1,
+            FetchPriority::Background,
+        ));
+        until(|| async { faults.asked(&locator).len() as u64 == chunk + 3 }).await;
+    }
+    assert_eq!(faults.asked(&locator), vec![0, 5, 0, 1, 2, 3]);
+
+    // Chunk 4, at a reader's position: the fetch of chunk 3 gives way.
+    let position = bob.fetch_chunks(space, locator, 4..5, FetchPriority::Position);
+    until(|| async { holds(&bob, &space, &locator, 4).await }).await;
+    for chunk in 0..4 {
+        assert!(!holds(&bob, &space, &locator, chunk).await, "{chunk}");
+    }
+    // Then it asks for its slice again.
+    until(|| async { faults.asked(&locator) == vec![0, 5, 0, 1, 2, 3, 4, 5, 3] }).await;
+
+    faults.hold(&[]);
+    until(|| async {
+        for chunk in 0..4 {
+            if !holds(&bob, &space, &locator, chunk).await {
+                return false;
+            }
+        }
+        true
+    })
+    .await;
+    assert!(bob.object(&space, &locator).await.is_ok());
+    drop((last, background, position));
     link.close();
     alice_link.close();
     peer.shutdown().await;
