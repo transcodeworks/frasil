@@ -12,9 +12,10 @@
 //! wait, which only its own progress starts over, and one whose slices
 //! the peer sends wrong is given up for good, which its holder hears,
 //! as does the holder of a request made afterwards. Two fetches that end
-//! one object leave it whole, and a space paused while a fetch runs
-//! fetches nothing more until it is resumed. Every wait has a deadline,
-//! and nothing leaves the host.
+//! one object leave it whole, a space paused while a fetch runs fetches
+//! nothing more until it is resumed, and a read that waits for a blob
+//! released meanwhile asks for it again. Every wait has a deadline, and
+//! nothing leaves the host.
 
 #[path = "../../../crates/frasil/tests/support/provider.rs"]
 mod provider;
@@ -1014,5 +1015,84 @@ async fn a_space_paused_while_a_fetch_runs_fetches_no_more_until_resumed() {
     let asked = faults.asked(&locator);
     assert!(asked[6..].contains(&3), "{asked:?}");
     assert!(!asked[6..].contains(&0), "{asked:?}");
+    peer.shutdown().await;
+}
+
+/// A read that waits for a blob asks for it again when the blob became
+/// whole meanwhile, as for another read, and was released before this
+/// read looked: it does not wait out its time with nothing fetching.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_that_waits_asks_again_for_a_blob_released_meanwhile() {
+    use frasil::{Device, Level, Options, Storage};
+    let peer = spawn_loopback().await.unwrap();
+    let (proxy, faults) = spawn_proxy(&peer.origin).await;
+    let open = |key, options: Options| async move {
+        Device::open_with(Storage::Memory, &[key; 32], options.loopback())
+            .await
+            .expect("a device")
+    };
+    let alice = open(1, Options::new()).await;
+    let space = alice.create_space().await.unwrap();
+    alice.connect(&peer.origin).await.unwrap();
+    let files = space.create_blobs().unwrap();
+    let held = provider::DirProvider::new(provider::temp_dir("slices-released"));
+    let bob = open(
+        2,
+        Options::new()
+            .object_provider(held.clone())
+            .objects_on_demand(),
+    )
+    .await;
+    let joining = within(bob.join_via_peer(&proxy, "Bob", |_, _| async { true }))
+        .await
+        .unwrap();
+    within(space.admit(joining.text(), Level::Write, "Alice", |_, _| async { true }))
+        .await
+        .unwrap();
+    let bobs_space = within(joining.joined()).await.unwrap();
+    bob.connect(&proxy).await.unwrap();
+    let bytes = b"read by two".to_vec();
+    let blob = files.put(Some("twice"), &bytes).await.unwrap();
+    let bobs_files = within(async {
+        loop {
+            if let Ok(blobs) = bobs_space.blobs(files.id()).await
+                && blobs.list().await.is_ok_and(|list| list.len() == 1)
+            {
+                break blobs;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    let locator = bobs_files.info(blob).await.unwrap().object;
+
+    // A read asks for the blob, and no slice of it arrives.
+    *faults.cut_from.lock().unwrap() = Some(0);
+    let reading = {
+        let bobs_files = bobs_files.clone();
+        tokio::spawn(async move { bobs_files.materialise(blob, b"read.bin").await })
+    };
+    until(|| async { faults.cut.load(Ordering::SeqCst) >= 1 }).await;
+
+    // The blob becomes whole by another route, and is released at once.
+    let space_id = EventId(*space.id().as_bytes());
+    let stored = alice
+        .engine()
+        .stored_object(&space_id, &locator)
+        .await
+        .unwrap();
+    bob.engine()
+        .receive_object(space_id, &locator, &stored)
+        .await
+        .unwrap();
+    bobs_files.release(blob).await.unwrap();
+    *faults.cut_from.lock().unwrap() = None;
+
+    // The read that still waits asks again, and has its file.
+    let read = tokio::time::timeout(Duration::from_secs(20), reading)
+        .await
+        .expect("asked for again before the read gives up")
+        .unwrap();
+    assert!(read.is_ok(), "{read:?}");
     peer.shutdown().await;
 }

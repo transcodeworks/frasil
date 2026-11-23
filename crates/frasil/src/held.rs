@@ -2019,6 +2019,33 @@ impl Engine {
         });
     }
 
+    /// Asks again for an object a read still waits for
+    /// ([`ask_object`](Self::ask_object)) when nothing asks for it any
+    /// more and the device does not hold it whole: it became whole
+    /// meanwhile, which took the read's mark away, and was released or
+    /// dropped since. Whether it asked.
+    #[cfg_attr(
+        not(all(
+            any(feature = "server", feature = "iroh", feature = "server-socket"),
+            feature = "adapter-blobs"
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) async fn ask_object_again(&self, space: EventId, locator: Locator) -> bool {
+        {
+            let state = self.lock().await;
+            let whole = state
+                .replicas
+                .get(&space)
+                .is_none_or(|replica| replica.holds_object(&locator));
+            if whole || state.held.asked_for(&space, &locator) {
+                return false;
+            }
+        }
+        self.ask_object(space, locator).await;
+        true
+    }
+
     // -- Receiving
 
     /// Whether an arriving part of an object is received through the
