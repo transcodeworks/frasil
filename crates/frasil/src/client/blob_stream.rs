@@ -315,6 +315,8 @@ impl Blobs {
         if peers.is_empty() && !engine.member_attached(&space) {
             return Err(Error::Class("Missing"));
         }
+        // A device that fetches blobs only when asked is asked here.
+        engine.ask_object(space, locator).await;
         for peer in &peers {
             peer.handle().fetch(space);
         }

@@ -805,12 +805,15 @@ pub(crate) struct HeldObjects {
     receiving: BTreeMap<(EventId, Locator), Receiving>,
     /// Hints for fetches the application started, by space and locator.
     hints: BTreeMap<(EventId, Locator), Vec<u8>>,
+    /// Objects a read asked for, by space and locator: fetched on a device
+    /// that fetches blobs only when asked, with no hint for a provider.
+    asked: BTreeSet<(EventId, Locator)>,
 }
 
 impl HeldObjects {
-    /// Whether the application started a fetch of the object.
+    /// Whether the application started a fetch of the object, or read it.
     pub fn asked_for(&self, space: &EventId, locator: &Locator) -> bool {
-        self.hints.contains_key(&(*space, *locator))
+        self.hints.contains_key(&(*space, *locator)) || self.asked.contains(&(*space, *locator))
     }
 
     /// The held entry of an object, by ID.
@@ -1949,6 +1952,31 @@ impl Engine {
         });
     }
 
+    /// Asks for an object a read needs, on a device that fetches blobs
+    /// only when asked: it counts among the space's missing objects from
+    /// now on, and each member connection of the space asks the other
+    /// side for it. Unlike [`fetch_object`](Self::fetch_object), it gives
+    /// no hint, and the object is stored as the space's policy says.
+    #[cfg_attr(
+        not(all(
+            any(feature = "server", feature = "iroh", feature = "server-socket"),
+            feature = "adapter-blobs"
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) async fn ask_object(&self, space: EventId, locator: Locator) {
+        {
+            let mut state = self.lock().await;
+            state.held.asked.insert((space, locator));
+        }
+        let _ = self.notices().send(Notice {
+            space,
+            placed: Vec::new(),
+            withdrawn: Vec::new(),
+            wanted: vec![locator],
+        });
+    }
+
     // -- Receiving
 
     /// Whether an arriving part of an object is received through the
@@ -2108,6 +2136,7 @@ impl Engine {
         state.held.objects.remove(space);
         state.held.receiving.retain(|(s, _), _| s != space);
         state.held.hints.retain(|(s, _), _| s != space);
+        state.held.asked.retain(|(s, _)| s != space);
         provider.map(|provider| (provider, tokens))
     }
 }
