@@ -159,9 +159,11 @@ included.
 A reader fetches an entry's object by chunk ([units.md](units.md), section
 3.14) from any party that holds it: an always-on peer, or a member that
 announced it in `ObjectHave`. For media it plays, it fetches in chunk order
-from where it plays: it may fetch any chunk index first, as a seek needs,
-once it holds the header, which `ObjectChunks` carries with every chunk
-and slice 0 begins with on the HTTP routes ([transport.md](transport.md)).
+from where it plays: it may fetch any chunk index first, as a seek needs.
+On a stream, the header travels with the first chunk of each answer to an
+`ObjectWant` ([units.md](units.md), section 3.14); on the HTTP routes,
+slice 0 begins with it ([transport.md](transport.md)), and a reader that
+holds no header fetches slice 0 first.
 It opens the object under the state its header names, checks each chunk
 before it uses it, and runs the whole-object checks, steps 0 and 7, once
 it has read every chunk ([units.md](units.md), section 3.3); it reports an

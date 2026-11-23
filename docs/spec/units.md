@@ -1229,7 +1229,10 @@ its writer is in that snapshot's `covers`.
 
 **Objects.** A reader asks an always-on peer, or a member that announced
 the object in `ObjectHave`, for chunks with `ObjectWant`, checks each as it
-arrives (section 3.3), and asks another party for one that fails. A
+arrives (section 3.3), and asks another party for one that fails. The
+first `ObjectChunks` of each answer to an `ObjectWant` carries the header,
+whichever chunk index the `ObjectWant` starts at, so that a reader that
+holds nothing of the object can check the chunks of any answer. A
 **state object**, a stream snapshot object that a snapshot unit or a space
 snapshot's stream entry names, can be no larger than its adapter loads: a
 reader whose adapter has a largest state MAY ask for its first chunk
