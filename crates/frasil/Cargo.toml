@@ -185,7 +185,7 @@ diesel = { workspace = true, optional = true, features = ["sqlite"] }
 js-sys = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
-web-sys = { workspace = true, optional = true, features = ["BinaryType", "CloseEvent", "DomException", "DomStringList", "Event", "Headers", "IdbDatabase", "IdbFactory", "IdbKeyRange", "IdbObjectStore", "IdbOpenDbRequest", "IdbRequest", "IdbTransaction", "IdbTransactionMode", "IdbVersionChangeEvent", "MessageEvent", "Request", "RequestInit", "RequestRedirect", "Response", "WebSocket"] }
+web-sys = { workspace = true, optional = true, features = ["AbortController", "AbortSignal", "BinaryType", "CloseEvent", "DomException", "DomStringList", "Event", "Headers", "IdbDatabase", "IdbFactory", "IdbKeyRange", "IdbObjectStore", "IdbOpenDbRequest", "IdbRequest", "IdbTransaction", "IdbTransactionMode", "IdbVersionChangeEvent", "MessageEvent", "Request", "RequestInit", "RequestRedirect", "Response", "WebSocket"] }
 
 # test-util: tests that measure Frasil's own timers run on tokio's paused
 # clock. Native only: wasm32 has no multi-threaded runtime.

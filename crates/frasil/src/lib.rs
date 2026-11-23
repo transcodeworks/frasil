@@ -258,6 +258,7 @@ mod documents;
 mod ephemeral;
 mod erasing;
 mod error;
+mod fetch;
 mod frozen;
 mod granted;
 #[cfg(feature = "ext-guests")]

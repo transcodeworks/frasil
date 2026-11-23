@@ -372,8 +372,16 @@ async fn drive(
         driver.offer_next().await?;
     }
     let mut tick = tokio::time::interval(Duration::from_millis(500));
+    // The device's requests for chunks of objects, as they are made.
+    let mut requests = device.fetches().follow();
     loop {
+        let requested = async {
+            if requests.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        };
         tokio::select! {
+            () = requested => driver.on_requests().await?,
             incoming = inbox.recv() => {
                 let Some(incoming) = incoming else { return Ok(()) };
                 if !driver.on_incoming(incoming).await? {
@@ -1242,6 +1250,26 @@ impl Driver {
             }
             self.queue(attach, messages).await?;
             self.state_heads(attach).await?;
+        }
+        Ok(())
+    }
+
+    /// The device's requests for chunks changed: each attach asks the
+    /// other side for those of its space made since, of objects it
+    /// announced (units.md, "Sync", objects).
+    async fn on_requests(&mut self) -> Result<()> {
+        let attaches: Vec<u32> = self
+            .attaches
+            .iter()
+            .filter(|(_, a)| a.started)
+            .map(|(n, _)| *n)
+            .collect();
+        for attach in attaches {
+            let Some(state) = self.attaches.get_mut(&attach) else {
+                continue;
+            };
+            let wants = self.device.want_requests(&mut state.sync, true).await;
+            self.queue(attach, wants).await?;
         }
         Ok(())
     }

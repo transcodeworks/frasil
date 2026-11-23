@@ -306,6 +306,9 @@ struct Shared {
     /// Serializes restoring and deciding an erasure while upkeep runs.
     erasure_settling: Mutex<()>,
     notices: broadcast::Sender<Notice>,
+    /// The requests for chunks of objects made of this device and still
+    /// wanted, which its connections serve.
+    fetches: Arc<crate::fetch::Requests>,
     /// Detected loss, as it is reported (units.md, 3.13 "Detected loss").
     losses: broadcast::Sender<Loss>,
     /// Spaces a restored device may sign in again, as each becomes so
@@ -532,6 +535,7 @@ impl Engine {
                     held: crate::held::HeldObjects::default(),
                 }),
                 notices,
+                fetches: Arc::default(),
                 losses: broadcast::channel(256).0,
                 write_ready: broadcast::channel(256).0,
                 lost: std::sync::Mutex::new(BTreeSet::new()),
@@ -1102,6 +1106,37 @@ impl Engine {
 
     pub(crate) fn notices(&self) -> &broadcast::Sender<Notice> {
         &self.shared.notices
+    }
+
+    /// Asks the space's connections for the chunks `chunks` of an object,
+    /// at a priority: each connection to a peer that serves the space
+    /// fetches those the device lacks, most urgent first, and each member
+    /// connection asks a member that announced the object. The chunks are
+    /// wanted while the [`Fetch`](crate::fetch::Fetch) returned is held:
+    /// cancelling or dropping it stops a transfer for it before its next
+    /// slice, and a chunk that arrives for it alone is then not kept. An
+    /// end past the object's last chunk means to its end.
+    ///
+    /// Every chunk is checked as it arrives, as for any fetch (units.md,
+    /// 3.3 Reading an object), and kept beside what the device holds of
+    /// the object, which becomes whole once every chunk is here.
+    pub fn fetch_chunks(
+        &self,
+        space: EventId,
+        locator: frasil_adapter::Locator,
+        chunks: core::ops::Range<u64>,
+        priority: crate::fetch::FetchPriority,
+    ) -> crate::fetch::Fetch {
+        self.shared.fetches.add(space, locator, chunks, priority)
+    }
+
+    /// The requests for chunks made of this device.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) fn fetches(&self) -> &Arc<crate::fetch::Requests> {
+        &self.shared.fetches
     }
 
     /// Detected loss, from now on (units.md, 3.13 "Detected loss"): a peer
@@ -3407,21 +3442,34 @@ impl Engine {
                     first,
                     count,
                 } => {
-                    if let Some(parts) = self.serve_parts(&space, &locator, first, count).await? {
-                        out.extend(parts.into_iter().map(|part| chunk_message(space, part)));
-                    } else if let Some(parts) =
-                        self.serve_held(space, &locator, first, count).await?
-                    {
+                    let mut parts = match self.serve_parts(&space, &locator, first, count).await? {
+                        Some(parts) => parts,
                         // A held object, its chunks sealed again from the
                         // plaintext (at-rest.md, "Held objects").
-                        out.extend(parts.into_iter().map(|part| chunk_message(space, part)));
+                        None => self
+                            .serve_held(space, &locator, first, count)
+                            .await?
+                            .unwrap_or_default(),
+                    };
+                    // The first chunk of an answer carries the header,
+                    // whichever index it starts at (units.md, "Sync",
+                    // objects).
+                    if let Some(part) = parts.first_mut()
+                        && part.header.is_none()
+                    {
+                        part.header = self
+                            .read(&space, |replica| {
+                                replica.object_header(&locator).map(<[u8]>::to_vec)
+                            })
+                            .await?;
                     }
+                    out.extend(parts.into_iter().map(|part| chunk_message(space, part)));
                 }
                 Action::ObjectChunk(part) => {
                     let locator = part.locator;
                     // A chunk of an object this side asked the other for
                     // on this session, or of one the snapshot it adopted
-                    // from the other names, and still missing.
+                    // from the other names, and still wanted.
                     let asked = session.is_fetching(&locator)
                         || (session.snapshot_ask() == crate::sync::SnapshotAsk::Adopted
                             && self
@@ -3430,47 +3478,23 @@ impl Engine {
                                         || replica.pending_stream_objects().any(|l| *l == locator)
                                 })
                                 .await?);
-                    if !asked || !self.missing_objects(&space).await.contains(&locator) {
+                    if !asked {
                         continue;
                     }
-                    let index = part.index;
-                    let total = part
-                        .header
-                        .as_ref()
-                        .and_then(|h| frasil_units::objects::Header::read(h).ok())
-                        .map(|h| {
-                            frasil_units::objects::chunk_count(
-                                h.size,
-                                frasil_units::limits::CHUNK_BYTES as u64,
-                            )
-                        });
-                    match self.receive_part(space, part).await? {
-                        crate::objects::Received::Refused => {
-                            // Not asked of this side again; every other
-                            // connection of the space asks for it.
-                            session.refuse_object(locator);
-                            let _ = self.shared.notices.send(Notice {
-                                space,
-                                placed: Vec::new(),
-                                withdrawn: Vec::new(),
-                                wanted: vec![locator],
-                            });
-                        }
-                        received => {
-                            let whole = received == crate::objects::Received::Whole;
-                            names_more |= whole;
-                            out.extend(session.next_chunks(locator, index, total, whole));
-                        }
-                    }
+                    let (taken, wants) = self.take_chunk(session, part).await?;
+                    names_more |= taken == crate::objects::Taken::Whole;
+                    out.extend(wants);
                 }
                 Action::ObjectsHeld(locators) => {
                     session.note_announced(&locators);
                     let missing = self.missing_objects(&space).await;
                     for locator in locators {
                         if missing.contains(&locator) {
-                            out.extend(self.want_in(session, &space, locator).await);
+                            out.extend(self.want_in(session, locator).await);
                         }
                     }
+                    // Chunks a reader asked for, of an object announced now.
+                    out.extend(self.want_requests(session, true).await);
                 }
                 Action::SnapshotWanted => {
                     if let Acknowledger::Member(remote) = by {
@@ -3594,22 +3618,173 @@ impl Engine {
     }
 
     /// `ObjectWant` for objects the application asked for that this device
-    /// does not hold, on a session with a side that may hold them.
+    /// does not hold, on a session with a side that may hold them: for
+    /// the chunks it lacks of each.
     pub async fn sync_want(
         &self,
         session: &mut SyncSession,
         wanted: &[frasil_adapter::Locator],
     ) -> Result<Vec<SyncMessage>> {
+        let space = session.space();
+        let lacked: Vec<frasil_adapter::Locator> = {
+            let state = self.lock().await;
+            let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
+            wanted
+                .iter()
+                .filter(|locator| !replica.holds_object(locator))
+                .copied()
+                .collect()
+        };
+        let mut out = Vec::new();
+        for locator in lacked {
+            out.extend(self.want_in(session, locator).await);
+        }
+        Ok(out)
+    }
+
+    /// One chunk the other side of a session sent of an object this side
+    /// asked it for: checked and kept ([`Engine::receive_part`]) if it is
+    /// still wanted, by a unit of the space that names its object or by
+    /// a request for it ([`Engine::fetch_chunks`]), and dropped as it
+    /// arrives if nobody wants it any more. Returns what became of it and
+    /// the `ObjectWant`s that follow: the next chunks, once every chunk
+    /// awaited is in.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownSpace`]; the store's.
+    pub(crate) async fn take_chunk(
+        &self,
+        session: &mut SyncSession,
+        part: crate::snapshots::ObjectPart,
+    ) -> Result<(crate::objects::Taken, Vec<SyncMessage>)> {
+        use crate::objects::{Received, Taken};
+        let space = session.space();
+        let (locator, index) = (part.locator, part.index);
+        let named = self.missing_objects(&space).await.contains(&locator);
+        if !named && !self.shared.fetches.wants(&space, &locator, index) {
+            let wants = self
+                .asking(&space, &locator, |count, skip| {
+                    session.chunk_arrived(locator, index, count, false, skip)
+                })
+                .await;
+            return Ok((Taken::Dropped, wants));
+        }
+        match self.receive_part(space, part).await? {
+            Received::Refused => {
+                // Not asked of this side again; every other connection
+                // of the space asks for it.
+                session.refuse_object(locator);
+                let _ = self.shared.notices.send(Notice {
+                    space,
+                    placed: Vec::new(),
+                    withdrawn: Vec::new(),
+                    wanted: vec![locator],
+                });
+                Ok((Taken::Refused, Vec::new()))
+            }
+            Received::Headerless => {
+                let wants = self
+                    .asking(&space, &locator, |_, skip| {
+                        session.chunk_again(locator, index, skip)
+                    })
+                    .await;
+                Ok((Taken::Dropped, wants))
+            }
+            received => {
+                let whole = received == Received::Whole;
+                let wants = self
+                    .asking(&space, &locator, |count, skip| {
+                        session.chunk_arrived(locator, index, count, whole, skip)
+                    })
+                    .await;
+                Ok((if whole { Taken::Whole } else { Taken::Kept }, wants))
+            }
+        }
+    }
+
+    /// Runs `ask` with what a session needs to ask for chunks of an
+    /// object: its chunk count, once the device holds its header, and
+    /// which chunks are not to be asked for, those the device holds and
+    /// those nobody wants.
+    async fn asking<R>(
+        &self,
+        space: &EventId,
+        locator: &frasil_adapter::Locator,
+        ask: impl FnOnce(Option<u64>, &dyn Fn(u64) -> bool) -> R,
+    ) -> R {
+        let named = self.missing_objects(space).await.contains(locator);
         let state = self.lock().await;
-        let replica = state
-            .replicas
-            .get(&session.space())
-            .ok_or(Error::UnknownSpace)?;
-        Ok(wanted
-            .iter()
-            .filter(|locator| !replica.holds_object(locator))
-            .filter_map(|locator| session.want_object(*locator))
-            .collect())
+        let replica = state.replicas.get(space);
+        let count = replica.and_then(|replica| replica.object_chunk_count(locator));
+        let fetches = &self.shared.fetches;
+        let skip = |index: u64| {
+            replica.is_some_and(|replica| replica.holds_chunk(locator, index))
+                || !(named || fetches.wants(space, locator, index))
+        };
+        ask(count, &skip)
+    }
+
+    /// `ObjectWant`s on a session for the chunks `chunks` of an object,
+    /// those the device lacks: at once for a reader's chunks, a batch at
+    /// a time for a background fetch. A state object with a limit
+    /// ([`state_limit`](Self::state_limit)) whose header the device does
+    /// not hold is asked for its first chunk alone first, which carries
+    /// the header.
+    pub(crate) async fn want_chunks_in(
+        &self,
+        session: &mut SyncSession,
+        locator: frasil_adapter::Locator,
+        chunks: core::ops::Range<u64>,
+        priority: crate::fetch::FetchPriority,
+    ) -> Vec<SyncMessage> {
+        use crate::fetch::{CHUNKS_PER_WANT, FetchPriority};
+        let space = session.space();
+        let limited = self.state_limit(&space, &locator).await.is_some();
+        self.asking(&space, &locator, |count, skip| {
+            if limited && count.is_none() {
+                session.want_chunks(locator, 0..chunks.end, false, 1, None, skip)
+            } else {
+                let at_once = priority != FetchPriority::Background;
+                session.want_chunks(locator, chunks, at_once, CHUNKS_PER_WANT, count, skip)
+            }
+        })
+        .await
+    }
+
+    /// `ObjectWant`s on a session with a member for the chunks asked of
+    /// this device ([`Engine::fetch_chunks`]) that the session has not
+    /// asked for yet, of objects the other side announced in `ObjectHave`
+    /// (units.md, "Sync", objects): from any first chunk, those the
+    /// device lacks, at most 64 for each request at once.
+    pub async fn sync_fetches(&self, session: &mut SyncSession) -> Vec<SyncMessage> {
+        self.want_requests(session, true).await
+    }
+
+    /// `ObjectWant`s on a session for the requests for chunks made of
+    /// this device ([`Engine::fetch_chunks`]) that the session has not
+    /// taken yet: with `announced`, only for objects the other side
+    /// announced in `ObjectHave`, as a member does.
+    pub(crate) async fn want_requests(
+        &self,
+        session: &mut SyncSession,
+        announced: bool,
+    ) -> Vec<SyncMessage> {
+        let requests = self.shared.fetches.of(&session.space());
+        session.keep_requests(&requests.iter().map(|request| request.id).collect());
+        let mut out = Vec::new();
+        for request in requests {
+            if announced && !session.announced().contains(&request.locator) {
+                continue;
+            }
+            if session.take_request(request.id) {
+                out.extend(
+                    self.want_chunks_in(session, request.locator, request.chunks, request.priority)
+                        .await,
+                );
+            }
+        }
+        out
     }
 
     /// A member's snapshot for a newcomer that asked for one (units.md,

@@ -178,6 +178,7 @@ impl ServerSocket for FakeSocket {
         _url: &'a str,
         _authorization: &'a str,
         _body: Option<&'a [u8]>,
+        _abort: &'a frasil::advanced::peer::socket::Cancel,
     ) -> BoxFuture<'a, Result<(u16, Vec<u8>), String>> {
         Box::pin(async { Err("no HTTP here".to_owned()) })
     }

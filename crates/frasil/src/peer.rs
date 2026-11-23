@@ -114,8 +114,9 @@ pub struct PeerStatus {
     /// Loss detected against this peer, by space and class (units.md,
     /// 3.13 "Detected loss"): `Withheld` or `RolledBack`.
     pub lost: BTreeSet<(EventId, crate::outbox::LossClass)>,
-    /// Objects being fetched on this connection, chunk by chunk: the
-    /// stored bytes received so far, and the stored length once known.
+    /// Objects being fetched on this connection: the stored bytes the
+    /// device holds of each so far, whichever chunks came first, and the
+    /// stored length once known.
     pub fetching: BTreeMap<Locator, (u64, Option<u64>)>,
     /// Holds the peer accepted (ext-libraries.md, 3.7 Registering a
     /// hold): the holding space and the object's locator.
@@ -433,6 +434,9 @@ enum Incoming {
     /// The peer closed the connection with `reconnect` (transport.md,
     /// "Reconnecting elsewhere").
     Reconnect,
+    /// A fetch by slices that ran beside the connection ended.
+    #[cfg(any(feature = "server", feature = "server-socket"))]
+    Fetched(Fetched),
 }
 
 /// How a transport ended.
@@ -603,9 +607,10 @@ struct Attached {
     /// Units held back until the objects they name are uploaded (units.md,
     /// "What a writer does", item 7).
     deferred: Vec<(Vec<u8>, BTreeSet<Locator>)>,
-    /// Objects being fetched, with the next chunk index asked for.
-    fetching: BTreeMap<Locator, u64>,
-    /// Objects whose chunks from this peer failed their checks: not asked
+    /// Objects the space's units name that are being fetched by slices,
+    /// or wait to be.
+    fetching: BTreeSet<Locator>,
+    /// Objects whose slices from this peer failed their checks: not asked
     /// of it again on this connection (units.md, "Sync", objects).
     refused: BTreeSet<Locator>,
     /// States whose upload key was presented.
@@ -677,6 +682,35 @@ impl Wire {
             Self::Iroh(wire) => wire.sync(space, message, incoming).await,
             #[cfg(feature = "server-socket")]
             Self::Socket(socket, _) => socket.send(message).await.map_err(Error::Connection),
+        }
+    }
+
+    /// Whether objects are fetched by slices over the HTTP chunk routes
+    /// (transport.md, "Objects over HTTP"), and not by `ObjectWant`.
+    fn by_slices(&self) -> bool {
+        match self {
+            #[cfg(feature = "server")]
+            Self::Server(..) => true,
+            #[cfg(feature = "iroh")]
+            Self::Iroh(_) => false,
+            #[cfg(feature = "server-socket")]
+            Self::Socket(..) => true,
+        }
+    }
+
+    /// The HTTP chunk routes of the binding, for a fetch that runs beside
+    /// the connection.
+    #[cfg(any(feature = "server", feature = "server-socket"))]
+    fn slice_routes(&self) -> Option<SliceRoutes> {
+        match self {
+            #[cfg(feature = "server")]
+            Self::Server(_, http) => Some(SliceRoutes::Server(http.clone())),
+            #[cfg(feature = "server-socket")]
+            Self::Socket(socket, origin) => {
+                Some(SliceRoutes::Socket(socket.clone(), origin.clone()))
+            }
+            #[allow(unreachable_patterns)]
+            _ => None,
         }
     }
 
@@ -1903,6 +1937,15 @@ struct Driver {
     /// Commands to carry out first on the transport: each space's present,
     /// then what the device asked while the connection opened.
     held: VecDeque<Command>,
+    /// The fetches by slices of this transport: those that wait, and how
+    /// many run.
+    #[cfg(any(feature = "server", feature = "server-socket"))]
+    fetches: SliceFetches,
+    /// The device's requests for chunks taken on this transport, by their
+    /// numbers ([`Engine::fetch_chunks`]).
+    ///
+    /// [`Engine::fetch_chunks`]: crate::device::Engine::fetch_chunks
+    requested: BTreeSet<u64>,
     /// The device's number for the current transport, which names what it
     /// delivered on the ephemeral channel (ext-ephemeral.md, "Relaying").
     #[cfg(feature = "ephemeral")]
@@ -1961,6 +2004,9 @@ impl Driver {
             moved: BTreeSet::new(),
             seeking: BTreeSet::new(),
             held,
+            #[cfg(any(feature = "server", feature = "server-socket"))]
+            fetches: SliceFetches::default(),
+            requested: BTreeSet::new(),
             #[cfg(feature = "ephemeral")]
             ephemeral_connection: crate::ephemeral::ephemeral_connection(),
         };
@@ -1983,6 +2029,9 @@ impl Driver {
         commands: mpsc::UnboundedReceiver<Command>,
     ) {
         let why = self.serve(incoming, commands).await;
+        // The fetches that run beside the connection end with it.
+        #[cfg(any(feature = "server", feature = "server-socket"))]
+        self.fetches.stop.cancel();
         self.wire.close();
         if let Acknowledger::Peer(by) = self.by {
             self.device.peer_gone(by);
@@ -2063,6 +2112,8 @@ impl Driver {
         // is done, or at this deadline.
         #[cfg_attr(not(feature = "ext-libraries"), allow(unused_mut))]
         let mut closing: Option<BoxFuture<'static, ()>> = None;
+        // The device's requests for chunks, as they are made and end.
+        let mut requests = self.device.fetches().follow();
         loop {
             if closing.is_some() && !self.attaching() {
                 return Ended::Stopped("closed by the device".into());
@@ -2083,6 +2134,11 @@ impl Driver {
             #[cfg(not(feature = "ephemeral"))]
             let frame =
                 std::future::pending::<Result<(EventId, Vec<u8>), broadcast::error::RecvError>>();
+            let requested = async {
+                if requests.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            };
             let step = tokio::select! {
                 frame = frame => match frame {
                     Ok((space, outer)) => self.send_ephemeral(space, outer).await,
@@ -2113,6 +2169,7 @@ impl Driver {
                     Some(command) => self.on_command(command).await,
                 },
                 () = overdue => return Ended::Stopped("closed by the device".into()),
+                () = requested => self.on_requests().await,
                 notice = notices.recv() => match notice {
                     Ok(notice) => self.on_placed(notice.space, &notice.placed).await,
                     Err(broadcast::error::RecvError::Lagged(_)) => self.resync().await,
@@ -2287,6 +2344,14 @@ impl Driver {
         self.library_creating.clear();
         self.mailboxes.answers.clear();
         self.spaces.clear();
+        // The fetches of the transport stop before their next slice, and
+        // the next transport takes the device's requests again.
+        #[cfg(any(feature = "server", feature = "server-socket"))]
+        {
+            self.fetches.stop.cancel();
+            self.fetches = SliceFetches::default();
+        }
+        self.requested.clear();
     }
 
     /// The peer handed the space over (peers.md, "Hosting a space"): it is
@@ -2407,7 +2472,7 @@ impl Driver {
                 uploading: BTreeSet::new(),
                 upload_answers: BTreeMap::new(),
                 deferred: Vec::new(),
-                fetching: BTreeMap::new(),
+                fetching: BTreeSet::new(),
                 refused: BTreeSet::new(),
                 uploads: BTreeSet::new(),
                 fetch_key: false,
@@ -2833,6 +2898,8 @@ impl Driver {
                 self.send_raw(space, messages).await
             }
             Incoming::Closed(_) | Incoming::Refused(_) | Incoming::Reconnect => Ok(()),
+            #[cfg(any(feature = "server", feature = "server-socket"))]
+            Incoming::Fetched(fetched) => self.on_fetched(fetched).await,
         }
     }
 
@@ -3627,9 +3694,6 @@ impl Driver {
     }
 }
 
-/// The most chunks one `ObjectWant` asks for.
-const CHUNKS_PER_WANT: u64 = 64;
-
 /// The locators a signed event names, if it is a unit.
 fn named(signed: &[u8]) -> BTreeSet<Locator> {
     let Ok(event) = frasil_events::decode(signed) else {
@@ -3979,6 +4043,10 @@ impl Driver {
         Ok(())
     }
 
+    /// A chunk the peer sent in answer to an `ObjectWant` of this
+    /// connection: checked as it arrives (units.md, "Sync", objects), and
+    /// kept if it is still wanted. A chunk that fails drops what the
+    /// device held of the object, which is no longer asked of this peer.
     async fn on_object_chunk(
         &mut self,
         space: EventId,
@@ -3987,90 +4055,37 @@ impl Driver {
         index: u64,
         chunk: Vec<u8>,
     ) -> Result<()> {
-        if !self
-            .spaces
-            .get(&space)
-            .is_some_and(|attached| attached.fetching.contains_key(&locator))
-        {
-            return Ok(());
-        }
-        let total = header
-            .as_ref()
-            .and_then(|h| frasil_units::objects::Header::read(h).ok())
-            .map(|h| {
-                frasil_units::objects::chunk_count(h.size, frasil_units::limits::CHUNK_BYTES as u64)
-            });
-        // The chunk stream's progress, in stored bytes: the header's
-        // length, the header, and each chunk with its nonce and tag.
-        let stored_total = header.as_ref().and_then(|h| {
-            let read = frasil_units::objects::Header::read(h).ok()?;
-            let count = frasil_units::objects::chunk_count(
-                read.size,
-                frasil_units::limits::CHUNK_BYTES as u64,
-            );
-            Some(4 + h.len() as u64 + read.size + count * 40)
-        });
-        {
-            let mut status = self.status();
-            let entry = status.fetching.entry(locator).or_insert((0, None));
-            entry.0 += chunk.len() as u64 + header.as_ref().map_or(0, |h| 4 + h.len() as u64);
-            if stored_total.is_some() {
-                entry.1 = stored_total;
-            }
-        }
-        // Checked as it arrives (units.md, "Sync", objects): a chunk that
-        // fails drops what the device held of the object, which is no
-        // longer asked of this peer.
-        let received = self
-            .device
-            .receive_part(
-                space,
-                crate::snapshots::ObjectPart {
-                    locator,
-                    header,
-                    index,
-                    chunk,
-                },
-            )
-            .await?;
-        if received == crate::objects::Received::Refused {
-            if let Some(attached) = self.spaces.get_mut(&space) {
-                attached.fetching.remove(&locator);
-                attached.refused.insert(locator);
-            }
-            self.status().fetching.remove(&locator);
-            return Ok(());
-        }
-        // Whole now: every chunk kept, or the plaintext with the application.
-        if received == crate::objects::Received::Whole {
-            if let Some(attached) = self.spaces.get_mut(&space) {
-                attached.fetching.remove(&locator);
-            }
-            self.status().fetching.remove(&locator);
-            return self.start_after_snapshot(space).await;
-        }
-        // Ask for the next chunks once this batch is in.
+        use crate::objects::Taken;
         let Some(attached) = self.spaces.get_mut(&space) else {
             return Ok(());
         };
-        let next = attached.fetching.get(&locator).copied().unwrap_or(0);
-        let more = total.is_none_or(|total| next < total);
-        if index.checked_add(1) == Some(next) && more {
-            attached
-                .fetching
-                .insert(locator, next.saturating_add(CHUNKS_PER_WANT));
-            self.send_raw(
-                space,
-                vec![SyncMessage {
-                    space,
-                    message: UnitMessage::ObjectWant {
-                        locator,
-                        first: next,
-                        count: CHUNKS_PER_WANT,
-                    },
-                }],
-            )
-            .await?;
+        if !attached.session.is_fetching(&locator) {
+            return Ok(());
+        }
+        let part = crate::snapshots::ObjectPart {
+            locator,
+            header,
+            index,
+            chunk,
+        };
+        let (taken, wants) = self.device.take_chunk(&mut attached.session, part).await?;
+        // The fetch's progress: the stored bytes held of the object.
+        let held = match taken {
+            Taken::Kept | Taken::Dropped => self.device.object_bytes_held(&space, &locator).await,
+            Taken::Refused | Taken::Whole => None,
+        };
+        {
+            let mut status = self.status();
+            match held {
+                Some(held) => status.fetching.insert(locator, held),
+                None => status.fetching.remove(&locator),
+            };
+        }
+        // The next chunks, once every chunk asked for is in.
+        self.send_raw(space, wants).await?;
+        // Whole now: every chunk kept, or the plaintext with the application.
+        if taken == Taken::Whole {
+            return self.start_after_snapshot(space).await;
         }
         Ok(())
     }
@@ -4106,16 +4121,12 @@ impl Driver {
         .await
     }
 
-    /// Fetches the objects the space's units name that the device lacks:
-    /// over HTTP on the server binding, by `ObjectWant` over iroh.
+    /// Fetches the objects the space's units name that the device lacks,
+    /// and the chunks the device was asked for: by slices over HTTP on
+    /// the server binding, each on a task beside the connection, and by
+    /// `ObjectWant` over iroh. The connection goes on meanwhile.
     async fn fetch_missing(&mut self, space: EventId) -> Result<()> {
-        if self.paused(&space) {
-            return Ok(());
-        }
-        let fetches = self.spaces.get(&space).is_some_and(|attached| {
-            attached.rights.contains(&Right::Fetch) || attached.rights.contains(&Right::CatchUp)
-        });
-        if !fetches {
+        if !self.fetches(&space) {
             return Ok(());
         }
         let missing = self.device.missing_objects(&space).await;
@@ -4124,54 +4135,77 @@ impl Driver {
             if self.transport_ended() {
                 return Ok(());
             }
-            // A state object's header comes first: it must name no more
-            // than the adapter loads before the rest is fetched. Over HTTP,
-            // its first chunk is refused for that, and the fetch stops.
-            #[cfg(feature = "iroh")]
-            let limit = self.device.state_limit(&space, &locator).await;
+            if self.wire.by_slices() {
+                #[cfg(any(feature = "server", feature = "server-socket"))]
+                self.queue_object(space, locator);
+            } else {
+                // A state object's header comes first: it must name no
+                // more than the adapter loads before the rest is asked
+                // for.
+                let Some(attached) = self.spaces.get_mut(&space) else {
+                    return Ok(());
+                };
+                let wants = self.device.want_in(&mut attached.session, locator).await;
+                self.send_raw(space, wants).await?;
+            }
+        }
+        self.take_requests(space).await?;
+        #[cfg(any(feature = "server", feature = "server-socket"))]
+        self.pump().await;
+        self.start_after_snapshot(space).await
+    }
+
+    /// Whether the connection fetches a space's objects now: it holds the
+    /// fetch or the catch-up right, and the space is not paused.
+    fn fetches(&self, space: &EventId) -> bool {
+        !self.paused(space)
+            && self.spaces.get(space).is_some_and(|attached| {
+                attached.rights.contains(&Right::Fetch) || attached.rights.contains(&Right::CatchUp)
+            })
+    }
+
+    /// Takes the requests for chunks made of the device for a space
+    /// ([`Engine::fetch_chunks`]) that this transport has not taken yet.
+    ///
+    /// [`Engine::fetch_chunks`]: crate::device::Engine::fetch_chunks
+    async fn take_requests(&mut self, space: EventId) -> Result<()> {
+        if !self.fetches(&space) || self.transport_ended() {
+            return Ok(());
+        }
+        if !self.wire.by_slices() {
             let Some(attached) = self.spaces.get_mut(&space) else {
                 return Ok(());
             };
-            if attached.fetching.contains_key(&locator) || attached.refused.contains(&locator) {
-                continue;
-            }
-            match &mut self.wire {
-                #[cfg(feature = "server")]
-                Wire::Server(..) => {
-                    let Some(token) = attached.fetch_token else {
-                        return Ok(());
-                    };
-                    attached.fetching.insert(locator, 0);
-                    self.fetch_slices(space, locator, token).await?;
-                }
-                #[cfg(feature = "server-socket")]
-                Wire::Socket(..) => {
-                    let Some(token) = attached.fetch_token else {
-                        return Ok(());
-                    };
-                    attached.fetching.insert(locator, 0);
-                    self.fetch_slices(space, locator, token).await?;
-                }
-                #[cfg(feature = "iroh")]
-                Wire::Iroh(_) => {
-                    let count = if limit.is_some() { 1 } else { CHUNKS_PER_WANT };
-                    attached.fetching.insert(locator, count);
-                    self.send_raw(
-                        space,
-                        vec![SyncMessage {
-                            space,
-                            message: UnitMessage::ObjectWant {
-                                locator,
-                                first: 0,
-                                count,
-                            },
-                        }],
-                    )
-                    .await?;
-                }
+            let wants = self
+                .device
+                .want_requests(&mut attached.session, false)
+                .await;
+            return self.send_raw(space, wants).await;
+        }
+        #[cfg(any(feature = "server", feature = "server-socket"))]
+        for request in self.device.fetches().of(&space) {
+            let served = self.spaces.get(&space).is_some_and(|attached| {
+                attached.fetch_token.is_some() && !attached.refused.contains(&request.locator)
+            });
+            if served && self.requested.insert(request.id) {
+                self.fetches.queue.push(request);
             }
         }
-        self.start_after_snapshot(space).await
+        Ok(())
+    }
+
+    /// The device's requests for chunks changed: each space takes those
+    /// made since, and the fetches that wait start.
+    async fn on_requests(&mut self) -> Result<()> {
+        let live = self.device.fetches().clone();
+        self.requested.retain(|id| live.is_live(*id));
+        let spaces: Vec<EventId> = self.spaces.keys().copied().collect();
+        for space in spaces {
+            self.take_requests(space).await?;
+        }
+        #[cfg(any(feature = "server", feature = "server-socket"))]
+        self.pump().await;
+        Ok(())
     }
 
     /// Syncs a space whose start waited for the newcomer's snapshot, once
@@ -4236,109 +4270,404 @@ fn merge_statement(
 /// How a fetch by slices ended.
 #[cfg(any(feature = "server", feature = "server-socket"))]
 enum SliceFetch {
-    /// Every slice taken, or the object whole already.
+    /// Every slice taken, or every chunk wanted held already.
     Done,
-    /// The peer lacks it, or the transfer was cut: what is kept stays, and
-    /// a later fetch resumes after it.
+    /// The peer lacks it, the transfer was cut, or the transport or the
+    /// space's sync stopped: what is kept stays, and a later fetch takes
+    /// the rest.
     Stopped,
+    /// The request was cancelled: the fetch stopped before its next slice.
+    Cancelled,
     /// A chunk failed its check, and the device dropped what it held.
     Refused,
-    /// A slice did not read as the header gives it.
+    /// A slice did not read as the header gives it, and the device
+    /// dropped what it held.
     Malformed,
+    /// The device could not keep a part.
+    Failed(Error),
+}
+
+/// A fetch by slices that ended.
+#[cfg(any(feature = "server", feature = "server-socket"))]
+struct Fetched {
+    space: EventId,
+    locator: Locator,
+    /// The number of the device's request it served; 0 for an object the
+    /// space's units name.
+    id: u64,
+    ended: SliceFetch,
+}
+
+/// The slices that the fetches of one transport share, by space, locator
+/// and slice index.
+#[cfg(any(feature = "server", feature = "server-socket"))]
+type SharedSlices = crate::fetch::Slices<(EventId, Locator, u64), Vec<u8>>;
+
+/// The fetches by slices of one transport.
+#[cfg(any(feature = "server", feature = "server-socket"))]
+#[derive(Default)]
+struct SliceFetches {
+    /// Those that wait for a task, most urgent first.
+    queue: crate::fetch::Queue,
+    /// How many run, each one slice request at a time.
+    running: usize,
+    /// The slices they share.
+    slices: Arc<SharedSlices>,
+    /// Signalled when the transport ends: each stops before its next
+    /// slice.
+    stop: crate::fetch::Cancel,
+}
+
+/// The slices a fetch is about to take: the next one and the one after,
+/// which a fetch of the neighbouring chunks takes too
+/// ([`Slices`](crate::fetch::Slices)).
+#[cfg(any(feature = "server", feature = "server-socket"))]
+struct Claims {
+    slices: Arc<SharedSlices>,
+    space: EventId,
+    locator: Locator,
+    claimed: BTreeSet<u64>,
 }
 
 #[cfg(any(feature = "server", feature = "server-socket"))]
-impl Driver {
-    /// One slice of an object's stored bytes from the peer, on the HTTP
-    /// chunk routes (transport.md, "Objects over HTTP"). `None` when the
-    /// peer lacks it.
-    async fn get_slice(
+impl Claims {
+    fn new(slices: Arc<SharedSlices>, space: EventId, locator: Locator) -> Self {
+        Self {
+            slices,
+            space,
+            locator,
+            claimed: BTreeSet::new(),
+        }
+    }
+
+    /// Claims `slice` and the one after, and releases every other.
+    fn window(&mut self, slice: u64) {
+        let wanted = [slice, slice.saturating_add(1)];
+        for index in wanted {
+            if self.claimed.insert(index) {
+                self.slices.claim((self.space, self.locator, index));
+            }
+        }
+        let taken: Vec<u64> = self
+            .claimed
+            .iter()
+            .copied()
+            .filter(|index| !wanted.contains(index))
+            .collect();
+        for index in taken {
+            self.claimed.remove(&index);
+            self.slices.release(&(self.space, self.locator, index));
+        }
+    }
+}
+
+#[cfg(any(feature = "server", feature = "server-socket"))]
+impl Drop for Claims {
+    fn drop(&mut self) {
+        for index in &self.claimed {
+            self.slices.release(&(self.space, self.locator, *index));
+        }
+    }
+}
+
+/// Why a slice did not arrive.
+#[cfg(any(feature = "server", feature = "server-socket"))]
+enum NoSlice {
+    /// The peer lacks the object.
+    Lacking,
+    /// The request failed: what it said.
+    Failed(#[allow(dead_code)] String),
+}
+
+/// The HTTP chunk routes of a transport (transport.md, "Objects over
+/// HTTP"), for a fetch that runs beside the connection.
+#[cfg(any(feature = "server", feature = "server-socket"))]
+#[derive(Clone)]
+enum SliceRoutes {
+    #[cfg(feature = "server")]
+    Server(server::Http),
+    #[cfg(feature = "server-socket")]
+    Socket(Arc<dyn socket::ServerSocket>, String),
+}
+
+#[cfg(any(feature = "server", feature = "server-socket"))]
+impl SliceRoutes {
+    /// One slice of an object's stored bytes from the peer. `abort` is
+    /// signalled when the answer is no longer wanted.
+    async fn get(
         &self,
         token: &[u8; 32],
         space: &EventId,
         locator: &Locator,
         index: u64,
-    ) -> std::result::Result<Option<Vec<u8>>, String> {
-        match &self.wire {
+        abort: &crate::fetch::Cancel,
+    ) -> std::result::Result<Vec<u8>, NoSlice> {
+        let slice = match self {
+            // Dropping the request ends its transfer.
             #[cfg(feature = "server")]
-            Wire::Server(_, http) => http.get_slice(token, space, locator, index).await,
+            Self::Server(http) => http.get_slice(token, space, locator, index).await,
             #[cfg(feature = "server-socket")]
-            Wire::Socket(socket, origin) => {
-                socket::get_slice(socket.as_ref(), origin, token, space, locator, index).await
+            Self::Socket(socket, origin) => {
+                socket::get_slice(socket.as_ref(), origin, token, space, locator, index, abort)
+                    .await
             }
-            #[allow(unreachable_patterns)]
-            _ => Err("no chunk routes on this binding".into()),
+        };
+        #[cfg(not(feature = "server-socket"))]
+        let _ = abort;
+        match slice {
+            Ok(Some(slice)) => Ok(slice),
+            Ok(None) => Err(NoSlice::Lacking),
+            Err(why) => Err(NoSlice::Failed(why)),
+        }
+    }
+}
+
+/// One fetch of chunks of an object by slices of its stored bytes, on a
+/// task beside the connection: one slice at a time, from the slice of
+/// the first chunk the device lacks, leaving out the chunks it holds.
+/// Each sealed chunk is cut out once its slices arrived, checked and
+/// kept as a part on a stream is ([`Engine::receive_part`]): partial
+/// objects stay in the store, and the object, once whole, is checked
+/// against its locator's digest (units.md, "Reading an object", step 0).
+/// The fetch holds the slice being read and the bytes of one chunk.
+///
+/// [`Engine::receive_part`]: crate::device::Engine::receive_part
+#[cfg(any(feature = "server", feature = "server-socket"))]
+struct SliceTask {
+    device: Engine,
+    routes: SliceRoutes,
+    token: [u8; 32],
+    request: crate::fetch::Request,
+    /// The header the device held when the fetch was planned, and the
+    /// first chunk it lacked.
+    header: Option<Vec<u8>>,
+    first: u64,
+    slices: Arc<SharedSlices>,
+    claims: Claims,
+    /// Signalled when the transport ends.
+    stop: crate::fetch::Cancel,
+    /// Set once the transport's readers end.
+    ended: Arc<AtomicBool>,
+    /// Set once the connection is to close.
+    closing: Arc<AtomicBool>,
+    status: Arc<Mutex<PeerStatus>>,
+}
+
+#[cfg(any(feature = "server", feature = "server-socket"))]
+impl SliceTask {
+    async fn run(mut self) -> SliceFetch {
+        use crate::objects::{Received, SliceReader};
+        let (space, locator) = (self.request.space, self.request.locator);
+        let end = self.request.chunks.end;
+        let mut reader = SliceReader::start(locator, self.header.take(), self.first..end);
+        loop {
+            if self.request.cancel.is_cancelled() {
+                return SliceFetch::Cancelled;
+            }
+            if self.stop.is_cancelled()
+                || self.ended.load(Ordering::Acquire)
+                || self.closing.load(Ordering::Acquire)
+                || self.device.links().is_paused(&space)
+            {
+                return SliceFetch::Stopped;
+            }
+            // Chunks that arrived meanwhile, in another fetch or from
+            // another party, are left out.
+            if let Some(next) = reader.next_chunk() {
+                match self
+                    .device
+                    .chunks_to_fetch(&space, &locator, next..end)
+                    .await
+                {
+                    Some((_, lacked)) => reader.seek(lacked),
+                    None => return SliceFetch::Done,
+                }
+            }
+            let Some(index) = reader.next_slice() else {
+                return SliceFetch::Done;
+            };
+            self.claims.window(index);
+            let abort = crate::fetch::Cancel::new();
+            let key = (space, locator, index);
+            let slice = tokio::select! {
+                slice = self.slices.get(
+                    &key,
+                    self.routes.get(&self.token, &space, &locator, index, &abort),
+                ) => slice,
+                () = self.request.cancel.cancelled() => {
+                    abort.cancel();
+                    return SliceFetch::Cancelled;
+                }
+                () = self.stop.cancelled() => {
+                    abort.cancel();
+                    return SliceFetch::Stopped;
+                }
+            };
+            let Ok(slice) = slice else {
+                return SliceFetch::Stopped;
+            };
+            let Ok(parts) = reader.take(&slice) else {
+                return match self.device.drop_fetched(space, &locator).await {
+                    Ok(()) => SliceFetch::Malformed,
+                    Err(error) => SliceFetch::Failed(error),
+                };
+            };
+            drop(slice);
+            for part in parts {
+                match self.device.receive_part(space, part).await {
+                    Ok(Received::Kept) => {}
+                    Ok(Received::Whole) => return SliceFetch::Done,
+                    Ok(Received::Refused) => return SliceFetch::Refused,
+                    // What the device held of the object went meanwhile:
+                    // a later fetch starts from its header.
+                    Ok(Received::Headerless) => return SliceFetch::Stopped,
+                    Err(error) => return SliceFetch::Failed(error),
+                }
+            }
+            // The fetch's progress: the stored bytes held of the object.
+            if let Some(held) = self.device.object_bytes_held(&space, &locator).await {
+                lock(&self.status).fetching.insert(locator, held);
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "server", feature = "server-socket"))]
+impl Driver {
+    /// Queues a fetch of an object the space's units name, whole, behind
+    /// what readers wait for, unless it waits or runs already.
+    fn queue_object(&mut self, space: EventId, locator: Locator) {
+        let Some(attached) = self.spaces.get_mut(&space) else {
+            return;
+        };
+        if attached.fetch_token.is_none()
+            || attached.refused.contains(&locator)
+            || !attached.fetching.insert(locator)
+        {
+            return;
+        }
+        self.fetches.queue.push(crate::fetch::Request {
+            id: 0,
+            space,
+            locator,
+            chunks: 0..u64::MAX,
+            priority: crate::fetch::FetchPriority::Background,
+            cancel: crate::fetch::Cancel::new(),
+        });
+    }
+
+    /// Starts the fetches that wait, most urgent first, each on a task of
+    /// its own, while fewer than [`SLICES_AT_ONCE`] run: the connection
+    /// goes on reading messages, and hears of each as it ends.
+    ///
+    /// [`SLICES_AT_ONCE`]: crate::fetch::SLICES_AT_ONCE
+    async fn pump(&mut self) {
+        while self.fetches.running < crate::fetch::SLICES_AT_ONCE {
+            let Some(request) = self.fetches.queue.pop() else {
+                return;
+            };
+            let (space, locator) = (request.space, request.locator);
+            let token = self
+                .spaces
+                .get(&space)
+                .filter(|attached| !attached.refused.contains(&locator))
+                .and_then(|attached| attached.fetch_token);
+            let routes = self.wire.slice_routes();
+            let (Some(token), Some(routes)) = (token, routes) else {
+                self.unserved(&request);
+                continue;
+            };
+            if self.transport_ended() || self.paused(&space) {
+                self.unserved(&request);
+                continue;
+            }
+            // Where it starts, as the device stands now.
+            let Some((header, first)) = self
+                .device
+                .chunks_to_fetch(&space, &locator, request.chunks.clone())
+                .await
+            else {
+                // Nothing of it is lacking.
+                if let Some(attached) = self.spaces.get_mut(&space)
+                    && request.id == 0
+                {
+                    attached.fetching.remove(&locator);
+                }
+                continue;
+            };
+            // Its first slices are claimed before it runs, so that a fetch
+            // of the neighbouring chunks started beside it shares them.
+            let mut claims = Claims::new(self.fetches.slices.clone(), space, locator);
+            claims.window(if header.is_some() { first } else { 0 });
+            let id = request.id;
+            let task = SliceTask {
+                device: self.device.clone(),
+                routes,
+                token,
+                request,
+                header,
+                first,
+                slices: self.fetches.slices.clone(),
+                claims,
+                stop: self.fetches.stop.clone(),
+                ended: self.ended.clone(),
+                closing: self.closing.clone(),
+                status: self.status.clone(),
+            };
+            let incoming = self.incoming.clone();
+            self.fetches.running += 1;
+            self.runtime.spawn(async move {
+                let ended = task.run().await;
+                let _ = incoming.send(Incoming::Fetched(Fetched {
+                    space,
+                    locator,
+                    id,
+                    ended,
+                }));
+            });
         }
     }
 
-    /// Fetches an object by slices of its stored bytes, one at a time,
-    /// from the first slice whose chunk the device lacks. Each sealed
-    /// chunk is cut out once its slices arrived, checked and kept as a
-    /// part on a stream is ([`Engine::receive_part`]): partial objects
-    /// stay in the store, and the object, once whole, is checked against
-    /// its locator's digest (units.md, "Reading an object", step 0). The
-    /// fetch holds the slice being read and the bytes of one chunk.
-    ///
-    /// [`Engine::receive_part`]: crate::device::Engine::receive_part
-    async fn fetch_slices(
-        &mut self,
-        space: EventId,
-        locator: Locator,
-        token: [u8; 32],
-    ) -> Result<()> {
-        use crate::objects::{Received, SliceReader};
-        let held = self.device.leading_chunks(&space, &locator).await;
-        let mut reader = SliceReader::start(locator, held);
-        let mut progress = progress_of(&self.status, locator);
-        let ended = 'fetch: loop {
-            let Some(index) = reader.next_slice() else {
-                break SliceFetch::Done;
-            };
-            let parts = match self.get_slice(&token, &space, &locator, index).await {
-                Ok(Some(slice)) => reader.take(&slice),
-                Ok(None) | Err(_) => break SliceFetch::Stopped,
-            };
-            let Ok(parts) = parts else {
-                break SliceFetch::Malformed;
-            };
-            let (got, total) = reader.progress();
-            progress(got, total);
-            for part in parts {
-                match self.device.receive_part(space, part).await? {
-                    Received::Kept => {}
-                    Received::Whole => break 'fetch SliceFetch::Done,
-                    Received::Refused => break 'fetch SliceFetch::Refused,
-                }
+    /// A fetch that did not run, or was cut short: an object the space's
+    /// units name is queued again when the space next fetches, and so is
+    /// a request of the device.
+    fn unserved(&mut self, request: &crate::fetch::Request) {
+        if request.id == 0 {
+            if let Some(attached) = self.spaces.get_mut(&request.space) {
+                attached.fetching.remove(&request.locator);
             }
-        };
-        self.status().fetching.remove(&locator);
-        if matches!(ended, SliceFetch::Malformed) {
-            self.device.drop_fetched(space, &locator).await?;
+        } else {
+            self.requested.remove(&request.id);
         }
+    }
+
+    /// A fetch ended: the next one that waits starts.
+    async fn on_fetched(&mut self, fetched: Fetched) -> Result<()> {
+        let Fetched {
+            space,
+            locator,
+            id,
+            ended,
+        } = fetched;
+        self.fetches.running = self.fetches.running.saturating_sub(1);
+        self.status().fetching.remove(&locator);
         if let Some(attached) = self.spaces.get_mut(&space) {
-            attached.fetching.remove(&locator);
+            if id == 0 {
+                attached.fetching.remove(&locator);
+            }
             // Not asked of this peer again on this connection.
             if matches!(ended, SliceFetch::Refused | SliceFetch::Malformed) {
                 attached.refused.insert(locator);
             }
         }
-        Ok(())
-    }
-}
-
-/// A fetch's progress, kept in the connection's status.
-#[cfg(any(feature = "server", feature = "server-socket"))]
-fn progress_of(
-    status: &Arc<Mutex<PeerStatus>>,
-    locator: Locator,
-) -> impl FnMut(u64, Option<u64>) + Send + 'static {
-    let status = status.clone();
-    move |got, total| {
-        status
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .fetching
-            .insert(locator, (got, total));
+        if id != 0 && matches!(ended, SliceFetch::Stopped) {
+            self.requested.remove(&id);
+        }
+        self.pump().await;
+        match ended {
+            SliceFetch::Failed(error) => Err(error),
+            _ => self.start_after_snapshot(space).await,
+        }
     }
 }
 
@@ -4571,6 +4900,7 @@ mod server {
     }
 
     /// The server binding's HTTP routes for object chunks.
+    #[derive(Clone)]
     pub(super) struct Http {
         client: reqwest::Client,
         origin: String,
@@ -4992,6 +5322,7 @@ pub mod socket {
     };
     use crate::device::Engine;
     use crate::error::{Error, Result};
+    pub use crate::fetch::Cancel;
     use crate::object_upload::{ObjectUpload, UploadSlices, held_of};
     use frasil_adapter::Locator;
     use frasil_events::EventId;
@@ -5019,12 +5350,18 @@ pub mod socket {
         /// and, for a body, `Content-Type: application/octet-stream`: the
         /// status and the body. It follows no redirect, returning a 3xx as
         /// it is; it never retries; it fails only when no response arrived.
+        ///
+        /// `abort` is signalled when the answer is no longer wanted, as
+        /// when a fetch is cancelled: the request then ends its transfer,
+        /// as `fetch` does for an `AbortSignal`, and may fail. The future
+        /// may also be dropped before it is ready, which means the same.
         fn request<'a>(
             &'a self,
             method: &'a str,
             url: &'a str,
             authorization: &'a str,
             body: Option<&'a [u8]>,
+            abort: &'a Cancel,
         ) -> BoxFuture<'a, Result<(u16, Vec<u8>), String>>;
 
         /// Runs a task in the background, to its end.
@@ -5213,6 +5550,8 @@ pub mod socket {
     ) -> std::result::Result<(), Stopped> {
         let authorization = frasil_transport::peer::transfer_authorization(token);
         let mut slices = UploadSlices::new(upload, SLICE).map_err(|_| Stopped::Gone)?;
+        // An upload stops between slices, never part way through one.
+        let never = Cancel::new();
         while let Some((index, slice)) = slices.next().await.map_err(|_| Stopped::Gone)? {
             if closing.load(Ordering::Acquire) {
                 return Err(Stopped::Closing);
@@ -5225,6 +5564,7 @@ pub mod socket {
                     &url(origin, space, locator, index),
                     &authorization,
                     Some(&slice),
+                    &never,
                 )
                 .await
                 .map_err(Stopped::Refused)?;
@@ -5240,7 +5580,7 @@ pub mod socket {
     }
 
     /// Fetches one slice of an object's stored bytes. `None` when the peer
-    /// lacks it.
+    /// lacks it. `abort` is signalled when the slice is no longer wanted.
     pub(super) async fn get_slice(
         socket: &dyn ServerSocket,
         origin: &str,
@@ -5248,6 +5588,7 @@ pub mod socket {
         space: &EventId,
         locator: &Locator,
         index: u64,
+        abort: &Cancel,
     ) -> std::result::Result<Option<Vec<u8>>, String> {
         let authorization = frasil_transport::peer::transfer_authorization(token);
         let index = usize::try_from(index).map_err(|error| error.to_string())?;
@@ -5257,6 +5598,7 @@ pub mod socket {
                 &url(origin, space, locator, index),
                 &authorization,
                 None,
+                abort,
             )
             .await?;
         match status {

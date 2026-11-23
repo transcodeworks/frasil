@@ -2396,27 +2396,6 @@ impl Replica {
             .collect()
     }
 
-    /// The chunks of one object the store holds: under its locator, and
-    /// under its ID while its locator was not known (a locator whose tail
-    /// is zero, as [`Replica::stored_chunks`] gives such an object).
-    #[cfg(any(feature = "server", feature = "server-socket"))]
-    pub(crate) fn stored_chunks_of(&self, locator: &Locator) -> BTreeSet<u64> {
-        let mut id = [0; 32];
-        id.copy_from_slice(&locator[..32]);
-        let mut by_id = [0; 64];
-        by_id[..32].copy_from_slice(&id);
-        let located = self.objects.get(locator);
-        let located_by_id = (by_id != *locator)
-            .then(|| self.objects.get(&by_id))
-            .flatten();
-        located
-            .into_iter()
-            .chain(located_by_id)
-            .chain(self.unlocated.get(&id))
-            .flat_map(|object| object.stored.iter().copied())
-            .collect()
-    }
-
     /// Drops the chunks in memory that the store holds too.
     pub(crate) fn release_chunks(&mut self) {
         for object in self.objects.values_mut().chain(self.unlocated.values_mut()) {
@@ -2492,6 +2471,13 @@ impl Replica {
         self.held_object(locator).is_some_and(HeldObject::is_whole)
     }
 
+    /// Whether the device holds a chunk of an object, in memory or in the
+    /// store, or the plaintext with the application.
+    pub fn holds_chunk(&self, locator: &Locator, index: u64) -> bool {
+        self.held_object(locator)
+            .is_some_and(|object| object.has_chunk(index) || object.is_whole())
+    }
+
     /// The objects the device holds whole whose locators it knows, in
     /// ascending order; [`unlocated`](Self::unlocated) names the others.
     pub fn whole_objects(&self) -> Vec<Locator> {
@@ -2518,6 +2504,73 @@ impl Replica {
             return Some((count.unwrap_or(0), count));
         }
         Some((object.chunks_held(), object.chunk_count()))
+    }
+
+    /// An object's chunk count, once the replica holds its header.
+    pub(crate) fn object_chunk_count(&self, locator: &Locator) -> Option<u64> {
+        self.held_object(locator)?.chunk_count()
+    }
+
+    /// The first chunk among `chunks` the replica holds no copy of, in
+    /// memory or in the store, below the chunk count once the header is
+    /// held: `None` when it holds each.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) fn first_missing_chunk(
+        &self,
+        locator: &Locator,
+        chunks: core::ops::Range<u64>,
+    ) -> Option<u64> {
+        let Some(object) = self.held_object(locator) else {
+            return (!chunks.is_empty()).then_some(chunks.start);
+        };
+        let end = object
+            .chunk_count()
+            .map_or(chunks.end, |count| chunks.end.min(count));
+        (chunks.start..end).find(|index| !object.has_chunk(*index))
+    }
+
+    /// How much of an object the device holds, in stored bytes (units.md,
+    /// "Objects"): the header with its length and each sealed chunk held,
+    /// and the object's stored length, once the header is held.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) fn object_bytes_held(&self, locator: &Locator) -> Option<(u64, Option<u64>)> {
+        let object = self.held_object(locator)?;
+        let Some(header) = object.header.as_ref() else {
+            return Some((0, None));
+        };
+        let Ok(read) = frasil_units::objects::Header::read(header) else {
+            return Some((0, None));
+        };
+        let chunk = frasil_units::limits::CHUNK_BYTES as u64;
+        let sealed = frasil_units::limits::SEALED_CHUNK_BYTES as u64;
+        let count = frasil_units::objects::chunk_count(read.size, chunk);
+        let prefix = 4 + header.len() as u64;
+        let total = prefix
+            .saturating_add(read.size)
+            .saturating_add(count.saturating_mul(sealed - chunk));
+        if object.held {
+            return Some((total, Some(total)));
+        }
+        // Every chunk but the last is one sealed chunk long.
+        let last = count.saturating_sub(1);
+        let last_length = total
+            .saturating_sub(prefix)
+            .saturating_sub(last.saturating_mul(sealed));
+        let held = object.chunks_held();
+        let whole = if object.has_chunk(last) {
+            held.saturating_sub(1)
+                .saturating_mul(sealed)
+                .saturating_add(last_length)
+        } else {
+            held.saturating_mul(sealed)
+        };
+        Some((prefix.saturating_add(whole).min(total), Some(total)))
     }
 
     /// Keeps a space snapshot's stream entries, loaded once their objects

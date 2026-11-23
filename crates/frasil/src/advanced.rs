@@ -28,6 +28,9 @@
 //! - [`outbox`]: the outbox and acknowledgements (units.md, "Heads,
 //!   acknowledgements and durability").
 //! - [`sync`]: baseline sync, sans-IO (units.md, "Sync").
+//! - [`Engine::fetch_chunks`]: asks the space's connections for a range of
+//!   an object's chunks at a [`FetchPriority`], until its [`Fetch`] is
+//!   cancelled or dropped.
 //! - [`intake`]: the client's readers, through which every byte another
 //!   party or the store hands the device passes first.
 //! - [`maintenance`], [`persons`] and [`snapshots`]: heals and cascades,
@@ -56,6 +59,7 @@ pub use crate::client::KeepKeys;
 #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
 pub use crate::client::peers::Connect;
 pub use crate::device::{Engine, Ingested, Notice};
+pub use crate::fetch::{Fetch, FetchPriority};
 pub use crate::outbox::{Acknowledger, Outbox};
 pub use crate::platform::{Clock, ManualClock, OsRandom, Platform, Random, SystemClock};
 pub use crate::replica::Replica;

@@ -56,13 +56,15 @@ pub(crate) const STATE_FRAMING_BYTES: u64 = 4096;
 #[cfg(any(feature = "server", feature = "server-socket", test))]
 pub(crate) const SLICE_BYTES: usize = frasil_units::limits::SEALED_CHUNK_BYTES;
 
-/// An object fetched by slices of its stored bytes (transport.md, "Objects
-/// over HTTP"), cut into its sealed chunks as the slices arrive (units.md,
-/// "Objects"). Every chunk but the last is exactly one slice long, so
-/// chunk `i` is the tail of slice `i` after `4 + len(header)` bytes and
-/// the first `4 + len(header)` bytes of slice `i + 1`. The reader keeps
-/// only the bytes of the chunk not yet whole, less than one slice, and a
-/// fetch that holds the first `k` chunks starts at slice `k`.
+/// An object's chunks fetched by slices of its stored bytes
+/// (transport.md, "Objects over HTTP"), cut into sealed chunks as the
+/// slices arrive (units.md, "Objects"). Every chunk but the last is
+/// exactly one slice long, so chunk `i` is the tail of slice `i` after
+/// `4 + len(header)` bytes and the first `4 + len(header)` bytes of slice
+/// `i + 1`. A fetch that holds the header starts at the slice of the
+/// first chunk it wants; one that holds none takes slice 0 first, for the
+/// header, and goes on from there. The reader keeps only the bytes of the
+/// chunk not yet whole, less than one slice.
 #[cfg(any(feature = "server", feature = "server-socket", test))]
 #[derive(Debug)]
 pub(crate) struct SliceReader {
@@ -74,12 +76,18 @@ pub(crate) struct SliceReader {
     next_slice: u64,
     /// The next chunk to cut.
     next_chunk: u64,
+    /// The chunk the fetch ends before: at most the chunk count, once the
+    /// header is read.
+    end: u64,
     /// The bytes received of the next chunk.
     pending: Vec<u8>,
     /// Whether the next slice begins with bytes before the next chunk:
-    /// the header in slice 0, or the tail of a chunk held already in a
-    /// resumed fetch's first slice.
+    /// the header in slice 0, or the tail of the chunk before.
     skip_prefix: bool,
+    /// Whether the next part cut carries the header: the first of the
+    /// fetch, and the first after each [`seek`](Self::seek), as the first
+    /// chunk of an answer does on a stream (units.md, "Sync", objects).
+    heads: bool,
 }
 
 /// What a [`SliceReader`] knows from the header.
@@ -151,54 +159,57 @@ impl SlicedHeader {
 
 #[cfg(any(feature = "server", feature = "server-socket", test))]
 impl SliceReader {
-    /// A fetch of `locator`, resumed after the `leading` first chunks
-    /// held under `header` when the device holds any, or from slice 0.
-    pub(crate) fn start(locator: Locator, held: Option<(Vec<u8>, u64)>) -> Self {
-        let resumed = held
-            .filter(|(_, leading)| *leading > 0)
-            .and_then(|(bytes, leading)| {
-                let header = SlicedHeader::read(&locator, bytes).ok()?;
-                (leading < header.count).then_some((header, leading))
-            });
-        match resumed {
-            Some((header, leading)) => Self {
-                locator,
-                header: Some(header),
-                next_slice: leading,
-                next_chunk: leading,
-                pending: Vec::new(),
-                skip_prefix: true,
-            },
-            None => Self {
-                locator,
-                header: None,
-                next_slice: 0,
-                next_chunk: 0,
-                pending: Vec::new(),
-                skip_prefix: true,
-            },
+    /// A fetch of the chunks `chunks` of `locator`, under the header the
+    /// device holds of it, if any: from the slice of the first chunk
+    /// wanted, or from slice 0 when no header is held.
+    pub(crate) fn start(
+        locator: Locator,
+        header: Option<Vec<u8>>,
+        chunks: core::ops::Range<u64>,
+    ) -> Self {
+        let header = header.and_then(|bytes| SlicedHeader::read(&locator, bytes).ok());
+        let end = header
+            .as_ref()
+            .map_or(chunks.end, |header| chunks.end.min(header.count));
+        Self {
+            locator,
+            next_slice: if header.is_some() { chunks.start } else { 0 },
+            header,
+            next_chunk: chunks.start,
+            end,
+            pending: Vec::new(),
+            skip_prefix: true,
+            heads: true,
         }
     }
 
-    /// The next slice to fetch, or `None` once every slice is taken.
+    /// The next slice to fetch, or `None` once every chunk wanted is cut.
     pub(crate) fn next_slice(&self) -> Option<u64> {
         match &self.header {
-            Some(header) if self.next_chunk >= header.count => None,
+            Some(_) if self.next_chunk >= self.end => None,
             _ => Some(self.next_slice),
         }
     }
 
-    /// The stored bytes taken so far, counting the chunks held before,
-    /// and the stored length once the header is read: a fetch's progress.
-    pub(crate) fn progress(&self) -> (u64, Option<u64>) {
-        match &self.header {
-            Some(header) => (
-                self.next_slice
-                    .saturating_mul(SLICE_BYTES as u64)
-                    .min(header.stored),
-                Some(header.stored),
-            ),
-            None => (0, None),
+    /// The next chunk the fetch cuts, or `None` once every chunk wanted
+    /// is cut.
+    pub(crate) fn next_chunk(&self) -> Option<u64> {
+        (self.header.is_none() || self.next_chunk < self.end).then_some(self.next_chunk)
+    }
+
+    /// Goes on at `chunk`, at or after the next one, leaving out the
+    /// chunks between: the bytes received of the next chunk are dropped,
+    /// and the fetch takes the slice `chunk` begins in.
+    pub(crate) fn seek(&mut self, chunk: u64) {
+        if chunk <= self.next_chunk {
+            return;
+        }
+        self.next_chunk = chunk;
+        self.pending = Vec::new();
+        self.heads = true;
+        if self.header.is_some() {
+            self.next_slice = chunk;
+            self.skip_prefix = true;
         }
     }
 
@@ -213,7 +224,8 @@ impl SliceReader {
     pub(crate) fn take(&mut self, slice: &[u8]) -> Result<Vec<ObjectPart>> {
         let index = self.next_slice;
         let mut body = slice;
-        if self.header.is_none() {
+        let read = self.header.is_none();
+        if read {
             // 1. At least 4 bytes, and the header's length fits.
             let length = body
                 .get(..4)
@@ -224,11 +236,19 @@ impl SliceReader {
             let bytes = body
                 .get(4..4usize.saturating_add(length))
                 .ok_or(Error::Class("Malformed"))?;
-            self.header = Some(SlicedHeader::read(&self.locator, bytes.to_vec())?);
+            let header = SlicedHeader::read(&self.locator, bytes.to_vec())?;
+            self.end = self.end.min(header.count);
+            self.header = Some(header);
         }
         let header = self.header.as_ref().ok_or(Error::Class("Malformed"))?;
         if body.len() as u64 != header.slice_length(index) {
             return Err(Error::Class("Malformed"));
+        }
+        if read && self.next_chunk > 0 {
+            // Slice 0 was taken for the header alone: the fetch goes on at
+            // the slice the first chunk wanted begins in.
+            self.next_slice = self.next_chunk;
+            return Ok(Vec::new());
         }
         if std::mem::take(&mut self.skip_prefix) {
             body = body.get(header.prefix..).ok_or(Error::Class("Malformed"))?;
@@ -237,7 +257,7 @@ impl SliceReader {
         // Each chunk's bytes are gathered in a buffer of its own length,
         // which becomes the part once full.
         let mut parts = Vec::new();
-        while self.next_chunk < header.count && !body.is_empty() {
+        while self.next_chunk < self.end && !body.is_empty() {
             let length = header.chunk_length(self.next_chunk);
             if self.pending.is_empty() {
                 self.pending.reserve_exact(length);
@@ -250,14 +270,15 @@ impl SliceReader {
             }
             parts.push(ObjectPart {
                 locator: self.locator,
-                header: (self.next_chunk == 0).then(|| header.bytes.clone()),
+                header: std::mem::take(&mut self.heads).then(|| header.bytes.clone()),
                 index: self.next_chunk,
                 chunk: std::mem::take(&mut self.pending),
             });
             self.next_chunk += 1;
         }
-        // The last slice ends with the last chunk.
-        if !body.is_empty() {
+        // The last slice ends with the last chunk; a fetch that ends
+        // before it leaves the start of the next chunk.
+        if self.next_chunk >= header.count && !body.is_empty() {
             return Err(Error::Class("Malformed"));
         }
         Ok(parts)
@@ -276,8 +297,37 @@ pub(crate) enum Received {
     Kept,
     /// The object is whole: with this part, or already.
     Whole,
+    /// Not kept: it carries no header and the device holds none of the
+    /// object, so there is nothing to check it against. What the device
+    /// holds of the object stays.
+    Headerless,
     /// Refused: what the device held of the object is dropped, and it is
     /// asked of another party.
+    Refused,
+}
+
+/// What became of a chunk the other side of a session sent
+/// ([`Engine::take_chunk`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Taken {
+    /// Not kept: nobody wants it any more, or it carries no header and
+    /// the device holds none of its object.
+    Dropped,
+    /// Refused, with what the device held of its object.
+    Refused,
+    /// Kept; the object is not whole yet.
+    Kept,
+    /// The object is whole.
+    Whole,
+}
+
+/// Whether a part fits the object it names ([`fits_object`]).
+enum Fit {
+    /// It fits, under the header it carries or the one held.
+    Fits,
+    /// It carries no header, and none is held.
+    Headerless,
+    /// It does not fit.
     Refused,
 }
 
@@ -286,29 +336,31 @@ pub(crate) enum Received {
 /// header held if one is, and names the locator's object ID; and a chunk
 /// that [`check_chunk`] takes under it, opened under the object's key
 /// when the replica holds the key of the state the header names.
-fn fits_object(replica: &Replica, space: &EventId, part: &ObjectPart) -> bool {
+fn fits_object(replica: &Replica, space: &EventId, part: &ObjectPart) -> Fit {
     let held = replica.object_header(&part.locator);
     let bytes = match (part.header.as_deref(), held) {
-        (Some(new), Some(held)) if new != held => return false,
+        (Some(new), Some(held)) if new != held => return Fit::Refused,
         (Some(new), _) => new,
         (None, Some(held)) => held,
-        (None, None) => return false,
+        (None, None) => return Fit::Headerless,
     };
     let Ok(header) = frasil_units::objects::Header::read(bytes) else {
-        return false;
+        return Fit::Refused;
     };
     let object_key = replica
         .object_key(&header.key_reference)
         .map(|(key, _)| ObjectKeys::of(&key).object_key(&header.object_id));
-    check_chunk(
+    match check_chunk(
         space,
         &header,
         &part.locator,
         part.index,
         &part.chunk,
         object_key.as_deref(),
-    )
-    .is_ok()
+    ) {
+        Ok(_) => Fit::Fits,
+        Err(_) => Fit::Refused,
+    }
 }
 
 /// Reads chunks of an object back from the `object` table, by index:
@@ -1319,13 +1371,14 @@ impl Engine {
     /// One part of an object another party sent, as sync carries it
     /// (units.md, "Sync", objects): checked as it arrives, then kept. Of
     /// an object the device holds whole, nothing is taken. A part is
-    /// refused when it names no header the device can check it against,
-    /// when its header differs from the one held, or when the chunk fails
-    /// [`check_chunk`] under that header, opened under the object's key
-    /// when the device holds it; once the object is whole, it is checked
-    /// against its locator's digest, which needs no key. A refused part
-    /// drops what the device held of the object, so that it is missing
-    /// again and asked of another party.
+    /// refused when its header differs from the one held, or when the
+    /// chunk fails [`check_chunk`] under that header, opened under the
+    /// object's key when the device holds it; once the object is whole,
+    /// it is checked against its locator's digest, which needs no key. A
+    /// refused part drops what the device held of the object, so that it
+    /// is missing again and asked of another party. A part with no header
+    /// of an object the device holds no header of cannot be checked: it
+    /// is not kept, and nothing else changes.
     ///
     /// # Errors
     ///
@@ -1340,10 +1393,14 @@ impl Engine {
             }
             fits_object(replica, &space, &part)
         };
-        if !fits {
-            let mut state = self.lock().await;
-            Self::drop_object(&mut state, space, &part.locator).await?;
-            return Ok(Received::Refused);
+        match fits {
+            Fit::Fits => {}
+            Fit::Headerless => return Ok(Received::Headerless),
+            Fit::Refused => {
+                let mut state = self.lock().await;
+                Self::drop_object(&mut state, space, &part.locator).await?;
+                return Ok(Received::Refused);
+            }
         }
         // A state object whose header names more than its adapter loads is
         // fetched no further. Once the first chunk opened under the
@@ -2000,34 +2057,47 @@ impl Engine {
             .map(|max| max.saturating_add(STATE_FRAMING_BYTES))
     }
 
-    /// Where a fetch of an object by slices resumes: the header the device
-    /// holds of it, and how many of its first chunks it holds, in memory or
-    /// in the store. `None` when it holds no chunk of it sealed, or holds
-    /// it whole.
-    #[cfg(any(feature = "server", feature = "server-socket"))]
-    pub(crate) async fn leading_chunks(
+    /// Where a fetch of the chunks `chunks` of an object starts: the header
+    /// the device holds of it, if any, and the first of those chunks it
+    /// holds no copy of, in memory or in the store. `None` when there is
+    /// nothing to fetch: it holds the object whole or each of those
+    /// chunks, or the application holds the plaintext.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) async fn chunks_to_fetch(
         &self,
         space: &EventId,
         locator: &Locator,
-    ) -> Option<(Vec<u8>, u64)> {
+        chunks: core::ops::Range<u64>,
+    ) -> Option<(Option<Vec<u8>>, u64)> {
         let state = self.lock().await;
         let replica = state.replicas.get(space)?;
         if replica.holds_object(locator) || replica.is_held(locator) {
             return None;
         }
-        let header = replica.object_header(locator)?.to_vec();
-        let (held, _) = replica.object_progress(locator)?;
-        if held == 0 {
-            return None;
-        }
-        // The store's chunks, by the object's locator, or by its ID while
-        // the locator is not known yet.
-        let mut indices: BTreeSet<u64> = replica.stored_chunks_of(locator);
-        if (indices.len() as u64) < held {
-            indices.extend(replica.chunks_in_memory(locator).into_keys());
-        }
-        let leading = (0u64..).take_while(|index| indices.contains(index)).count() as u64;
-        Some((header, leading))
+        let Some(header) = replica.object_header(locator) else {
+            return (!chunks.is_empty()).then_some((None, chunks.start));
+        };
+        let first = replica.first_missing_chunk(locator, chunks)?;
+        Some((Some(header.to_vec()), first))
+    }
+
+    /// How much of an object the device holds, in stored bytes: its
+    /// header and each sealed chunk held, and the stored length once the
+    /// header is held. A fetch's progress, whichever chunks came first.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) async fn object_bytes_held(
+        &self,
+        space: &EventId,
+        locator: &Locator,
+    ) -> Option<(u64, Option<u64>)> {
+        let state = self.lock().await;
+        state.replicas.get(space)?.object_bytes_held(locator)
     }
 
     /// Drops what the device held of an object a fetch found malformed:
@@ -2103,25 +2173,27 @@ impl Engine {
             .collect();
         let mut out = Vec::new();
         for locator in wanted {
-            out.extend(self.want_in(session, &space, locator).await);
+            out.extend(self.want_in(session, locator).await);
         }
         out
     }
 
-    /// `ObjectWant` for an object on a session: for a state object with a
-    /// limit ([`state_limit`](Self::state_limit)), its first chunk alone,
-    /// which carries the header; for any other, its first chunks.
+    /// `ObjectWant` for an object on a session, for the chunks the device
+    /// lacks of it: for a state object with a limit
+    /// ([`state_limit`](Self::state_limit)), its first chunk alone, which
+    /// carries the header; for any other, its first chunks.
     pub(crate) async fn want_in(
         &self,
         session: &mut SyncSession,
-        space: &EventId,
         locator: Locator,
-    ) -> Option<SyncMessage> {
-        if self.state_limit(space, &locator).await.is_some() {
-            session.want_object_header(locator)
-        } else {
-            session.want_object(locator)
-        }
+    ) -> Vec<SyncMessage> {
+        self.want_chunks_in(
+            session,
+            locator,
+            0..u64::MAX,
+            crate::fetch::FetchPriority::Background,
+        )
+        .await
     }
 
     /// How much of an object the device holds: the chunks held, and their
@@ -2378,21 +2450,35 @@ mod tests {
         seal_object(&EventId([1; 32]), &[2; 32], &reference, &plaintext).unwrap()
     }
 
+    /// Sealed chunks, by index.
+    type Chunks = Vec<(u64, Vec<u8>)>;
+
     /// Takes every slice from where the reader stands: the chunks cut, by
-    /// index, and the most bytes it held between slices.
-    fn read_all(reader: &mut SliceReader, stored: &[u8]) -> (Vec<(u64, Vec<u8>)>, usize) {
+    /// index, the slices taken, and the most bytes it held between slices.
+    /// The first part cut carries the header, and no other.
+    fn read_all(reader: &mut SliceReader, stored: &[u8]) -> (Chunks, Vec<u64>, usize) {
         let mut parts = Vec::new();
+        let mut slices = Vec::new();
         let mut most = 0;
         while let Some(index) = reader.next_slice() {
             let at = index as usize * SLICE_BYTES;
             let slice = &stored[at..(at + SLICE_BYTES).min(stored.len())];
+            slices.push(index);
             for part in reader.take(slice).unwrap() {
-                assert_eq!(part.header.is_some(), part.index == 0);
+                assert_eq!(part.header.is_some(), parts.is_empty());
                 parts.push((part.index, part.chunk));
             }
             most = most.max(reader.pending.capacity());
         }
-        (parts, most)
+        (parts, slices, most)
+    }
+
+    /// The object's chunks in a range, by index.
+    fn chunks_of(object: &SealedObject, range: core::ops::Range<usize>) -> Chunks {
+        object.chunks[range]
+            .iter()
+            .map(|chunk| (chunk.index, chunk.sealed.clone()))
+            .collect()
     }
 
     /// Slices cut into the object's sealed chunks, in order, holding at
@@ -2400,41 +2486,148 @@ mod tests {
     #[test]
     fn slices_are_cut_into_sealed_chunks() {
         let object = object();
-        let mut reader = SliceReader::start(object.locator, None);
-        let (parts, most) = read_all(&mut reader, &object.bytes);
-        let chunks: Vec<(u64, Vec<u8>)> = object
-            .chunks
-            .iter()
-            .map(|chunk| (chunk.index, chunk.sealed.clone()))
-            .collect();
-        assert_eq!(chunks.len(), 4);
-        assert_eq!(parts, chunks);
+        let mut reader = SliceReader::start(object.locator, None, 0..u64::MAX);
+        let (parts, slices, most) = read_all(&mut reader, &object.bytes);
+        assert_eq!(object.chunks.len(), 4);
+        assert_eq!(parts, chunks_of(&object, 0..4));
+        assert_eq!(slices, vec![0, 1, 2, 3]);
         assert!(most <= SLICE_BYTES, "{most}");
-        let stored = object.bytes.len() as u64;
-        assert_eq!(reader.progress(), (stored, Some(stored)));
+        assert_eq!(reader.next_chunk(), None);
     }
 
-    /// A fetch that holds the first chunks starts at the slice that ends
-    /// the next one, and cuts the rest alone.
+    /// A fetch that holds the header starts at the slice its first chunk
+    /// begins in, whichever chunk that is, and takes one slice more than
+    /// it cuts chunks, but for the last chunk, which ends its slice.
     #[test]
-    fn a_fetch_resumes_after_the_leading_chunks_held() {
+    fn a_fetch_starts_at_any_chunk_under_a_header_held() {
         let object = object();
-        for leading in 1..4 {
-            let mut reader =
-                SliceReader::start(object.locator, Some((object.header.clone(), leading)));
-            assert_eq!(reader.next_slice(), Some(leading));
-            let (parts, _) = read_all(&mut reader, &object.bytes);
-            let rest: Vec<(u64, Vec<u8>)> = object.chunks[leading as usize..]
-                .iter()
-                .map(|chunk| (chunk.index, chunk.sealed.clone()))
-                .collect();
-            assert_eq!(parts, rest);
+        for first in 0..4usize {
+            for end in first + 1..=4 {
+                let mut reader = SliceReader::start(
+                    object.locator,
+                    Some(object.header.clone()),
+                    first as u64..end as u64,
+                );
+                assert_eq!(reader.next_chunk(), Some(first as u64));
+                let (parts, slices, most) = read_all(&mut reader, &object.bytes);
+                assert_eq!(parts, chunks_of(&object, first..end), "{first}..{end}");
+                let last = if end == 4 { 3 } else { end as u64 };
+                assert_eq!(slices, (first as u64..=last).collect::<Vec<_>>());
+                assert!(most <= SLICE_BYTES, "{most}");
+            }
         }
-        // Whole, or holding nothing: from slice 0.
-        let reader = SliceReader::start(object.locator, Some((object.header.clone(), 4)));
+        // To the end, however far the range reaches.
+        let mut reader =
+            SliceReader::start(object.locator, Some(object.header.clone()), 2..u64::MAX);
+        let (parts, slices, _) = read_all(&mut reader, &object.bytes);
+        assert_eq!(parts, chunks_of(&object, 2..4));
+        assert_eq!(slices, vec![2, 3]);
+        // Nothing wanted, or nothing left of the object: no slice.
+        let reader = SliceReader::start(object.locator, Some(object.header.clone()), 4..9);
+        assert_eq!(reader.next_slice(), None);
+        let reader = SliceReader::start(object.locator, Some(object.header.clone()), 2..2);
+        assert_eq!(reader.next_slice(), None);
+    }
+
+    /// A fetch that holds no header takes slice 0 first, for the header
+    /// alone when it wants a later chunk, then the slices of its chunks.
+    #[test]
+    fn a_fetch_with_no_header_takes_slice_0_first() {
+        let object = object();
+        let mut reader = SliceReader::start(object.locator, None, 2..3);
         assert_eq!(reader.next_slice(), Some(0));
-        let reader = SliceReader::start(object.locator, Some((object.header.clone(), 0)));
+        assert_eq!(reader.next_chunk(), Some(2));
+        let (parts, slices, _) = read_all(&mut reader, &object.bytes);
+        assert_eq!(parts, chunks_of(&object, 2..3));
+        assert_eq!(slices, vec![0, 2, 3]);
+        // From chunk 0, slice 0 gives the header and the chunk's start.
+        let mut reader = SliceReader::start(object.locator, None, 0..1);
+        let (parts, slices, _) = read_all(&mut reader, &object.bytes);
+        assert_eq!(parts, chunks_of(&object, 0..1));
+        assert_eq!(slices, vec![0, 1]);
+        // A range past the object's end, learnt from the header: no more.
+        let mut reader = SliceReader::start(object.locator, None, 7..9);
+        let (parts, slices, _) = read_all(&mut reader, &object.bytes);
+        assert!(parts.is_empty());
+        assert_eq!(slices, vec![0]);
+        // A header held that does not read is not used.
+        let reader = SliceReader::start(object.locator, Some(vec![1, 2, 3]), 2..3);
         assert_eq!(reader.next_slice(), Some(0));
+    }
+
+    /// A fetch leaves out chunks the device holds: it goes on at the slice
+    /// the next chunk wanted begins in, and that chunk's part carries the
+    /// header again.
+    #[test]
+    fn a_fetch_seeks_over_chunks_held() {
+        let object = object();
+        let slice = |index: usize| {
+            let at = index * SLICE_BYTES;
+            &object.bytes[at..(at + SLICE_BYTES).min(object.bytes.len())]
+        };
+        let mut reader =
+            SliceReader::start(object.locator, Some(object.header.clone()), 0..u64::MAX);
+        assert!(reader.take(slice(0)).unwrap().is_empty());
+        let parts = reader.take(slice(1)).unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(
+            (parts[0].index, &parts[0].chunk),
+            (0, &object.chunks[0].sealed)
+        );
+        assert!(parts[0].header.is_some());
+        // Chunks 1 and 2 are held: the start of chunk 1 is dropped.
+        assert_eq!(reader.next_chunk(), Some(1));
+        reader.seek(3);
+        assert_eq!(reader.next_slice(), Some(3));
+        let parts = reader.take(slice(3)).unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(
+            (parts[0].index, &parts[0].chunk),
+            (3, &object.chunks[3].sealed)
+        );
+        assert!(parts[0].header.is_some());
+        assert_eq!(reader.next_slice(), None);
+        // A seek to the next chunk, or back, changes nothing.
+        let mut reader =
+            SliceReader::start(object.locator, Some(object.header.clone()), 1..u64::MAX);
+        reader.take(slice(1)).unwrap();
+        reader.seek(1);
+        reader.seek(0);
+        let parts = reader.take(slice(2)).unwrap();
+        assert_eq!(
+            (parts[0].index, &parts[0].chunk),
+            (1, &object.chunks[1].sealed)
+        );
+        // A seek before the header is read sets the first chunk wanted.
+        let mut reader = SliceReader::start(object.locator, None, 0..u64::MAX);
+        reader.seek(3);
+        assert_eq!(reader.next_slice(), Some(0));
+        assert!(reader.take(slice(0)).unwrap().is_empty());
+        assert_eq!(reader.next_slice(), Some(3));
+        assert_eq!(reader.take(slice(3)).unwrap().len(), 1);
+    }
+
+    /// A slice that ends the object with bytes after its last chunk is
+    /// refused, and one of a fetch that ends before the last chunk is not.
+    #[test]
+    fn the_last_slice_ends_with_the_last_chunk() {
+        let object = object();
+        let mut longer = object.bytes[3 * SLICE_BYTES..].to_vec();
+        longer.push(0);
+        let mut reader =
+            SliceReader::start(object.locator, Some(object.header.clone()), 3..u64::MAX);
+        assert_eq!(
+            reader.take(&longer).unwrap_err().class_name(),
+            Some("Malformed")
+        );
+        let mut reader = SliceReader::start(object.locator, Some(object.header.clone()), 1..2);
+        reader
+            .take(&object.bytes[SLICE_BYTES..2 * SLICE_BYTES])
+            .unwrap();
+        let parts = reader
+            .take(&object.bytes[2 * SLICE_BYTES..3 * SLICE_BYTES])
+            .unwrap();
+        assert_eq!(parts.len(), 1);
     }
 
     /// A slice of another length than the header gives, or a header of
@@ -2442,7 +2635,7 @@ mod tests {
     #[test]
     fn a_slice_that_does_not_fit_is_refused() {
         let object = object();
-        let mut reader = SliceReader::start(object.locator, None);
+        let mut reader = SliceReader::start(object.locator, None, 0..u64::MAX);
         let short = &object.bytes[..SLICE_BYTES - 1];
         assert_eq!(
             reader.take(short).unwrap_err().class_name(),
@@ -2450,7 +2643,7 @@ mod tests {
         );
         let mut other = object.locator;
         other[0] ^= 1;
-        let mut reader = SliceReader::start(other, None);
+        let mut reader = SliceReader::start(other, None, 0..u64::MAX);
         assert_eq!(
             reader
                 .take(&object.bytes[..SLICE_BYTES])
@@ -2458,7 +2651,7 @@ mod tests {
                 .class_name(),
             Some("ObjectMismatch")
         );
-        let mut reader = SliceReader::start(object.locator, None);
+        let mut reader = SliceReader::start(object.locator, None, 0..u64::MAX);
         assert_eq!(
             reader.take(&[0, 0]).unwrap_err().class_name(),
             Some("Malformed")

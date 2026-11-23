@@ -29,7 +29,7 @@ use super::message_of;
 use crate::client::peers::Connect;
 use crate::device::Engine;
 use crate::peer::PeerHandle;
-use crate::peer::socket::{ServerSocket, administer_socket, connect_socket};
+use crate::peer::socket::{Cancel, ServerSocket, administer_socket, connect_socket};
 use crate::tasks::Tasks;
 use frasil_events::EventId;
 use frasil_store::BoxFuture;
@@ -278,6 +278,17 @@ impl BrowserSocket {
     }
 }
 
+/// A request under way: aborted when dropped before its answer.
+struct Aborting(Option<web_sys::AbortController>);
+
+impl Drop for Aborting {
+    fn drop(&mut self) {
+        if let Some(controller) = &self.0 {
+            controller.abort();
+        }
+    }
+}
+
 /// The body of a response, or nothing for a response that has none.
 async fn body_of(response: &web_sys::Response) -> Result<Vec<u8>, String> {
     let promise = response.array_buffer().map_err(|e| message_of(&e))?;
@@ -332,8 +343,13 @@ impl ServerSocket for BrowserSocket {
         url: &'a str,
         authorization: &'a str,
         body: Option<&'a [u8]>,
+        abort: &'a Cancel,
     ) -> BoxFuture<'a, Result<(u16, Vec<u8>), String>> {
         Box::pin(async move {
+            // Aborted when `abort` is signalled, and when this future is
+            // dropped before the response is read.
+            let controller = web_sys::AbortController::new().map_err(|e| message_of(&e))?;
+            let mut aborting = Aborting(Some(controller));
             let headers = web_sys::Headers::new().map_err(|e| message_of(&e))?;
             headers
                 .set("Authorization", authorization)
@@ -348,15 +364,31 @@ impl ServerSocket for BrowserSocket {
                 init.set_body(&Uint8Array::from(body));
             }
             init.set_headers(&headers);
+            init.set_signal(
+                aborting
+                    .0
+                    .as_ref()
+                    .map(web_sys::AbortController::signal)
+                    .as_ref(),
+            );
             let request =
                 web_sys::Request::new_with_str_and_init(url, &init).map_err(|e| message_of(&e))?;
-            let response = JsFuture::from(global_fetch(&request))
-                .await
-                .map_err(|e| message_of(&e))?
-                .dyn_into::<web_sys::Response>()
-                .map_err(|_| "fetch answered something other than a Response".to_owned())?;
-            let body = body_of(&response).await?;
-            Ok((response.status(), body))
+            let answer = async {
+                let response = JsFuture::from(global_fetch(&request))
+                    .await
+                    .map_err(|e| message_of(&e))?
+                    .dyn_into::<web_sys::Response>()
+                    .map_err(|_| "fetch answered something other than a Response".to_owned())?;
+                let body = body_of(&response).await?;
+                Ok((response.status(), body))
+            };
+            tokio::select! {
+                answer = answer => {
+                    aborting.0 = None;
+                    answer
+                }
+                () = abort.cancelled() => Err("the request was aborted".to_owned()),
+            }
         })
     }
 
