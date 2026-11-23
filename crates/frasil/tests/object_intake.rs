@@ -1,11 +1,14 @@
 //! Object chunks as a member receives them (units.md, "Reading an object";
 //! "Sync", objects): each is checked as it arrives, only an object asked
 //! for is taken, and one that fails leaves the object missing, asked of
-//! another party.
+//! another party. A member serves a range of chunks from any index, the
+//! first of each answer with the header; a chunk that arrives with no
+//! header the device can check it against is not kept, and an answer
+//! nobody wants any more is dropped as it arrives.
 #![cfg(feature = "adapter-blobs")]
 
 use frasil::advanced::sync::SyncSession;
-use frasil::advanced::{Acknowledger, AdapterRegistry, Engine, Platform};
+use frasil::advanced::{Acknowledger, AdapterRegistry, Engine, FetchPriority, Platform};
 use frasil_events::EventId;
 use frasil_space::{HistoryMode, Level, Via};
 use frasil_units::messages::{Message, SyncMessage};
@@ -385,6 +388,221 @@ async fn a_second_header_does_not_replace_the_first() {
             .contains(&blob.locator)
     );
     fetch_elsewhere(&blob).await;
+    assert_eq!(
+        blob.bob.object(&blob.space, &blob.locator).await.unwrap(),
+        blob.plaintext
+    );
+}
+
+/// Bob, who fetches blobs only when asked, synced with Alice: he knows
+/// the blob, which she announced, and holds nothing of it.
+async fn synced_on_demand(blob: &Blob) -> (SyncSession, SyncSession) {
+    blob.bob.fetch_objects_on_demand();
+    let mut bobs = SyncSession::new(blob.space);
+    let mut alices = SyncSession::new(blob.space);
+    let first = blob.bob.sync_start(&mut bobs).await.unwrap();
+    pump(blob, &mut bobs, &mut alices, first).await;
+    assert!(bobs.announced().contains(&blob.locator));
+    assert!(!bobs.is_fetching(&blob.locator));
+    assert!(blob.bob.missing_objects(&blob.space).await.is_empty());
+    (bobs, alices)
+}
+
+/// Whether Bob holds a chunk of the blob.
+async fn holds(blob: &Blob, chunk: u64) -> bool {
+    blob.bob
+        .read(&blob.space, |replica| {
+            replica.holds_chunk(&blob.locator, chunk)
+        })
+        .await
+        .unwrap()
+}
+
+/// The `ObjectWant`s among messages, as first chunk and count.
+fn wants(messages: &[SyncMessage]) -> Vec<(u64, u64)> {
+    messages
+        .iter()
+        .filter_map(|message| match message.message {
+            Message::ObjectWant { first, count, .. } => Some((first, count)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A member is asked for a range of chunks from any first index, and the
+/// first chunk of its answer carries the header, whichever index that is:
+/// Bob, who holds nothing of the blob, keeps chunk 1 alone, then fetches
+/// the rest and reads the blob.
+#[tokio::test]
+async fn a_member_serves_a_range_from_any_chunk_with_the_header() {
+    let blob = blob().await;
+    let (mut bobs, mut alices) = synced_on_demand(&blob).await;
+    let by_alice = Acknowledger::Member(blob.alice.device_id().0);
+    let by_bob = Acknowledger::Member(blob.bob.device_id().0);
+
+    // Chunk 1, at a reader's position.
+    let fetch = blob
+        .bob
+        .fetch_chunks(blob.space, blob.locator, 1..2, FetchPriority::Position);
+    let asked = blob.bob.sync_fetches(&mut bobs).await;
+    assert_eq!(wants(&asked), vec![(1, 1)]);
+    assert!(bobs.awaits_chunk(&blob.locator, 1));
+    // Asked for once on the session.
+    assert!(blob.bob.sync_fetches(&mut bobs).await.is_empty());
+    let mut answers = Vec::new();
+    for message in asked {
+        answers.extend(
+            blob.alice
+                .sync_receive(&mut alices, by_bob, message)
+                .await
+                .unwrap(),
+        );
+    }
+    assert_eq!(answers.len(), 1);
+    let Message::ObjectChunks { header, index, .. } = &answers[0].message else {
+        panic!("{answers:?}");
+    };
+    assert_eq!(*index, 1);
+    assert!(
+        header.is_some(),
+        "the first chunk of an answer carries the header"
+    );
+    for message in answers {
+        let replies = blob
+            .bob
+            .sync_receive(&mut bobs, by_alice, message)
+            .await
+            .unwrap();
+        assert!(wants(&replies).is_empty(), "{replies:?}");
+    }
+    assert!(holds(&blob, 1).await);
+    assert!(!holds(&blob, 0).await);
+    assert!(!bobs.is_fetching(&blob.locator));
+    assert!(blob.bob.object(&blob.space, &blob.locator).await.is_err());
+
+    // The rest of the object: chunk 0 alone, since chunk 1 is held.
+    let rest = blob.bob.fetch_chunks(
+        blob.space,
+        blob.locator,
+        0..u64::MAX,
+        FetchPriority::ReadAhead,
+    );
+    let asked = blob.bob.sync_fetches(&mut bobs).await;
+    assert_eq!(wants(&asked), vec![(0, 1)]);
+    pump(&blob, &mut bobs, &mut alices, asked).await;
+    assert_eq!(
+        blob.bob.object(&blob.space, &blob.locator).await.unwrap(),
+        blob.plaintext
+    );
+    drop((fetch, rest));
+}
+
+/// Nothing on the wire cancels an `ObjectWant`: the answer to a request
+/// cancelled meanwhile is dropped as it arrives, and nothing is kept.
+#[tokio::test]
+async fn an_answer_nobody_wants_any_more_is_dropped_as_it_arrives() {
+    let blob = blob().await;
+    let (mut bobs, mut alices) = synced_on_demand(&blob).await;
+    let fetch = blob
+        .bob
+        .fetch_chunks(blob.space, blob.locator, 0..2, FetchPriority::Position);
+    let asked = blob.bob.sync_fetches(&mut bobs).await;
+    assert_eq!(wants(&asked), vec![(0, 2)]);
+    let mut answers = Vec::new();
+    for message in asked {
+        answers.extend(
+            blob.alice
+                .sync_receive(
+                    &mut alices,
+                    Acknowledger::Member(blob.bob.device_id().0),
+                    message,
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    assert_eq!(answers.len(), 2);
+    fetch.cancel();
+    for message in answers {
+        let replies = blob
+            .bob
+            .sync_receive(
+                &mut bobs,
+                Acknowledger::Member(blob.alice.device_id().0),
+                message,
+            )
+            .await
+            .unwrap();
+        assert!(wants(&replies).is_empty(), "{replies:?}");
+    }
+    assert!(!holds(&blob, 0).await);
+    assert!(!holds(&blob, 1).await);
+    assert!(!bobs.is_fetching(&blob.locator));
+    // A request cancelled before a session heard of it is never asked.
+    assert!(blob.bob.sync_fetches(&mut bobs).await.is_empty());
+}
+
+/// A chunk that arrives with no header, while Bob holds none of the
+/// object, cannot be checked: it is not kept, the side that sent it is
+/// not refused, and what arrives after it is kept. The chunk is asked for
+/// again, and its answer carries the header.
+#[tokio::test]
+async fn a_chunk_with_no_header_is_not_kept_and_refuses_nothing() {
+    let blob = blob().await;
+    let (mut bobs, held_back) = sync_holding_chunks(&blob).await;
+    let by_alice = Acknowledger::Member(blob.alice.device_id().0);
+    assert_eq!(held_back.len(), 2);
+    let Message::ObjectChunks { header, index, .. } = &held_back[1].message else {
+        unreachable!()
+    };
+    assert_eq!((header, *index), (&None, 1));
+
+    // Chunk 1 first: no header came with it, and none is held.
+    let replies = blob
+        .bob
+        .sync_receive(&mut bobs, by_alice, held_back[1].clone())
+        .await
+        .unwrap();
+    assert!(wants(&replies).is_empty(), "{replies:?}");
+    assert!(!holds(&blob, 1).await);
+    assert!(bobs.is_fetching(&blob.locator), "Alice is still asked");
+    assert!(!bobs.awaits_chunk(&blob.locator, 1));
+
+    // Chunk 0, with the header: kept, and chunk 1 is asked for again.
+    let replies = blob
+        .bob
+        .sync_receive(&mut bobs, by_alice, held_back[0].clone())
+        .await
+        .unwrap();
+    assert!(holds(&blob, 0).await);
+    assert_eq!(wants(&replies), vec![(1, 1)]);
+
+    // The same chunk again, now that the header is held, would be kept
+    // as it is; the answer to the new want carries the header anyway.
+    let mut alices = SyncSession::new(blob.space);
+    pump(&blob, &mut bobs, &mut alices, replies).await;
+    assert_eq!(
+        blob.bob.object(&blob.space, &blob.locator).await.unwrap(),
+        blob.plaintext
+    );
+}
+
+/// A chunk with no header changes nothing of what Bob holds of the
+/// object: under the header held it is checked and kept as any other.
+#[tokio::test]
+async fn a_chunk_with_no_header_is_kept_under_the_header_held() {
+    let blob = blob().await;
+    let (mut bobs, held_back) = sync_holding_chunks(&blob).await;
+    for message in held_back {
+        blob.bob
+            .sync_receive(
+                &mut bobs,
+                Acknowledger::Member(blob.alice.device_id().0),
+                message,
+            )
+            .await
+            .unwrap();
+    }
     assert_eq!(
         blob.bob.object(&blob.space, &blob.locator).await.unwrap(),
         blob.plaintext
