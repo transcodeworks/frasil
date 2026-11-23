@@ -106,8 +106,6 @@ Other checks, by area:
 - Features of `frasil`: `scripts/check-features.sh`, Clippy on the
   combinations an application might choose. Run it when you gate code on
   a feature.
-- Tauri bridge: `scripts/check-tauri.sh`, when you change `bindings/tauri`
-  or the API it wraps.
 - Native bindings: `scripts/bindings.sh --check` (the committed glue matches
   the generator, and the bindings' tests pass), when you change
   `crates/frasil-uniffi` or the API it wraps.
