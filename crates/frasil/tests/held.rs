@@ -387,6 +387,52 @@ async fn the_policy_changes_locally_in_both_directions() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A held blob reads from its file chunk by chunk: streamed, by range
+/// across a chunk boundary, and hashed, alike; once the file changes it is
+/// withdrawn, and no read gives its bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_blob_streams_and_reads_by_range_from_its_file() {
+    const CHUNK: usize = 1_048_536;
+    let dir = temp_dir("held-ranges");
+    let provider = DirProvider::new(dir.join("files"));
+    let alice = device(43, Options::new().object_provider(provider.clone())).await;
+    let space = alice.create_space().await.unwrap();
+    let files = space.create_blobs().unwrap();
+    let file: Vec<u8> = (0..2 * CHUNK + 300).map(|i| (i % 241) as u8).collect();
+    let token = provider.write("clip", &file);
+    let blob = files.put_from("clip", &token).await.unwrap();
+    let mut streamed = Vec::new();
+    files
+        .get_stream(blob, &mut streamed, |_, _| {})
+        .await
+        .unwrap();
+    assert_eq!(streamed, file);
+    for (offset, len) in [(0, 10), (CHUNK as u64 - 3, 6), (2 * CHUNK as u64, 1000)] {
+        let start = offset as usize;
+        let end = (start + len as usize).min(file.len());
+        assert_eq!(
+            files.get_range(blob, offset, len).await.unwrap().unwrap(),
+            file[start..end],
+            "{offset}+{len}"
+        );
+    }
+    let hash = files.content_hash(blob).await.unwrap().unwrap();
+    assert_eq!(&hash[..16], &provider::stamp_of(&file)[..]);
+
+    let mut changed = file.clone();
+    changed[CHUNK + 5] ^= 1;
+    provider.write("clip", &changed);
+    assert_eq!(files.get_range(blob, 0, 10).await.unwrap(), None);
+    assert_eq!(
+        files
+            .get_stream(blob, Vec::new(), |_, _| {})
+            .await
+            .unwrap_err(),
+        Error::Class("Missing")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A blob stream of a space, once this device holds its first change.
 async fn until_stream(space: &frasil::Space, id: frasil::StreamId) -> frasil::Blobs {
     within(async {

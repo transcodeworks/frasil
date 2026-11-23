@@ -60,6 +60,8 @@ mod agent;
 #[cfg(feature = "ext-app-requests")]
 mod app_requests;
 #[cfg(feature = "adapter-blobs")]
+mod blob_source;
+#[cfg(feature = "adapter-blobs")]
 mod blob_stream;
 // Added for the drive extension, file references and local admission.
 #[cfg(feature = "ext-drive")]

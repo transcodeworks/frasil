@@ -1822,6 +1822,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "frasil-object-memory"
+version = "0.1.0"
+dependencies = [
+ "frasil",
+ "frasil-relay",
+ "frasil-units",
+ "tokio",
+]
+
+[[package]]
 name = "frasil-peers"
 version = "0.1.0"
 dependencies = [
@@ -1839,11 +1849,13 @@ dependencies = [
 name = "frasil-record-memory"
 version = "0.1.0"
 dependencies = [
+ "frasil",
  "frasil-crypto",
  "frasil-events",
  "frasil-keys",
  "frasil-space",
  "frasil-units",
+ "tokio",
 ]
 
 [[package]]

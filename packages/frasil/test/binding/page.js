@@ -340,14 +340,17 @@ const agent = {
   },
 
   /**
-   * Puts a blob of `size` bytes, each from its index, in a new blob stream. Resolves to the
-   * stream's ID, the blob's, and its SHA-256, to compare in another page.
+   * Puts a blob of `size` bytes, each from its index, in a new blob stream: from memory, or with
+   * `fromFile` from a `Blob` read a chunk at a time. Resolves to the stream's ID, the blob's, and
+   * its SHA-256, to compare in another page.
    */
-  async putBlob(space, size) {
+  async putBlob(space, size, fromFile = false) {
     const data = new Uint8Array(size);
     for (let index = 0; index < size; index += 1) data[index] = (index * 31 + 7) & 0xff;
     const blobs = (await this.device.space(space)).createBlobs();
-    const blob = await blobs.put(data, { name: "pattern.bin" });
+    const blob = fromFile
+      ? await blobs.putFile("pattern.bin", new Blob([data]))
+      : await blobs.put(data, { name: "pattern.bin" });
     return { stream: blobs.id, blob, digest: await digest(data) };
   },
 

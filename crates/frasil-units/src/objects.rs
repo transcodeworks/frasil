@@ -32,6 +32,13 @@
 //!
 //! The vectors lower the chunk size to show an object of several chunks;
 //! the `_chunked` forms take it, and the others use [`CHUNK_BYTES`].
+//!
+//! [`ObjectIdPass`] and [`ObjectSealer`] seal the same object a chunk at a
+//! time, for a writer that reads its plaintext twice instead of holding it.
+
+mod sealer;
+
+pub use sealer::{ObjectIdPass, ObjectSealer, SealedLocator};
 
 use crate::body::KeyReference;
 use crate::limits::{CHUNK_BYTES, MAX_OBJECT_BYTES, NONCE_BYTES, TAG_BYTES};

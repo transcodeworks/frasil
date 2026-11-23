@@ -811,7 +811,9 @@ mod blobs {
             &self.opening
         }
 
-        /// Puts a blob, with a name if given.
+        /// Puts a blob, with a name if given. The bytes are sealed in
+        /// memory, beside them: for a large file, [`Blobs::put_file`] and
+        /// [`Blobs::put_at`] hold a few chunks at a time instead.
         ///
         /// # Errors
         ///

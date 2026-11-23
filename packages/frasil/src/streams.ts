@@ -1274,6 +1274,19 @@ export class Blobs extends Handle<raw.Blobs> {
   }
 
   /**
+   * Puts a blob from a `Blob` or a `File`, with a name if given, without holding it whole: the
+   * file is read twice through `slice`, once for the blob's ID and once to seal it a chunk at a
+   * time, so the put holds a few chunks in WebAssembly memory whatever the file's size.
+   * `onProgress` reports the bytes sealed so far, with the file's size. A file that changes
+   * while it is put rejects with `Changed`. Resolves to its ID.
+   */
+  putFile(name: string | undefined, file: Blob, onProgress?: Progress): Promise<BlobId> {
+    const readAt = async (offset: number, length: number): Promise<Uint8Array> =>
+      new Uint8Array(await file.slice(offset, offset + length).arrayBuffer());
+    return callAsync(() => this.raw().putAt(name, readAt, onProgress) as Promise<BlobId>);
+  }
+
+  /**
    * A blob's bytes as a stream, without holding them whole in memory. `onProgress` reports the
    * bytes opened so far. The stream errors if the blob cannot be read.
    */

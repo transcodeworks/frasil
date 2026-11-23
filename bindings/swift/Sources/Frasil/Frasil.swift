@@ -494,7 +494,11 @@ fileprivate struct FfiConverterString: FfiConverter {
             return String()
         }
         let bytes = UnsafeBufferPointer<UInt8>(start: value.data!, count: Int(value.len))
-        return String(bytes: bytes, encoding: String.Encoding.utf8)!
+        // Use Swift's native UTF-8 decoder; `String(bytes:encoding:.utf8)` goes
+        // through Foundation's NSString and silently strips a leading U+FEFF BOM.
+        // Invalid UTF-8 substitutes U+FFFD instead of trapping (unreachable
+        // given Rust's `String` invariant).
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     public static func lower(_ value: String) -> RustBuffer {
@@ -510,7 +514,8 @@ fileprivate struct FfiConverterString: FfiConverter {
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> String {
         let len: Int32 = try readInt(&buf)
-        return String(bytes: try readBytes(&buf, count: Int(len)), encoding: String.Encoding.utf8)!
+        // See `lift` above for why we avoid Foundation's NSString-backed decoder here.
+        return String(decoding: try readBytes(&buf, count: Int(len)), as: UTF8.self)
     }
 
     public static func write(_ value: String, into buf: inout [UInt8]) {
@@ -631,9 +636,8 @@ fileprivate struct UniffiCallbackInterfaceArrivalListener {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceArrivalListener] = [UniffiVTableCallbackInterfaceArrivalListener(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceArrivalListener = UniffiVTableCallbackInterfaceArrivalListener(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterTypeArrivalListener.handleMap.remove(handle: uniffiHandle)
@@ -672,11 +676,23 @@ fileprivate struct UniffiCallbackInterfaceArrivalListener {
                 writeReturn: writeReturn
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceArrivalListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceArrivalListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitArrivalListener() {
-    uniffi_frasil_uniffi_fn_init_callback_vtable_arrivallistener(UniffiCallbackInterfaceArrivalListener.vtable)
+    uniffi_frasil_uniffi_fn_init_callback_vtable_arrivallistener(UniffiCallbackInterfaceArrivalListener.vtablePtr)
 }
 
 #if swift(>=5.8)
@@ -732,6 +748,218 @@ public func FfiConverterTypeArrivalListener_lift(_ handle: UInt64) throws -> Arr
 #endif
 public func FfiConverterTypeArrivalListener_lower(_ value: ArrivalListener) -> UInt64 {
     return FfiConverterTypeArrivalListener.lower(value)
+}
+
+
+
+
+
+
+/**
+ * Hears how far a blob's transfer has gone.
+ */
+public protocol BlobProgressListener: AnyObject, Sendable {
+
+    /**
+     * `bytes` done, of `total` when known. The count never goes back.
+     */
+    func progress(bytes: UInt64, total: UInt64?)
+
+}
+/**
+ * Hears how far a blob's transfer has gone.
+ */
+open class BlobProgressListenerImpl: BlobProgressListener, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_frasil_uniffi_fn_clone_blobprogresslistener(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_frasil_uniffi_fn_free_blobprogresslistener(handle, $0) }
+    }
+
+
+
+
+    /**
+     * `bytes` done, of `total` when known. The count never goes back.
+     */
+open func progress(bytes: UInt64, total: UInt64?)  {try! rustCall() {
+    uniffi_frasil_uniffi_fn_method_blobprogresslistener_progress(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(bytes),
+        FfiConverterOptionUInt64.lower(total),$0
+    )
+}
+}
+
+
+
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceBlobProgressListener {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceBlobProgressListener = UniffiVTableCallbackInterfaceBlobProgressListener(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeBlobProgressListener.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface BlobProgressListener: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeBlobProgressListener.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface BlobProgressListener: handle missing in uniffiClone")
+            }
+        },
+        progress: { (
+            uniffiHandle: UInt64,
+            bytes: UInt64,
+            total: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeBlobProgressListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.progress(
+                     bytes: try FfiConverterUInt64.lift(bytes),
+                     total: try FfiConverterOptionUInt64.lift(total)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceBlobProgressListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceBlobProgressListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitBlobProgressListener() {
+    uniffi_frasil_uniffi_fn_init_callback_vtable_blobprogresslistener(UniffiCallbackInterfaceBlobProgressListener.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBlobProgressListener: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<BlobProgressListener>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = BlobProgressListener
+
+    public static func lift(_ handle: UInt64) throws -> BlobProgressListener {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return BlobProgressListenerImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: BlobProgressListener) -> UInt64 {
+         if let rustImpl = value as? BlobProgressListenerImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BlobProgressListener {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: BlobProgressListener, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlobProgressListener_lift(_ handle: UInt64) throws -> BlobProgressListener {
+    return try FfiConverterTypeBlobProgressListener.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlobProgressListener_lower(_ value: BlobProgressListener) -> UInt64 {
+    return FfiConverterTypeBlobProgressListener.lower(value)
 }
 
 
@@ -845,9 +1073,8 @@ fileprivate struct UniffiCallbackInterfaceBlobStatusListener {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceBlobStatusListener] = [UniffiVTableCallbackInterfaceBlobStatusListener(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceBlobStatusListener = UniffiVTableCallbackInterfaceBlobStatusListener(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterTypeBlobStatusListener.handleMap.remove(handle: uniffiHandle)
@@ -910,11 +1137,23 @@ fileprivate struct UniffiCallbackInterfaceBlobStatusListener {
                 writeReturn: writeReturn
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceBlobStatusListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceBlobStatusListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitBlobStatusListener() {
-    uniffi_frasil_uniffi_fn_init_callback_vtable_blobstatuslistener(UniffiCallbackInterfaceBlobStatusListener.vtable)
+    uniffi_frasil_uniffi_fn_init_callback_vtable_blobstatuslistener(UniffiCallbackInterfaceBlobStatusListener.vtablePtr)
 }
 
 #if swift(>=5.8)
@@ -994,6 +1233,24 @@ public protocol BlobsProtocol: AnyObject, Sendable {
     func get(id: String) async throws  -> Data?
 
     /**
+     * `length` bytes of a blob from byte `offset`, fewer at its end; none
+     * while this device does not hold the blob whole. It opens only the
+     * chunks the range needs, once every check has run on the whole blob
+     * since the device opened; the first range read of a blob reads it
+     * through once, holding a few chunks at a time.
+     */
+    func getRange(id: String, offset: UInt64, length: UInt64) async throws  -> Data?
+
+    /**
+     * Writes a blob's bytes to a new file at `path`, replacing any file
+     * there, fetching them first from connected peers or members while
+     * this device does not hold them whole. It holds a few chunks at a
+     * time, never the blob. `listener` hears the fetch, then the writing.
+     * A read that fails deletes the file.
+     */
+    func getToFile(id: String, path: String, listener: BlobProgressListener?) async throws
+
+    /**
      * The stream's ID.
      */
     func id()  -> String
@@ -1008,6 +1265,15 @@ public protocol BlobsProtocol: AnyObject, Sendable {
      * Puts a blob, with a name if given; returns its ID.
      */
     func put(name: String?, bytes: Data) async throws  -> String
+
+    /**
+     * Puts a blob from the file at `path`, with a name if given; returns
+     * its ID. The file is read twice, once for the blob's ID and once to
+     * seal it a chunk at a time, so a put holds a few chunks in memory
+     * whatever the file's size. The file must not change during the put:
+     * one that does fails `Changed`, and nothing is kept.
+     */
+    func putFile(name: String?, path: String, listener: BlobProgressListener?) async throws  -> String
 
     /**
      * Where a blob's bytes stand on this device.
@@ -1113,6 +1379,54 @@ open func get(id: String)async throws  -> Data?  {
 }
 
     /**
+     * `length` bytes of a blob from byte `offset`, fewer at its end; none
+     * while this device does not hold the blob whole. It opens only the
+     * chunks the range needs, once every check has run on the whole blob
+     * since the device opened; the first range read of a blob reads it
+     * through once, holding a few chunks at a time.
+     */
+open func getRange(id: String, offset: UInt64, length: UInt64)async throws  -> Data?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_blobs_get_range(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(id),FfiConverterUInt64.lower(offset),FfiConverterUInt64.lower(length)
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionData.lift,
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
+     * Writes a blob's bytes to a new file at `path`, replacing any file
+     * there, fetching them first from connected peers or members while
+     * this device does not hold them whole. It holds a few chunks at a
+     * time, never the blob. `listener` hears the fetch, then the writing.
+     * A read that fails deletes the file.
+     */
+open func getToFile(id: String, path: String, listener: BlobProgressListener?)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_blobs_get_to_file(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(id),FfiConverterString.lower(path),FfiConverterOptionTypeBlobProgressListener.lower(listener)
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_void,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_void,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
      * The stream's ID.
      */
 open func id() -> String  {
@@ -1147,6 +1461,30 @@ open func put(name: String?, bytes: Data)async throws  -> String  {
                 uniffi_frasil_uniffi_fn_method_blobs_put(
                     self.uniffiCloneHandle(),
                     FfiConverterOptionString.lower(name),FfiConverterData.lower(bytes)
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
+     * Puts a blob from the file at `path`, with a name if given; returns
+     * its ID. The file is read twice, once for the blob's ID and once to
+     * seal it a chunk at a time, so a put holds a few chunks in memory
+     * whatever the file's size. The file must not change during the put:
+     * one that does fails `Changed`, and nothing is kept.
+     */
+open func putFile(name: String?, path: String, listener: BlobProgressListener?)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_blobs_put_file(
+                    self.uniffiCloneHandle(),
+                    FfiConverterOptionString.lower(name),FfiConverterString.lower(path),FfiConverterOptionTypeBlobProgressListener.lower(listener)
                 )
             },
             pollFunc: ffi_frasil_uniffi_rust_future_poll_rust_buffer,
@@ -1319,9 +1657,8 @@ fileprivate struct UniffiCallbackInterfaceCheckpointListener {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceCheckpointListener] = [UniffiVTableCallbackInterfaceCheckpointListener(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceCheckpointListener = UniffiVTableCallbackInterfaceCheckpointListener(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterTypeCheckpointListener.handleMap.remove(handle: uniffiHandle)
@@ -1360,11 +1697,23 @@ fileprivate struct UniffiCallbackInterfaceCheckpointListener {
                 writeReturn: writeReturn
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceCheckpointListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceCheckpointListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitCheckpointListener() {
-    uniffi_frasil_uniffi_fn_init_callback_vtable_checkpointlistener(UniffiCallbackInterfaceCheckpointListener.vtable)
+    uniffi_frasil_uniffi_fn_init_callback_vtable_checkpointlistener(UniffiCallbackInterfaceCheckpointListener.vtablePtr)
 }
 
 #if swift(>=5.8)
@@ -1517,9 +1866,8 @@ fileprivate struct UniffiCallbackInterfaceDepositListener {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceDepositListener] = [UniffiVTableCallbackInterfaceDepositListener(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceDepositListener = UniffiVTableCallbackInterfaceDepositListener(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterTypeDepositListener.handleMap.remove(handle: uniffiHandle)
@@ -1558,11 +1906,23 @@ fileprivate struct UniffiCallbackInterfaceDepositListener {
                 writeReturn: writeReturn
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceDepositListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceDepositListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitDepositListener() {
-    uniffi_frasil_uniffi_fn_init_callback_vtable_depositlistener(UniffiCallbackInterfaceDepositListener.vtable)
+    uniffi_frasil_uniffi_fn_init_callback_vtable_depositlistener(UniffiCallbackInterfaceDepositListener.vtablePtr)
 }
 
 #if swift(>=5.8)
@@ -2415,9 +2775,8 @@ fileprivate struct UniffiCallbackInterfaceDurableListener {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceDurableListener] = [UniffiVTableCallbackInterfaceDurableListener(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceDurableListener = UniffiVTableCallbackInterfaceDurableListener(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterTypeDurableListener.handleMap.remove(handle: uniffiHandle)
@@ -2480,11 +2839,23 @@ fileprivate struct UniffiCallbackInterfaceDurableListener {
                 writeReturn: writeReturn
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceDurableListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceDurableListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitDurableListener() {
-    uniffi_frasil_uniffi_fn_init_callback_vtable_durablelistener(UniffiCallbackInterfaceDurableListener.vtable)
+    uniffi_frasil_uniffi_fn_init_callback_vtable_durablelistener(UniffiCallbackInterfaceDurableListener.vtablePtr)
 }
 
 #if swift(>=5.8)
@@ -2637,9 +3008,8 @@ fileprivate struct UniffiCallbackInterfaceLossListener {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceLossListener] = [UniffiVTableCallbackInterfaceLossListener(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceLossListener = UniffiVTableCallbackInterfaceLossListener(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterTypeLossListener.handleMap.remove(handle: uniffiHandle)
@@ -2678,11 +3048,23 @@ fileprivate struct UniffiCallbackInterfaceLossListener {
                 writeReturn: writeReturn
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceLossListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceLossListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitLossListener() {
-    uniffi_frasil_uniffi_fn_init_callback_vtable_losslistener(UniffiCallbackInterfaceLossListener.vtable)
+    uniffi_frasil_uniffi_fn_init_callback_vtable_losslistener(UniffiCallbackInterfaceLossListener.vtablePtr)
 }
 
 #if swift(>=5.8)
@@ -3690,9 +4072,8 @@ fileprivate struct UniffiCallbackInterfaceWriteReadyListener {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceWriteReadyListener] = [UniffiVTableCallbackInterfaceWriteReadyListener(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceWriteReadyListener = UniffiVTableCallbackInterfaceWriteReadyListener(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterTypeWriteReadyListener.handleMap.remove(handle: uniffiHandle)
@@ -3755,11 +4136,23 @@ fileprivate struct UniffiCallbackInterfaceWriteReadyListener {
                 writeReturn: writeReturn
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWriteReadyListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceWriteReadyListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitWriteReadyListener() {
-    uniffi_frasil_uniffi_fn_init_callback_vtable_writereadylistener(UniffiCallbackInterfaceWriteReadyListener.vtable)
+    uniffi_frasil_uniffi_fn_init_callback_vtable_writereadylistener(UniffiCallbackInterfaceWriteReadyListener.vtablePtr)
 }
 
 #if swift(>=5.8)
@@ -6039,6 +6432,30 @@ fileprivate struct FfiConverterOptionUInt8: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
+    typealias SwiftType = UInt64?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt64.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
     typealias SwiftType = String?
 
@@ -6079,6 +6496,30 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterData.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeBlobProgressListener: FfiConverterRustBuffer {
+    typealias SwiftType = BlobProgressListener?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeBlobProgressListener.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeBlobProgressListener.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -6300,6 +6741,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_frasil_uniffi_checksum_method_arrivallistener_arrived() != 19655) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_frasil_uniffi_checksum_method_blobprogresslistener_progress() != 26501) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_frasil_uniffi_checksum_method_blobstatuslistener_status() != 42635) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6312,6 +6756,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_frasil_uniffi_checksum_method_blobs_get() != 3798) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_frasil_uniffi_checksum_method_blobs_get_range() != 52548) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobs_get_to_file() != 13908) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_frasil_uniffi_checksum_method_blobs_id() != 54424) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6319,6 +6769,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_frasil_uniffi_checksum_method_blobs_put() != 65268) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobs_put_file() != 39659) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_frasil_uniffi_checksum_method_blobs_status() != 56819) {
@@ -6494,6 +6947,7 @@ private let initializationResult: InitializationResult = {
     }
 
     uniffiCallbackInitArrivalListener()
+    uniffiCallbackInitBlobProgressListener()
     uniffiCallbackInitBlobStatusListener()
     uniffiCallbackInitCheckpointListener()
     uniffiCallbackInitDepositListener()

@@ -284,6 +284,9 @@ mod member;
 mod next_endpoints;
 #[cfg(feature = "iroh")]
 mod node;
+mod object_source;
+#[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
+mod object_upload;
 mod objects;
 mod outbox;
 #[cfg(feature = "iroh")]

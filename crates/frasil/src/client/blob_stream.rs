@@ -10,7 +10,9 @@
 //! waits for the chunks that peers and members send while the device does
 //! not hold the blob whole, reporting the share fetched, then opens the
 //! object chunk by chunk and writes each out as it opens, so that a large
-//! blob never sits whole in memory.
+//! blob never sits whole in memory: a get, a range read and a content hash
+//! each hold a few chunks at a time, and a range read the range too. A
+//! blob the application holds is read from its file the same way.
 //! Progress is `(bytes, total)`, and never goes back. A reference reads the
 //! same way: a peer serves its object to this space, and the key it carries
 //! opens it.
@@ -94,9 +96,12 @@ impl Blobs {
     ///
     /// The reader is read in pieces, and the bytes are gathered whole
     /// before the object is sealed in memory: the blob is held whole, with
-    /// its sealed form, until the put returns. [`Blobs::put_from`] reads a
-    /// file the application's provider holds without gathering its
-    /// plaintext.
+    /// its sealed form, until the put returns, since a reader read once
+    /// cannot give the plaintext again for the second pass the object's ID
+    /// needs. A source that can be read twice puts with a few chunks in
+    /// memory: [`Blobs::put_seekable`], [`Blobs::put_file`] and
+    /// [`Blobs::put_at`]. [`Blobs::put_from`] reads a file the
+    /// application's provider holds without gathering its plaintext.
     ///
     /// # Errors
     ///
@@ -165,24 +170,12 @@ impl Blobs {
             self.fetched(space, locator, size, &mut progress).await?;
         }
         let mut written = 0u64;
-        let mut out = |piece: &[u8], written: &mut u64| {
-            *written += piece.len() as u64;
-            progress.report(*written, Some(size));
-        };
-        match self.plain(&entry, 0..u64::MAX).await? {
-            Plain::Whole(bytes) => {
-                for piece in bytes.chunks(PIECE) {
-                    write_all(&mut writer, piece).await?;
-                    out(piece, &mut written);
-                }
-            }
-            Plain::Chunks(mut chunks) => {
-                while let Some((_, chunk)) = chunks.next().await? {
-                    for piece in chunk.chunks(PIECE) {
-                        write_all(&mut writer, piece).await?;
-                        out(piece, &mut written);
-                    }
-                }
+        let mut chunks = self.plain(&entry, 0..u64::MAX).await?;
+        while let Some((_, chunk)) = chunks.next().await? {
+            for piece in chunk.chunks(PIECE) {
+                write_all(&mut writer, piece).await?;
+                written += piece.len() as u64;
+                progress.report(written, Some(size));
             }
         }
         poll_fn(|cx| Pin::new(&mut writer).poll_flush(cx))
@@ -214,18 +207,18 @@ impl Blobs {
             return Ok(Some(*hash));
         }
         let mut hasher = frasil_crypto::primitives::Sha256Hasher::new();
-        match self.plain(&entry, 0..u64::MAX).await {
-            Ok(Plain::Whole(bytes)) => hasher.update(&bytes),
-            Ok(Plain::Chunks(mut chunks)) => loop {
-                match chunks.next().await {
-                    Ok(Some((_, chunk))) => hasher.update(&chunk),
-                    Ok(None) => break,
-                    Err(Error::Class("Missing" | "Sealed")) => return Ok(None),
-                    Err(error) => return Err(error),
-                }
-            },
+        let mut chunks = match self.plain(&entry, 0..u64::MAX).await {
+            Ok(chunks) => chunks,
             Err(Error::Class("Missing" | "Sealed")) => return Ok(None),
             Err(error) => return Err(error),
+        };
+        loop {
+            match chunks.next().await {
+                Ok(Some((_, chunk))) => hasher.update(&chunk),
+                Ok(None) => break,
+                Err(Error::Class("Missing" | "Sealed")) => return Ok(None),
+                Err(error) => return Err(error),
+            }
         }
         let hash = hasher.finish();
         hashes
@@ -237,10 +230,14 @@ impl Blobs {
 
     /// `len` bytes of a blob from byte `offset`, fewer at its end; `None`
     /// while this device does not hold the blob whole yet, as for
-    /// [`Blobs::get`]. Only the chunks that hold the range are opened,
-    /// once the device has read the blob whole this session: the first
-    /// range read of a blob opens it whole once, without keeping it, so
-    /// that every check of units.md, 3.3 runs on it.
+    /// [`Blobs::get`]. It holds a few chunks and the range, never the
+    /// blob. Only the chunks that hold the range are opened once every
+    /// check of units.md, 3.3 has run on the whole blob since the device
+    /// opened: until then a range read runs them first, in one pass over
+    /// the stored chunks that keeps only the range, so that the first
+    /// range read of a blob in a session reads all of it. A blob the
+    /// application holds is read from its file, through to its end
+    /// while the object ID is checked.
     ///
     /// # Errors
     ///
@@ -253,7 +250,7 @@ impl Blobs {
         }
         let chunk = frasil_units::limits::CHUNK_BYTES as u64;
         let chunks = offset / chunk..end.div_ceil(chunk);
-        let plain = match self.plain(&entry, chunks).await {
+        let mut plain = match self.plain(&entry, chunks).await {
             Ok(plain) => plain,
             Err(Error::Class("Missing")) => return Ok(None),
             Err(error) => return Err(error),
@@ -268,16 +265,13 @@ impl Blobs {
                 .map_or_else(Vec::new, |(start, stop)| bytes[start..stop].to_vec())
         };
         let mut out = Vec::with_capacity(usize::try_from(end - offset).unwrap_or(0));
-        match plain {
-            Plain::Whole(bytes) => out.extend(span(0, &bytes)),
-            Plain::Chunks(mut chunks) => loop {
-                match chunks.next().await {
-                    Ok(Some((index, bytes))) => out.extend(span(index * chunk, &bytes)),
-                    Ok(None) => break,
-                    Err(Error::Class("Missing")) => return Ok(None),
-                    Err(error) => return Err(error),
-                }
-            },
+        loop {
+            match plain.next().await {
+                Ok(Some((index, bytes))) => out.extend(span(index * chunk, &bytes)),
+                Ok(None) => break,
+                Err(Error::Class("Missing")) => return Ok(None),
+                Err(error) => return Err(error),
+            }
         }
         Ok(Some(out))
     }
@@ -468,8 +462,9 @@ impl Blobs {
         Err(Error::Class("Missing"))
     }
 
-    /// Whether the device can give an object's bytes. Under `held`, a file
-    /// found changed is withdrawn, and its object is no longer stored.
+    /// Whether the device can give an object's bytes, by its first chunk
+    /// alone, as an upload starts: never the whole object. Under `held`, a
+    /// file found changed is withdrawn, and its object is no longer stored.
     #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
     async fn stored(
         &self,
@@ -479,7 +474,7 @@ impl Blobs {
         self.space()
             .device
             .engine()
-            .stored_object(space, locator)
+            .object_upload(space, locator)
             .await
             .is_some()
     }

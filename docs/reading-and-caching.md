@@ -174,6 +174,16 @@ keys pending (the key the blob, or the change that adds it, is sealed under
 has not reached this device yet; connecting changes nothing until a member
 or a peer delivers it), or withdrawn.
 
+A blob this device put is readable here at once; whether it has left the
+device is a separate question. In Rust, `blobs.is_durable(id)` is `false`
+while the change that put it waits for an always-on peer's
+acknowledgement, which comes only once the peer holds the blob's bytes,
+and `blobs.pending()` lists the stream's blobs still waiting. Both read the
+device's store, so after a reopen they say what the device uploads once it
+connects; an upload a peer holds part of goes on from there. Ask again on
+`Event::PendingChanges`. In a space with no always-on peer, a member's
+acknowledgement counts instead, and the member fetches the bytes after.
+
 `device.arrivals()` gives each space and each stream the device holds for
 the first time, from the moment it is asked for: `Arrival::Space` once a
 space's first events arrive, then `Arrival::Stream` for each of its streams,
@@ -215,15 +225,22 @@ needs.
   opens a blob chunk by chunk, about a mebibyte at a time, and writes each
   chunk as it opens, so a large file never sits whole in memory.
   `get_range(id, offset, len)` (`getRange`) returns part of a blob, opening
-  only the chunks that hold it.
+  only the chunks that hold it. `content_hash` reads the same way. A read
+  holds a few chunks at a time, plus the range it returns, whether the
+  device keeps the blob sealed, in memory, or as a file it holds. From
+  Swift and Kotlin, `getToFile(id, path, listener)` writes a blob to a file
+  the same way.
 
 Every check of the object format still runs. The stored bytes are checked
 against the blob's locator before any plaintext goes out; each chunk is
 authenticated before it is used; and a read of the whole blob checks the
 plaintext's ID before it gives the last chunk. A stream that fails part way
 has written a prefix of the blob: discard it. The first range read of a blob
-on a device opens the blob whole once, without keeping it, so that the
-plaintext's ID is checked; later range reads open only their chunks.
+since the device opened reads the whole blob once, a few chunks at a time
+and keeping only the range, so that every check runs on it; later range
+reads open only their chunks. A range of a blob the application holds as a
+file is read through the whole file each time, so that its ID is checked;
+to seek in such a file, read the file itself (`materialise`).
 
 A cache in the page, for example, keeps object URLs by `BlobId`, at most a
 few hundred, and revokes the least recently used:

@@ -11,6 +11,9 @@ frasil-units = { path = "../../crates/frasil-units" }
 frasil-events = { path = "../../crates/frasil-events" }
 frasil-keys = { path = "../../crates/frasil-keys" }
 frasil-crypto = { path = "../../crates/frasil-crypto" }
+# A blob read back from a device's store (blob_read.rs).
+frasil = { path = "../../crates/frasil", default-features = false, features = ["sqlite", "adapter-blobs"] }
+tokio = { workspace = true, features = ["rt", "macros", "io-util"] }
 
 # The allocator instrumentation is confined to its integration-test binary.
 [lints.rust]
