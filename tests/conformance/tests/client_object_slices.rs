@@ -755,3 +755,43 @@ async fn a_refused_object_stops_its_other_fetches_and_tells_their_holders() {
     alice_link.close();
     peer.shutdown().await;
 }
+
+/// The connection reports an object while any fetch of it runs: a fetch
+/// that ends beside another of the same object leaves the object's
+/// progress where it is, and the last to end takes it away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_object_is_reported_while_any_fetch_of_it_runs() {
+    let peer = spawn_loopback().await.unwrap();
+    let (proxy, faults) = spawn_proxy(&peer.origin).await;
+    let (_alice, alice_link, bob, _store, space, locator, _big) =
+        setup_with(&peer.origin, SIX_CHUNKS).await;
+    bob.fetch_objects_on_demand();
+    let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
+
+    // Chunk 1 waits for slice 2, which is held back.
+    faults.hold(&[2]);
+    let waiting = bob.fetch_chunks(space, locator, 1..2, FetchPriority::Position);
+    until(|| async { faults.asked(&locator) == vec![0, 1, 2] }).await;
+    assert!(link.status().fetching.is_empty(), "nothing is held yet");
+
+    // Chunk 5 is fetched beside it, and its fetch ends.
+    let last = bob.fetch_chunks(space, locator, 5..6, FetchPriority::Position);
+    until(|| async { holds(&bob, &space, &locator, 5).await }).await;
+    until(|| async { faults.asked(&locator) == vec![0, 1, 2, 0, 5] }).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (held, total) = link
+        .status()
+        .fetching
+        .get(&locator)
+        .copied()
+        .expect("the fetch of chunk 1 still runs");
+    assert!(held > 0 && total.is_some_and(|total| held < total));
+
+    faults.hold(&[]);
+    until(|| async { holds(&bob, &space, &locator, 1).await }).await;
+    until(|| async { link.status().fetching.is_empty() }).await;
+    drop((waiting, last));
+    link.close();
+    alice_link.close();
+    peer.shutdown().await;
+}

@@ -116,7 +116,9 @@ pub struct PeerStatus {
     pub lost: BTreeSet<(EventId, crate::outbox::LossClass)>,
     /// Objects being fetched on this connection: the stored bytes the
     /// device holds of each so far, whichever chunks came first, and the
-    /// stored length once known.
+    /// stored length once known. An object is here from the first of its
+    /// bytes the device holds, while a fetch of it runs by slices or
+    /// chunks of it are awaited on a stream, and no longer.
     pub fetching: BTreeMap<Locator, (u64, Option<u64>)>,
     /// Holds the peer accepted (ext-libraries.md, 3.7 Registering a
     /// hold): the holding space and the object's locator.
@@ -4091,10 +4093,14 @@ impl Driver {
             chunk,
         };
         let (taken, wants) = self.device.take_chunk(&mut attached.session, part).await?;
-        // The fetch's progress: the stored bytes held of the object.
+        // The fetch's progress, while chunks of the object are awaited or
+        // yet to ask for: the stored bytes held of it.
+        let fetching = attached.session.is_fetching(&locator);
         let held = match taken {
-            Taken::Kept | Taken::Dropped => self.device.object_bytes_held(&space, &locator).await,
-            Taken::Refused | Taken::Whole => None,
+            Taken::Kept | Taken::Dropped if fetching => {
+                self.device.object_bytes_held(&space, &locator).await
+            }
+            _ => None,
         };
         {
             let mut status = self.status();
@@ -4662,6 +4668,11 @@ impl Driver {
                 }
                 continue;
             };
+            // What the device holds of it already is the fetch's progress
+            // from its start.
+            if let Some(held) = self.device.object_bytes_held(&space, &locator).await {
+                self.status().fetching.insert(locator, held);
+            }
             // Its first slices are claimed before it runs, so that a fetch
             // of the neighbouring chunks started beside it shares them.
             let mut claims = Claims::new(self.fetches.slices.clone(), space, locator);
@@ -4760,7 +4771,16 @@ impl Driver {
         } = fetched;
         self.fetches.running.remove(&serial);
         let (space, locator, id) = (request.space, request.locator, request.id);
-        self.status().fetching.remove(&locator);
+        // The object's progress stays while another fetch of it runs.
+        let fetching = |fetches: &SliceFetches| {
+            fetches
+                .running
+                .values()
+                .any(|fetch| fetch.space == space && fetch.locator == locator)
+        };
+        if !fetching(&self.fetches) {
+            self.status().fetching.remove(&locator);
+        }
         if matches!(ended, SliceFetch::GaveWay) {
             // It waits again, behind the request it gave way to.
             self.fetches.queue.push(request);
