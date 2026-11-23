@@ -789,6 +789,12 @@ pub(crate) struct HeldEntry {
     pub locator: Option<Locator>,
 }
 
+/// How many chunks ahead of the one a receive takes next wait in memory
+/// for it, each a sealed chunk of about a mebibyte: as many as the device
+/// reads of an object at a time. A chunk further ahead is not taken, and
+/// is asked for again.
+const WAITING_MOST: u64 = 8;
+
 /// What became of a part of an object the device receives through a
 /// provider ([`Engine::receive_held_part`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -799,7 +805,8 @@ pub(crate) enum HeldPart {
     /// Not for the provider: the part is stored sealed.
     Sealed,
     /// Not taken, and not kept anywhere: no receive of the object runs
-    /// that this part could start, or the receive ended on it.
+    /// that this part could start, the receive does not reach this chunk
+    /// yet, or it ended on it.
     Left,
 }
 
@@ -2086,7 +2093,8 @@ impl Engine {
     /// stored sealed, when the device lacks the key to open the object
     /// yet, or holds chunks of it sealed already: the rest joins them,
     /// whichever chunk it is. A part no receive takes is
-    /// [`HeldPart::Left`]: one with no receive to join. A chunk that
+    /// [`HeldPart::Left`]: one with no receive to join, or more than a
+    /// few chunks ahead of the one the receive takes next. A chunk that
     /// fails is the end of this receive: the writer is aborted, and the
     /// device asks again. A file the commit does not keep is forgotten.
     pub(crate) async fn receive_held_part(
@@ -2168,11 +2176,15 @@ impl Engine {
             return Ok(HeldPart::Left);
         };
         // Only a chunk of the object waits: its index below the header's
-        // chunk count (units.md, "Reading an object", step 4). A chunk
-        // the receive wrote already is held.
+        // chunk count (units.md, "Reading an object", step 4), and no
+        // more than a few chunks ahead of the one the receive takes
+        // next, so that a side that withholds one chunk and sends the
+        // rest fills no memory. A chunk the receive wrote already is
+        // held.
         let count = chunk_count(receiving.receiver.header().size, CHUNK_BYTES as u64);
-        if part.index >= receiving.receiver.next() {
-            if part.index >= count {
+        let next = receiving.receiver.next();
+        if part.index >= next {
+            if part.index >= count || part.index - next > WAITING_MOST {
                 return Ok(HeldPart::Left);
             }
             receiving.waiting.insert(part.index, part.chunk.clone());

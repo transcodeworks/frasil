@@ -5,7 +5,9 @@
 //! first of each answer with the header; a chunk that arrives with no
 //! header the device can check it against is not kept, and an answer
 //! nobody wants any more is dropped as it arrives. Chunks that get no
-//! answer are asked for again, a few times in a row.
+//! answer are asked for again, a few times in a row, and a device that
+//! holds its blobs as files keeps only a few chunks ahead of the one it
+//! takes next.
 #![cfg(feature = "adapter-blobs")]
 
 #[path = "support/provider.rs"]
@@ -40,6 +42,11 @@ struct Blob {
 }
 
 async fn blob() -> Blob {
+    blob_of(frasil_units::limits::CHUNK_BYTES + 5).await
+}
+
+/// [`blob`] with a blob of `size` bytes.
+async fn blob_of(size: usize) -> Blob {
     let alice = device().await;
     let bob = device().await;
     let space = alice.create_space().await.unwrap();
@@ -56,7 +63,7 @@ async fn blob() -> Blob {
     let files = alice
         .new_stream(<frasil_adapter_blobs::Blobs as frasil_adapter::Adapter>::TYPE)
         .unwrap();
-    let plaintext = vec![9u8; frasil_units::limits::CHUNK_BYTES + 5];
+    let plaintext = vec![9u8; size];
     let (_, locator) = alice
         .put_blob(space, &files, Some("photo"), &plaintext)
         .await
@@ -845,4 +852,78 @@ async fn a_blob_with_a_chunk_stored_sealed_takes_the_rest_sealed() {
     assert_eq!(files.read(&record.token), blob.plaintext);
     assert!(!bobs.is_fetching(&blob.locator));
     drop((first, rest));
+}
+
+/// A device that holds its blobs as files takes a blob in order
+/// (at-rest.md, "Held objects", receiving), and keeps only a few chunks
+/// that arrive ahead of the one it takes next: a member that withholds
+/// one chunk and sends the rest leaves no more than those in memory. The
+/// chunks further ahead are not kept and do not count as arrived: they
+/// are asked for again once the receive reaches them.
+#[tokio::test]
+async fn chunks_far_ahead_of_a_receive_are_asked_for_again() {
+    let blob = blob_of(11 * frasil_units::limits::CHUNK_BYTES + 5).await;
+    let files = provider::DirProvider::new(provider::temp_dir("intake-far-ahead"));
+    blob.bob.hold_all_objects(files.clone());
+    let (mut bobs, mut alices) = synced_on_demand(&blob).await;
+    let by_alice = Acknowledger::Member(blob.alice.device_id().0);
+    let by_bob = Acknowledger::Member(blob.bob.device_id().0);
+    let fetch = blob.bob.fetch_chunks(
+        blob.space,
+        blob.locator,
+        0..u64::MAX,
+        FetchPriority::Background,
+    );
+    let asked = blob.bob.sync_fetches(&mut bobs).await;
+    assert_eq!(wants(&asked), vec![(0, 64)]);
+    let mut answers = Vec::new();
+    for message in asked {
+        answers.extend(
+            blob.alice
+                .sync_receive(&mut alices, by_bob, message)
+                .await
+                .unwrap(),
+        );
+    }
+    assert_eq!(answers.len(), 12);
+    // Chunk 1 is withheld; chunks 2 to 11 arrive.
+    let withheld = answers.remove(1);
+    for answer in answers {
+        let replies = blob
+            .bob
+            .sync_receive(&mut bobs, by_alice, answer)
+            .await
+            .unwrap();
+        assert!(wants(&replies).is_empty(), "{replies:?}");
+    }
+    assert!(bobs.awaits_chunk(&blob.locator, 1));
+    assert!(
+        blob.bob
+            .held_record(&blob.space, &blob.locator)
+            .await
+            .is_none()
+    );
+
+    // Chunk 1 arrives: the receive takes it and the eight chunks that
+    // waited for it, and the last two are asked for again.
+    let replies = blob
+        .bob
+        .sync_receive(&mut bobs, by_alice, withheld)
+        .await
+        .unwrap();
+    assert_eq!(wants(&replies), vec![(10, 2)]);
+    assert!(
+        blob.bob
+            .held_record(&blob.space, &blob.locator)
+            .await
+            .is_none()
+    );
+    pump(&blob, &mut bobs, &mut alices, replies).await;
+    let record = blob
+        .bob
+        .held_record(&blob.space, &blob.locator)
+        .await
+        .expect("whole, and held as a file");
+    assert_eq!(files.read(&record.token), blob.plaintext);
+    assert_eq!(fetch.end(), None);
 }
