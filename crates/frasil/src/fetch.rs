@@ -12,7 +12,9 @@
 //! once, and asks once for a slice two of them need ([`Slices`]). On a
 //! stream, a request becomes `ObjectWant`s ([`Asks`]); nothing on the
 //! wire cancels one, so an answer no longer wanted is dropped as it
-//! arrives.
+//! arrives. A connection that asks an object's chunks of the other side
+//! no further says so, and once no connection of the space will try, the
+//! holders of the requests for it hear why ([`FetchEnd`]).
 //!
 //! A fetch changes nothing of what is checked: every chunk passes
 //! [`Engine::receive_part`](crate::device::Engine) before it is kept, and
@@ -96,9 +98,9 @@ impl Cancel {
     }
 }
 
-/// Why a connection gave a request up for good: it asks the other side
-/// for no more of the object. Another connection of the space may still
-/// serve the request.
+/// Why the connections of a space gave a request up: each that takes the
+/// device's requests asks the other side for no more of the object. A
+/// connection made later may still serve the request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchEnd {
     /// A chunk the other side sent failed its checks (units.md, 3.3
@@ -174,6 +176,42 @@ pub(crate) struct Requests {
 struct Live {
     next: u64,
     requests: BTreeMap<u64, Request>,
+    /// The connections that take the device's requests, each for one
+    /// space, by the numbers given them.
+    takers: BTreeMap<u64, Taking>,
+}
+
+/// One connection that takes a space's requests.
+#[derive(Debug)]
+struct Taking {
+    space: EventId,
+    /// The objects it gave up for good, and why.
+    given_up: BTreeMap<Locator, FetchEnd>,
+}
+
+impl Live {
+    /// Why no connection will fetch an object: `None` while no
+    /// connection takes the space's requests, or one of them has not
+    /// given the object up. `but` leaves one connection out.
+    fn given_up(&self, space: &EventId, locator: &Locator, but: Option<u64>) -> Option<FetchEnd> {
+        let mut end = None;
+        for (id, taking) in &self.takers {
+            if taking.space != *space || but == Some(*id) {
+                continue;
+            }
+            end = Some(*taking.given_up.get(locator)?);
+        }
+        end
+    }
+
+    /// Tells each request still wanted for an object why it ended.
+    fn tell(&self, space: &EventId, locator: &Locator, end: FetchEnd) {
+        for request in self.requests.values() {
+            if request.space == *space && request.locator == *locator {
+                request.ended.send_replace(Some(end));
+            }
+        }
+    }
 }
 
 impl Default for Requests {
@@ -191,7 +229,8 @@ impl Requests {
     }
 
     /// Makes a request: wanted until its [`Fetch`] is cancelled or
-    /// dropped.
+    /// dropped. One for an object that every connection of the space
+    /// gave up already has its end from the start.
     pub(crate) fn add(
         self: &Arc<Self>,
         space: EventId,
@@ -200,9 +239,9 @@ impl Requests {
         priority: FetchPriority,
     ) -> Fetch {
         let cancel = Cancel::new();
-        let ended = Arc::new(watch::channel(None).0);
-        let id = {
+        let (id, ended) = {
             let mut live = self.live();
+            let ended = Arc::new(watch::channel(live.given_up(&space, &locator, None)).0);
             live.next += 1;
             let id = live.next;
             live.requests.insert(
@@ -217,7 +256,7 @@ impl Requests {
                     ended: ended.clone(),
                 },
             );
-            id
+            (id, ended)
         };
         self.changed.send_modify(|count| *count += 1);
         Fetch {
@@ -228,13 +267,23 @@ impl Requests {
         }
     }
 
-    /// A connection gave an object up for good: each request still
-    /// wanted for it hears why.
-    pub(crate) fn give_up(&self, space: &EventId, locator: &Locator, end: FetchEnd) {
-        for request in self.live().requests.values() {
-            if request.space == *space && request.locator == *locator {
-                request.ended.send_replace(Some(end));
-            }
+    /// A connection that takes a space's requests from now on, until
+    /// the [`Taker`] is dropped.
+    pub(crate) fn attach(self: &Arc<Self>, space: EventId) -> Taker {
+        let mut live = self.live();
+        live.next += 1;
+        let id = live.next;
+        live.takers.insert(
+            id,
+            Taking {
+                space,
+                given_up: BTreeMap::new(),
+            },
+        );
+        Taker {
+            id,
+            space,
+            requests: self.clone(),
         }
     }
 
@@ -296,6 +345,52 @@ impl Requests {
     }
 }
 
+/// One connection's place among those that take a space's requests
+/// ([`Requests::attach`]): through it the connection says which objects
+/// it asks the other side for no further. The holders of the requests for
+/// an object hear of its end once every connection of the space that
+/// takes requests gave it up, so that none hears of an end while another
+/// connection will still try.
+#[derive(Debug)]
+pub(crate) struct Taker {
+    id: u64,
+    space: EventId,
+    requests: Arc<Requests>,
+}
+
+impl Taker {
+    /// The connection gave an object up for good: it is not asked of the
+    /// other side again on this connection. Once no other connection of
+    /// the space will try, each request still wanted for it hears why,
+    /// and so does each made afterwards.
+    pub(crate) fn give_up(&self, locator: &Locator, end: FetchEnd) {
+        let mut live = self.requests.live();
+        if let Some(taking) = live.takers.get_mut(&self.id) {
+            taking.given_up.insert(*locator, end);
+        }
+        if live.given_up(&self.space, locator, None).is_some() {
+            live.tell(&self.space, locator, end);
+        }
+    }
+}
+
+impl Drop for Taker {
+    fn drop(&mut self) {
+        let mut live = self.requests.live();
+        live.takers.remove(&self.id);
+        // The connections that stay may each have given up an object
+        // this one would still have tried.
+        for request in live.requests.values() {
+            if request.space != self.space || request.ended.borrow().is_some() {
+                continue;
+            }
+            if let Some(end) = live.given_up(&request.space, &request.locator, None) {
+                request.ended.send_replace(Some(end));
+            }
+        }
+    }
+}
+
 /// A request for chunks of an object, wanted while this is held: dropping
 /// it cancels the request.
 #[derive(Debug)]
@@ -319,18 +414,21 @@ impl Fetch {
         self.cancel.is_cancelled()
     }
 
-    /// Why a connection gave the request up for good, if one did: the
-    /// latest to do so. A fetch that only stopped, because its transfer
-    /// was cut or the other side lacks the object for now, is tried
-    /// again and is not reported here.
+    /// Why the space's connections gave the request up, once each that
+    /// takes the device's requests did: the latest to do so. While
+    /// another connection will still try, nothing is reported. A fetch
+    /// that only stopped, because its transfer was cut or the other side
+    /// lacks the object for now, is tried again and is not reported
+    /// here.
     pub fn end(&self) -> Option<FetchEnd> {
         *self.ended.borrow()
     }
 
-    /// Ready once a connection gave the request up for good, with why: a
-    /// holder that waits for the chunks can stop waiting for them from
-    /// that connection. Never ready for a request no connection gives
-    /// up.
+    /// Ready once the space's connections gave the request up, with why
+    /// ([`end`](Self::end)): a holder that waits for the chunks can stop
+    /// waiting for them, until another connection is made. Ready at once
+    /// for a request made for an object they gave up before. Never ready
+    /// for a request some connection goes on trying.
     pub async fn ended(&self) -> FetchEnd {
         let mut ended = self.ended.subscribe();
         loop {
@@ -997,30 +1095,67 @@ mod tests {
         assert_eq!(super::again_after(u32::MAX), Duration::from_secs(30));
     }
 
-    /// A request a connection gives up for good tells its holder why,
-    /// and no other request hears of it.
+    /// A request the space's one connection gives up for good tells its
+    /// holder why, no other request hears of it, and a request made
+    /// afterwards for the object hears it at once.
     #[tokio::test]
     async fn a_request_given_up_tells_its_holder_why() {
         let requests = Arc::new(Requests::default());
+        let taker = requests.attach(SPACE);
         let fetch = requests.add(SPACE, [2; 64], 0..4, FetchPriority::Position);
         let other = requests.add(SPACE, [3; 64], 0..4, FetchPriority::Position);
         assert_eq!(fetch.end(), None);
-        let waiting = {
-            let requests = requests.clone();
-            async move {
-                tokio::task::yield_now().await;
-                requests.give_up(&SPACE, &[2; 64], FetchEnd::Refused);
-            }
+        let waiting = async {
+            tokio::task::yield_now().await;
+            taker.give_up(&[2; 64], FetchEnd::Refused);
         };
         let (end, ()) = tokio::join!(fetch.ended(), waiting);
         assert_eq!(end, FetchEnd::Refused);
         assert_eq!(fetch.end(), Some(FetchEnd::Refused));
         assert_eq!(other.end(), None);
-        // The request stays wanted: another connection may serve it.
+        // The request stays wanted: a connection made later may serve it.
         assert!(!fetch.is_cancelled());
         assert_eq!(requests.of(&SPACE).len(), 2);
-        requests.give_up(&SPACE, &[2; 64], FetchEnd::Malformed);
+        taker.give_up(&[2; 64], FetchEnd::Malformed);
         assert_eq!(fetch.ended().await, FetchEnd::Malformed);
+        // Made after the connection gave the object up.
+        let later = requests.add(SPACE, [2; 64], 0..1, FetchPriority::Background);
+        assert_eq!(later.ended().await, FetchEnd::Malformed);
+        // Another space's requests hear nothing of it.
+        let elsewhere = requests.add(EventId([9; 32]), [2; 64], 0..1, FetchPriority::Position);
+        assert_eq!(elsewhere.end(), None);
+        // The connection gone, nobody has given the object up.
+        drop(taker);
+        let after = requests.add(SPACE, [2; 64], 0..1, FetchPriority::Background);
+        assert_eq!(after.end(), None);
+    }
+
+    /// While another connection of the space will still try, a request
+    /// hears of no end: it hears once each connection gave the object
+    /// up, or the last that had not is gone.
+    #[tokio::test]
+    async fn a_request_hears_no_end_while_another_connection_will_try() {
+        let requests = Arc::new(Requests::default());
+        let first = requests.attach(SPACE);
+        let second = requests.attach(SPACE);
+        let elsewhere = requests.attach(EventId([9; 32]));
+        let fetch = requests.add(SPACE, [2; 64], 0..4, FetchPriority::Position);
+        first.give_up(&[2; 64], FetchEnd::Refused);
+        assert_eq!(fetch.end(), None);
+        let later = requests.add(SPACE, [2; 64], 4..5, FetchPriority::Position);
+        assert_eq!(later.end(), None);
+        second.give_up(&[2; 64], FetchEnd::Malformed);
+        assert_eq!(fetch.ended().await, FetchEnd::Malformed);
+        assert_eq!(later.ended().await, FetchEnd::Malformed);
+
+        // The connection that would have tried goes: those that stay
+        // gave the object up.
+        let other = requests.add(SPACE, [3; 64], 0..1, FetchPriority::Position);
+        first.give_up(&[3; 64], FetchEnd::Refused);
+        assert_eq!(other.end(), None);
+        drop(second);
+        assert_eq!(other.ended().await, FetchEnd::Refused);
+        drop((first, elsewhere));
     }
 
     /// Two fetches that need one slice ask for it once, and it goes once

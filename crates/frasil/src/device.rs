@@ -1115,7 +1115,10 @@ impl Engine {
     /// wanted while the [`Fetch`](crate::fetch::Fetch) returned is held:
     /// cancelling or dropping it stops a transfer for it before its next
     /// slice, and a chunk that arrives for it alone is then not kept. An
-    /// end past the object's last chunk means to its end.
+    /// end past the object's last chunk means to its end. The
+    /// [`Fetch`](crate::fetch::Fetch) says when the space's connections
+    /// gave the object up, at once when they did before the request was
+    /// made.
     ///
     /// Every chunk is checked as it arrives, as for any fetch (units.md,
     /// 3.3 Reading an object), and kept beside what the device holds of
@@ -3674,11 +3677,11 @@ impl Engine {
             Received::Refused => {
                 // Not asked of this side again; every other connection
                 // of the space asks for it, and who asked for its chunks
-                // hears of it.
+                // hears of it once none of them will try.
                 session.refuse_object(locator);
-                self.shared
-                    .fetches
-                    .give_up(&space, &locator, crate::fetch::FetchEnd::Refused);
+                session
+                    .taker(&self.shared.fetches)
+                    .give_up(&locator, crate::fetch::FetchEnd::Refused);
                 let _ = self.shared.notices.send(Notice {
                     space,
                     placed: Vec::new(),
@@ -3854,6 +3857,8 @@ impl Engine {
         session: &mut SyncSession,
         announced: bool,
     ) -> Vec<SyncMessage> {
+        // The session takes the space's requests from now on.
+        session.taker(&self.shared.fetches);
         let requests = self.shared.fetches.of(&session.space());
         session.keep_requests(&requests.iter().map(|request| request.id).collect());
         let mut out = Vec::new();

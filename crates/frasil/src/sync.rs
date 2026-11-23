@@ -17,7 +17,7 @@
 //! It turns what arrives into [`Action`]s; the device places events, stores
 //! them and sends what the session asks.
 
-use crate::fetch::{Asks, CHUNKS_PER_WANT, Want};
+use crate::fetch::{Asks, CHUNKS_PER_WANT, Requests, Taker, Want};
 use crate::replica::Replica;
 use frasil_adapter::Locator;
 use frasil_crypto::device::DeviceId;
@@ -27,6 +27,7 @@ use frasil_units::limits::{MAX_MESSAGE_BYTES, MAX_MESSAGE_ITEMS};
 use frasil_units::messages::{Message, SyncMessage, VectorEntry};
 use frasil_units::stream::StreamId;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// The room a message keeps for its own keys, beside its events.
 const MESSAGE_OVERHEAD: usize = 64;
@@ -136,6 +137,10 @@ pub struct SyncSession {
     /// The device's requests for chunks taken on this session, by their
     /// numbers.
     requested: BTreeSet<u64>,
+    /// The session's place among the connections that take the device's
+    /// requests, from the first time it takes them or gives an object
+    /// up; copies of the session share it.
+    taker: Option<Arc<Taker>>,
     /// Objects the other side announced in `ObjectHave` that this side did
     /// not hold whole then: asked for once the device finds them missing.
     announced: BTreeSet<Locator>,
@@ -173,6 +178,7 @@ impl SyncSession {
             serving: Serving::Everything,
             asks: Asks::default(),
             requested: BTreeSet::new(),
+            taker: None,
             announced: BTreeSet::new(),
             refused: BTreeSet::new(),
             snapshot: SnapshotAsk::NotAsked,
@@ -345,6 +351,16 @@ impl SyncSession {
     /// this session hears of it.
     pub(crate) fn take_request(&mut self, id: u64) -> bool {
         self.requested.insert(id)
+    }
+
+    /// The session's place among the connections that take the requests
+    /// made of the device ([`Requests::attach`]), taken the first time
+    /// this is called: through it the session says which objects it asks
+    /// the other side for no further.
+    pub(crate) fn taker(&mut self, requests: &Arc<Requests>) -> &Taker {
+        let space = self.space;
+        self.taker
+            .get_or_insert_with(|| Arc::new(requests.attach(space)))
     }
 
     /// Forgets the device's requests that ended.

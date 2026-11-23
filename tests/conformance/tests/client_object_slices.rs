@@ -9,11 +9,11 @@
 //! the chunks the device holds, wherever they are. A device that holds
 //! its blobs as files takes an object in order, whichever chunks are
 //! asked for. A request whose transfer is cut is tried again after a
-//! wait, and one whose slices the peer sends wrong is given up for good,
-//! which its holder hears. Two fetches that end one object leave it
-//! whole, and a space paused while a fetch runs fetches nothing more
-//! until it is resumed. Every wait has a deadline, and nothing leaves the
-//! host.
+//! wait, and one whose slices the peer sends wrong is given up for
+//! good, which its holder hears, as does the holder of a request made
+//! afterwards. Two fetches that end one object leave it whole, and a
+//! space paused while a fetch runs fetches nothing more until it is
+//! resumed. Every wait has a deadline, and nothing leaves the host.
 
 #[path = "../../../crates/frasil/tests/support/provider.rs"]
 mod provider;
@@ -718,7 +718,8 @@ async fn a_request_whose_fetch_stops_is_tried_again() {
 /// A slice the peer sends wrong ends every fetch of the object from it:
 /// the fetch that ran beside the one that found it stops before its next
 /// slice and keeps nothing, and both holders hear that the connection
-/// gave the object up. Nothing of it is asked of this peer again.
+/// gave the object up. Nothing of it is asked of this peer again, and the
+/// holder of a request made afterwards hears the same.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refused_object_stops_its_other_fetches_and_tells_their_holders() {
     let peer = spawn_loopback().await.unwrap();
@@ -749,7 +750,10 @@ async fn a_refused_object_stops_its_other_fetches_and_tells_their_holders() {
     assert!(link.status().fetching.is_empty());
 
     // A request made now is not served by this connection either.
+    // Its holder hears why at once: no connection will try.
     let later = bob.fetch_chunks(space, locator, 0..1, FetchPriority::Position);
+    let heard = tokio::time::timeout(Duration::from_secs(10), later.ended()).await;
+    assert_eq!(heard, Ok(FetchEnd::Refused));
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(faults.asked(&locator), vec![0, 4, 0, 1, 2]);
     drop((waiting, refused, later));

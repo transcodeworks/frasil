@@ -4217,6 +4217,16 @@ impl Driver {
                 .await;
             return self.send_raw(space, wants).await;
         }
+        // The connection takes the space's requests once it may fetch.
+        #[cfg(any(feature = "server", feature = "server-socket"))]
+        if let Some(attached) = self.spaces.get_mut(&space)
+            && attached.fetch_token.is_some()
+        {
+            attached.session.taker(self.device.fetches());
+        }
+        // A request for an object refused on this connection is left: its
+        // holder heard why when it made it, unless another connection
+        // will try.
         #[cfg(any(feature = "server", feature = "server-socket"))]
         for request in self.device.fetches().of(&space) {
             let served = self.spaces.get(&space).is_some_and(|attached| {
@@ -4805,7 +4815,8 @@ impl Driver {
     /// now, is tried again after a wait ([`again_after`]). One whose
     /// slices the peer sent wrong is given up for good: the object is not
     /// asked of this peer again on this connection, the other fetches of
-    /// it that run stop, and whoever asked for its chunks hears why.
+    /// it that run stop, and whoever asked for its chunks, or asks later,
+    /// hears why once no other connection of the space will try.
     ///
     /// [`again_after`]: crate::fetch::again_after
     async fn on_fetched(&mut self, fetched: Fetched) -> Result<()> {
@@ -4842,18 +4853,23 @@ impl Driver {
             if id == 0 {
                 attached.fetching.remove(&locator);
             }
-            // Not asked of this peer again on this connection.
-            if given_up.is_some() {
+            // Not asked of this peer again on this connection: who asked
+            // for its chunks hears why, now and from then on, unless
+            // another connection of the space will try.
+            if let Some(end) = given_up {
                 attached.refused.insert(locator);
+                attached
+                    .session
+                    .taker(self.device.fetches())
+                    .give_up(&locator, end);
             }
         }
-        if let Some(end) = given_up {
+        if given_up.is_some() {
             for fetch in self.fetches.running.values() {
                 if fetch.space == space && fetch.locator == locator {
                     fetch.refused.cancel();
                 }
             }
-            self.device.fetches().give_up(&space, &locator, end);
         }
         if id != 0 && matches!(ended, SliceFetch::Stopped) {
             let served = self
