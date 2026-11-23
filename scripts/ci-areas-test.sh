@@ -91,7 +91,6 @@ tests/conformance/tests/sync.rs|check deny
 fuzz/fuzz_targets/base_cbor.rs|fuzz
 fuzz/Cargo.lock|fuzz
 bindings/swift/Sources/Frasil/Frasil.swift|check
-bindings/tauri/Cargo.toml|check
 packages/frasil/src/index.ts|js
 packages/frasil/package.json|js
 package.json|js

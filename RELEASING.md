@@ -28,8 +28,8 @@ change raises the minor version.
 
 The protocol crates (`frasil-*`) are published because `frasil` and
 `frasil-relay` depend on them. Their descriptions say they are internal
-building blocks. `frasil-testkit`, `frasil-wasm`, `frasil-uniffi`, `frasil-tauri`,
-`frasil-conformance` and the fuzz packages are `publish = false`.
+building blocks. `frasil-testkit`, `frasil-wasm`, `frasil-uniffi`, `frasil-conformance`
+and the fuzz packages are `publish = false`.
 
 A change that is incompatible on the wire is a new protocol number as well as
 a breaking version.

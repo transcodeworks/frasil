@@ -15,7 +15,6 @@ checkpoint policy and device-list checkpoints (`setCheckpointPolicy`,
 | --- | --- |
 | `swift` | A Swift package, `Frasil`, over the library Cargo builds. |
 | `kotlin` | A Kotlin library, package `frasil`, which loads the library through JNA; Gradle and a JDK 21. |
-| `tauri` | `frasil-tauri`, a Rust crate for a Tauri application that holds the device: `emit_observed`, `emit_durable`, `emit_blob_status` and `emit_arrivals` emit each value as a Tauri event to the window the application names. A workspace of its own, checked by `scripts/check-tauri.sh`. |
 
 `scripts/bindings.sh` builds the library and the generator at one UniFFI
 version, writes the glue, and runs each binding's tests;
