@@ -95,6 +95,21 @@ impl Cancel {
     }
 }
 
+/// Why a connection gave a request up for good: it asks the other side
+/// for no more of the object. Another connection of the space may still
+/// serve the request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchEnd {
+    /// A chunk the other side sent failed its checks (units.md, 3.3
+    /// Reading an object), or the object, once whole, did not hash to its
+    /// locator: what the device held of the object was dropped.
+    Refused,
+    /// The stored bytes the other side sent do not read as the object's
+    /// header gives them (transport.md, "Objects over HTTP"): what the
+    /// device held of the object was dropped.
+    Malformed,
+}
+
 /// One request for chunks of an object.
 #[derive(Debug, Clone)]
 pub(crate) struct Request {
@@ -108,6 +123,42 @@ pub(crate) struct Request {
     pub chunks: Range<u64>,
     pub priority: FetchPriority,
     pub cancel: Cancel,
+    /// How a connection gave the request up, for its [`Fetch`].
+    pub ended: Arc<watch::Sender<Option<FetchEnd>>>,
+}
+
+#[cfg_attr(
+    not(any(feature = "server", feature = "server-socket")),
+    allow(dead_code)
+)]
+impl Request {
+    /// A fetch a connection starts by itself, of an object the space's
+    /// units name: whole, behind what readers wait for.
+    pub(crate) fn of_units(space: EventId, locator: Locator) -> Self {
+        Self {
+            id: 0,
+            space,
+            locator,
+            chunks: 0..u64::MAX,
+            priority: FetchPriority::Background,
+            cancel: Cancel::new(),
+            ended: Arc::new(watch::channel(None).0),
+        }
+    }
+}
+
+/// How long a request whose fetch stopped waits before it is tried again
+/// on the same connection, by how many times in a row it stopped with
+/// nothing kept: half a second, doubled each time, at most half a minute.
+#[cfg_attr(
+    not(any(feature = "server", feature = "server-socket")),
+    allow(dead_code)
+)]
+pub(crate) fn again_after(stopped: u32) -> std::time::Duration {
+    const FIRST_MS: u64 = 500;
+    const MOST_MS: u64 = 30_000;
+    let wait = FIRST_MS.saturating_mul(1u64.checked_shl(stopped).unwrap_or(u64::MAX));
+    std::time::Duration::from_millis(wait.min(MOST_MS))
 }
 
 /// The requests made of a device and still wanted.
@@ -148,6 +199,7 @@ impl Requests {
         priority: FetchPriority,
     ) -> Fetch {
         let cancel = Cancel::new();
+        let ended = Arc::new(watch::channel(None).0);
         let id = {
             let mut live = self.live();
             live.next += 1;
@@ -161,6 +213,7 @@ impl Requests {
                     chunks,
                     priority,
                     cancel: cancel.clone(),
+                    ended: ended.clone(),
                 },
             );
             id
@@ -169,7 +222,18 @@ impl Requests {
         Fetch {
             id,
             cancel,
+            ended,
             requests: self.clone(),
+        }
+    }
+
+    /// A connection gave an object up for good: each request still
+    /// wanted for it hears why.
+    pub(crate) fn give_up(&self, space: &EventId, locator: &Locator, end: FetchEnd) {
+        for request in self.live().requests.values() {
+            if request.space == *space && request.locator == *locator {
+                request.ended.send_replace(Some(end));
+            }
         }
     }
 
@@ -237,6 +301,7 @@ impl Requests {
 pub struct Fetch {
     id: u64,
     cancel: Cancel,
+    ended: Arc<watch::Sender<Option<FetchEnd>>>,
     requests: Arc<Requests>,
 }
 
@@ -251,6 +316,31 @@ impl Fetch {
     /// Whether the request was cancelled.
     pub fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
+    }
+
+    /// Why a connection gave the request up for good, if one did: the
+    /// latest to do so. A fetch that only stopped, because its transfer
+    /// was cut or the other side lacks the object for now, is tried
+    /// again and is not reported here.
+    pub fn end(&self) -> Option<FetchEnd> {
+        *self.ended.borrow()
+    }
+
+    /// Ready once a connection gave the request up for good, with why: a
+    /// holder that waits for the chunks can stop waiting for them from
+    /// that connection. Never ready for a request no connection gives
+    /// up.
+    pub async fn ended(&self) -> FetchEnd {
+        let mut ended = self.ended.subscribe();
+        loop {
+            if let Some(end) = *ended.borrow_and_update() {
+                return end;
+            }
+            // The sender lives as long as this handle.
+            if ended.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
     }
 }
 
@@ -732,7 +822,9 @@ impl Asked {
 
 #[cfg(test)]
 mod tests {
-    use super::{Asks, CHUNKS_PER_WANT, Cancel, FetchPriority, Queue, Request, Requests, Slices};
+    use super::{
+        Asks, CHUNKS_PER_WANT, Cancel, FetchEnd, FetchPriority, Queue, Request, Requests, Slices,
+    };
     use frasil_events::EventId;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -747,6 +839,7 @@ mod tests {
             chunks: 0..1,
             priority,
             cancel: Cancel::new(),
+            ended: Arc::new(tokio::sync::watch::channel(None).0),
         }
     }
 
@@ -821,6 +914,44 @@ mod tests {
         assert!(requests.of(&SPACE).is_empty());
         // A signal given before anyone waits is heard at once.
         cancel.cancelled().await;
+    }
+
+    /// A request whose fetch stopped waits longer each time, to a bound.
+    #[test]
+    fn a_stopped_request_waits_longer_each_time_to_a_bound() {
+        use std::time::Duration;
+        assert_eq!(super::again_after(0), Duration::from_millis(500));
+        assert_eq!(super::again_after(1), Duration::from_secs(1));
+        assert_eq!(super::again_after(5), Duration::from_secs(16));
+        assert_eq!(super::again_after(6), Duration::from_secs(30));
+        assert_eq!(super::again_after(64), Duration::from_secs(30));
+        assert_eq!(super::again_after(u32::MAX), Duration::from_secs(30));
+    }
+
+    /// A request a connection gives up for good tells its holder why,
+    /// and no other request hears of it.
+    #[tokio::test]
+    async fn a_request_given_up_tells_its_holder_why() {
+        let requests = Arc::new(Requests::default());
+        let fetch = requests.add(SPACE, [2; 64], 0..4, FetchPriority::Position);
+        let other = requests.add(SPACE, [3; 64], 0..4, FetchPriority::Position);
+        assert_eq!(fetch.end(), None);
+        let waiting = {
+            let requests = requests.clone();
+            async move {
+                tokio::task::yield_now().await;
+                requests.give_up(&SPACE, &[2; 64], FetchEnd::Refused);
+            }
+        };
+        let (end, ()) = tokio::join!(fetch.ended(), waiting);
+        assert_eq!(end, FetchEnd::Refused);
+        assert_eq!(fetch.end(), Some(FetchEnd::Refused));
+        assert_eq!(other.end(), None);
+        // The request stays wanted: another connection may serve it.
+        assert!(!fetch.is_cancelled());
+        assert_eq!(requests.of(&SPACE).len(), 2);
+        requests.give_up(&SPACE, &[2; 64], FetchEnd::Malformed);
+        assert_eq!(fetch.ended().await, FetchEnd::Malformed);
     }
 
     /// Two fetches that need one slice ask for it once, and it goes once

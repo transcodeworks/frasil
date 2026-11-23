@@ -3673,8 +3673,12 @@ impl Engine {
         match self.receive_part(space, part).await? {
             Received::Refused => {
                 // Not asked of this side again; every other connection
-                // of the space asks for it.
+                // of the space asks for it, and who asked for its chunks
+                // hears of it.
                 session.refuse_object(locator);
+                self.shared
+                    .fetches
+                    .give_up(&space, &locator, crate::fetch::FetchEnd::Refused);
                 let _ = self.shared.notices.send(Notice {
                     space,
                     placed: Vec::new(),

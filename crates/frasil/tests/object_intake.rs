@@ -8,7 +8,7 @@
 #![cfg(feature = "adapter-blobs")]
 
 use frasil::advanced::sync::SyncSession;
-use frasil::advanced::{Acknowledger, AdapterRegistry, Engine, FetchPriority, Platform};
+use frasil::advanced::{Acknowledger, AdapterRegistry, Engine, FetchEnd, FetchPriority, Platform};
 use frasil_events::EventId;
 use frasil_space::{HistoryMode, Level, Via};
 use frasil_units::messages::{Message, SyncMessage};
@@ -199,6 +199,11 @@ async fn a_chunk_that_does_not_open_leaves_the_object_missing() {
     let (mut bobs, held_back) = sync_holding_chunks(&blob).await;
     assert!(bobs.is_fetching(&blob.locator));
     assert!(!held_back.is_empty());
+    // A reader that asked for its chunks hears that the side gave it up.
+    let reader = blob
+        .bob
+        .fetch_chunks(blob.space, blob.locator, 0..1, FetchPriority::Position);
+    assert_eq!(reader.end(), None);
     let mut junk = header(&blob).await;
     junk.size = 1;
     let replies = blob
@@ -229,6 +234,7 @@ async fn a_chunk_that_does_not_open_leaves_the_object_missing() {
             .contains(&blob.locator)
     );
     assert!(blob.bob.object(&blob.space, &blob.locator).await.is_err());
+    assert_eq!(reader.end(), Some(FetchEnd::Refused));
     // The side that sent it is not asked again on this session, and what
     // it sends of the object now is not taken.
     assert!(!bobs.is_fetching(&blob.locator));

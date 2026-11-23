@@ -8,13 +8,16 @@
 //! that is cancelled stops before its next slice; and a fetch leaves out
 //! the chunks the device holds, wherever they are. A device that holds
 //! its blobs as files takes an object in order, whichever chunks are
-//! asked for. Every wait has a deadline, and nothing leaves the host.
+//! asked for. A request whose transfer is cut is tried again after a
+//! wait, and one whose slices the peer sends wrong is given up for good,
+//! which its holder hears. Every wait has a deadline, and nothing leaves
+//! the host.
 
 #[path = "../../../crates/frasil/tests/support/provider.rs"]
 mod provider;
 
 use frasil::advanced::peer::{PeerHandle, connect_server};
-use frasil::advanced::{AdapterRegistry, Engine, FetchPriority, Platform};
+use frasil::advanced::{AdapterRegistry, Engine, FetchEnd, FetchPriority, Platform};
 use frasil_conformance::spawn_loopback;
 use frasil_events::EventId;
 use frasil_space::{HistoryMode, Level, Via};
@@ -665,6 +668,89 @@ async fn a_range_of_an_object_held_as_a_file_is_fetched_in_order() {
     let record = bob.held_record(&space, &locator).await.unwrap();
     assert_eq!(files.read(&record.token), big);
     drop((ahead, last));
+    link.close();
+    alice_link.close();
+    peer.shutdown().await;
+}
+
+/// A request whose transfer is cut is tried again on the same connection,
+/// after a wait, with nothing else happening in the space: once the peer
+/// answers, the chunk is kept. Its holder hears of no end meanwhile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_request_whose_fetch_stops_is_tried_again() {
+    let peer = spawn_loopback().await.unwrap();
+    let (proxy, faults) = spawn_proxy(&peer.origin).await;
+    let (_alice, alice_link, bob, _store, space, locator, _big) =
+        setup_with(&peer.origin, SIX_CHUNKS).await;
+    bob.fetch_objects_on_demand();
+    let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
+
+    // Chunk 0 is in slices 0 and 1; slice 1 never arrives.
+    *faults.cut_from.lock().unwrap() = Some(1);
+    let fetch = bob.fetch_chunks(space, locator, 0..1, FetchPriority::Position);
+    until(|| async { faults.cut.load(Ordering::SeqCst) >= 3 }).await;
+    assert_eq!(&faults.asked(&locator)[..6], &[0, 1, 0, 1, 0, 1]);
+    assert!(!holds(&bob, &space, &locator, 0).await);
+    assert_eq!(fetch.end(), None);
+    assert!(!link.is_closed());
+
+    *faults.cut_from.lock().unwrap() = None;
+    until(|| async { holds(&bob, &space, &locator, 0).await }).await;
+    assert_eq!(fetch.end(), None);
+
+    // Cancelled while it waits, a request is not tried again.
+    *faults.cut_from.lock().unwrap() = Some(2);
+    let cut = faults.cut.load(Ordering::SeqCst);
+    let next = bob.fetch_chunks(space, locator, 1..2, FetchPriority::Position);
+    until(|| async { faults.cut.load(Ordering::SeqCst) > cut }).await;
+    next.cancel();
+    let cut = faults.cut.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(faults.cut.load(Ordering::SeqCst), cut);
+    drop(fetch);
+    link.close();
+    alice_link.close();
+    peer.shutdown().await;
+}
+
+/// A slice the peer sends wrong ends every fetch of the object from it:
+/// the fetch that ran beside the one that found it stops before its next
+/// slice and keeps nothing, and both holders hear that the connection
+/// gave the object up. Nothing of it is asked of this peer again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_object_stops_its_other_fetches_and_tells_their_holders() {
+    let peer = spawn_loopback().await.unwrap();
+    let (proxy, faults) = spawn_proxy(&peer.origin).await;
+    let (_alice, alice_link, bob, _store, space, locator, _big) =
+        setup_with(&peer.origin, SIX_CHUNKS).await;
+    bob.fetch_objects_on_demand();
+    let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
+
+    // Chunk 4 waits for slice 4, which is held back.
+    faults.hold(&[4]);
+    let waiting = bob.fetch_chunks(space, locator, 4..5, FetchPriority::Position);
+    until(|| async { faults.asked(&locator) == vec![0, 4] }).await;
+
+    // The first byte of slice 2 ends chunk 1, which then fails to open.
+    *faults.corrupt.lock().unwrap() = Some(2);
+    let refused = bob.fetch_chunks(space, locator, 1..2, FetchPriority::Position);
+    assert_eq!(within(refused.ended()).await, FetchEnd::Refused);
+    assert_eq!(within(waiting.ended()).await, FetchEnd::Refused);
+    assert_eq!(faults.asked(&locator), vec![0, 4, 0, 1, 2]);
+
+    // The fetch of chunk 4 takes no further slice, and is not tried again.
+    faults.hold(&[]);
+    *faults.corrupt.lock().unwrap() = None;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(faults.asked(&locator), vec![0, 4, 0, 1, 2]);
+    assert!(!holds(&bob, &space, &locator, 4).await);
+    assert!(link.status().fetching.is_empty());
+
+    // A request made now is not served by this connection either.
+    let later = bob.fetch_chunks(space, locator, 0..1, FetchPriority::Position);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(faults.asked(&locator), vec![0, 4, 0, 1, 2]);
+    drop((waiting, refused, later));
     link.close();
     alice_link.close();
     peer.shutdown().await;

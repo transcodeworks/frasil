@@ -437,6 +437,10 @@ enum Incoming {
     /// A fetch by slices that ran beside the connection ended.
     #[cfg(any(feature = "server", feature = "server-socket"))]
     Fetched(Fetched),
+    /// The wait of a request whose fetch stopped is over: it is tried
+    /// again.
+    #[cfg(any(feature = "server", feature = "server-socket"))]
+    Again(crate::fetch::Request),
 }
 
 /// How a transport ended.
@@ -1949,6 +1953,11 @@ struct Driver {
     ///
     /// [`Engine::fetch_chunks`]: crate::device::Engine::fetch_chunks
     requested: BTreeSet<u64>,
+    /// How many times in a row a request's fetch stopped on this
+    /// transport with nothing kept, by the request's number: the wait
+    /// before it is tried again grows with it.
+    #[cfg(any(feature = "server", feature = "server-socket"))]
+    stopped: BTreeMap<u64, u32>,
     /// The device's number for the current transport, which names what it
     /// delivered on the ephemeral channel (ext-ephemeral.md, "Relaying").
     #[cfg(feature = "ephemeral")]
@@ -2010,6 +2019,8 @@ impl Driver {
             #[cfg(any(feature = "server", feature = "server-socket"))]
             fetches: SliceFetches::default(),
             requested: BTreeSet::new(),
+            #[cfg(any(feature = "server", feature = "server-socket"))]
+            stopped: BTreeMap::new(),
             #[cfg(feature = "ephemeral")]
             ephemeral_connection: crate::ephemeral::ephemeral_connection(),
         };
@@ -2353,6 +2364,7 @@ impl Driver {
         {
             self.fetches.stop.cancel();
             self.fetches = SliceFetches::default();
+            self.stopped.clear();
         }
         self.requested.clear();
     }
@@ -2905,6 +2917,11 @@ impl Driver {
             Incoming::Closed(_) | Incoming::Refused(_) | Incoming::Reconnect => Ok(()),
             #[cfg(any(feature = "server", feature = "server-socket"))]
             Incoming::Fetched(fetched) => self.on_fetched(fetched).await,
+            #[cfg(any(feature = "server", feature = "server-socket"))]
+            Incoming::Again(request) => {
+                self.on_again(request).await;
+                Ok(())
+            }
         }
     }
 
@@ -4204,6 +4221,8 @@ impl Driver {
     async fn on_requests(&mut self) -> Result<()> {
         let live = self.device.fetches().clone();
         self.requested.retain(|id| live.is_live(*id));
+        #[cfg(any(feature = "server", feature = "server-socket"))]
+        self.stopped.retain(|id, _| live.is_live(*id));
         let spaces: Vec<EventId> = self.spaces.keys().copied().collect();
         for space in spaces {
             self.take_requests(space).await?;
@@ -4304,14 +4323,21 @@ struct Fetched {
     /// The transport's number for the fetch.
     serial: u64,
     ended: SliceFetch,
+    /// Whether it kept a chunk.
+    kept: bool,
 }
 
 /// A fetch by slices that runs.
 #[cfg(any(feature = "server", feature = "server-socket"))]
 struct Running {
+    space: EventId,
+    locator: Locator,
     priority: crate::fetch::FetchPriority,
     /// Signalled when a more urgent request waits for its place.
     gives_way: crate::fetch::Cancel,
+    /// Signalled when another fetch of the object found the peer's bytes
+    /// wrong: the object is no longer asked of this peer.
+    refused: crate::fetch::Cancel,
 }
 
 /// The slices that the fetches of one transport share, by space, locator
@@ -4467,6 +4493,11 @@ struct SliceTask {
     stop: crate::fetch::Cancel,
     /// Signalled when a more urgent request waits for this fetch's place.
     gives_way: crate::fetch::Cancel,
+    /// Signalled when another fetch of the object found the peer's bytes
+    /// wrong.
+    refused: crate::fetch::Cancel,
+    /// Whether the fetch kept a chunk.
+    kept: bool,
     /// Set once the transport's readers end.
     ended: Arc<AtomicBool>,
     /// Set once the connection is to close.
@@ -4489,6 +4520,7 @@ impl SliceTask {
                 return SliceFetch::GaveWay;
             }
             if self.stop.is_cancelled()
+                || self.refused.is_cancelled()
                 || self.ended.load(Ordering::Acquire)
                 || self.closing.load(Ordering::Acquire)
                 || self.device.links().is_paused(&space)
@@ -4526,6 +4558,10 @@ impl SliceTask {
                     abort.cancel();
                     return SliceFetch::Stopped;
                 }
+                () = self.refused.cancelled() => {
+                    abort.cancel();
+                    return SliceFetch::Stopped;
+                }
                 // What a reader waits for goes first: the slice under way
                 // is given up, and asked for again later.
                 () = self.gives_way.cancelled() => {
@@ -4545,7 +4581,7 @@ impl SliceTask {
             drop(slice);
             for part in parts {
                 match self.device.receive_part(space, part).await {
-                    Ok(Received::Kept) => {}
+                    Ok(Received::Kept) => self.kept = true,
                     Ok(Received::Whole) => return SliceFetch::Done,
                     Ok(Received::Refused) => return SliceFetch::Refused,
                     // What the device held of the object went meanwhile:
@@ -4576,14 +4612,9 @@ impl Driver {
         {
             return;
         }
-        self.fetches.queue.push(crate::fetch::Request {
-            id: 0,
-            space,
-            locator,
-            chunks: 0..u64::MAX,
-            priority: crate::fetch::FetchPriority::Background,
-            cancel: crate::fetch::Cancel::new(),
-        });
+        self.fetches
+            .queue
+            .push(crate::fetch::Request::of_units(space, locator));
     }
 
     /// Starts the fetches that wait, most urgent first, each on a task of
@@ -4636,13 +4667,17 @@ impl Driver {
             let mut claims = Claims::new(self.fetches.slices.clone(), space, locator);
             claims.window(if header.is_some() { first } else { 0 });
             let gives_way = crate::fetch::Cancel::new();
+            let refused = crate::fetch::Cancel::new();
             self.fetches.started += 1;
             let serial = self.fetches.started;
             self.fetches.running.insert(
                 serial,
                 Running {
+                    space,
+                    locator,
                     priority: request.priority,
                     gives_way: gives_way.clone(),
+                    refused: refused.clone(),
                 },
             );
             let mut task = SliceTask {
@@ -4656,6 +4691,8 @@ impl Driver {
                 claims,
                 stop: self.fetches.stop.clone(),
                 gives_way,
+                refused,
+                kept: false,
                 ended: self.ended.clone(),
                 closing: self.closing.clone(),
                 status: self.status.clone(),
@@ -4667,6 +4704,7 @@ impl Driver {
                     request: task.request,
                     serial,
                     ended,
+                    kept: task.kept,
                 }));
             });
         }
@@ -4691,9 +4729,9 @@ impl Driver {
         }
     }
 
-    /// A fetch that did not run, or was cut short: an object the space's
-    /// units name is queued again when the space next fetches, and so is
-    /// a request of the device.
+    /// A fetch that did not run: an object the space's units name is
+    /// queued again when the space next fetches, and so is a request of
+    /// the device.
     fn unserved(&mut self, request: &crate::fetch::Request) {
         if request.id == 0 {
             if let Some(attached) = self.spaces.get_mut(&request.space) {
@@ -4704,12 +4742,21 @@ impl Driver {
         }
     }
 
-    /// A fetch ended: the next one that waits starts.
+    /// A fetch ended: the next one that waits starts. One that gave way
+    /// waits again at once. A request of the device whose fetch stopped,
+    /// because its transfer was cut or the peer lacks the object for
+    /// now, is tried again after a wait ([`again_after`]). One whose
+    /// slices the peer sent wrong is given up for good: the object is not
+    /// asked of this peer again on this connection, the other fetches of
+    /// it that run stop, and whoever asked for its chunks hears why.
+    ///
+    /// [`again_after`]: crate::fetch::again_after
     async fn on_fetched(&mut self, fetched: Fetched) -> Result<()> {
         let Fetched {
             request,
             serial,
             ended,
+            kept,
         } = fetched;
         self.fetches.running.remove(&serial);
         let (space, locator, id) = (request.space, request.locator, request.id);
@@ -4720,23 +4767,74 @@ impl Driver {
             self.pump().await;
             return Ok(());
         }
+        let given_up = match ended {
+            SliceFetch::Refused => Some(crate::fetch::FetchEnd::Refused),
+            SliceFetch::Malformed => Some(crate::fetch::FetchEnd::Malformed),
+            _ => None,
+        };
         if let Some(attached) = self.spaces.get_mut(&space) {
             if id == 0 {
                 attached.fetching.remove(&locator);
             }
             // Not asked of this peer again on this connection.
-            if matches!(ended, SliceFetch::Refused | SliceFetch::Malformed) {
+            if given_up.is_some() {
                 attached.refused.insert(locator);
             }
         }
+        if let Some(end) = given_up {
+            for fetch in self.fetches.running.values() {
+                if fetch.space == space && fetch.locator == locator {
+                    fetch.refused.cancel();
+                }
+            }
+            self.device.fetches().give_up(&space, &locator, end);
+        }
         if id != 0 && matches!(ended, SliceFetch::Stopped) {
-            self.requested.remove(&id);
+            let served = self
+                .spaces
+                .get(&space)
+                .is_some_and(|attached| !attached.refused.contains(&locator));
+            if served && !request.cancel.is_cancelled() {
+                self.again(request, kept);
+            } else {
+                self.requested.remove(&id);
+            }
+        } else if id != 0 {
+            self.stopped.remove(&id);
         }
         self.pump().await;
         match ended {
             SliceFetch::Failed(error) => Err(error),
             _ => self.start_after_snapshot(space).await,
         }
+    }
+
+    /// Tries a request whose fetch stopped again, after a wait that grows
+    /// while nothing of it is kept. The request stays taken meanwhile, so
+    /// that it is queued once.
+    fn again(&mut self, request: crate::fetch::Request, kept: bool) {
+        let stopped = self.stopped.entry(request.id).or_default();
+        if kept {
+            *stopped = 0;
+        }
+        let wait = self.runtime.sleep(crate::fetch::again_after(*stopped));
+        *stopped = stopped.saturating_add(1);
+        let incoming = self.incoming.clone();
+        self.runtime.spawn(async move {
+            wait.await;
+            let _ = incoming.send(Incoming::Again(request));
+        });
+    }
+
+    /// The wait of a request whose fetch stopped is over: it is queued
+    /// again, unless it was cancelled meanwhile.
+    async fn on_again(&mut self, request: crate::fetch::Request) {
+        if request.cancel.is_cancelled() || !self.requested.contains(&request.id) {
+            self.requested.remove(&request.id);
+            return;
+        }
+        self.fetches.queue.push(request);
+        self.pump().await;
     }
 }
 
