@@ -10,8 +10,10 @@
 //! its blobs as files takes an object in order, whichever chunks are
 //! asked for. A request whose transfer is cut is tried again after a
 //! wait, and one whose slices the peer sends wrong is given up for good,
-//! which its holder hears. Every wait has a deadline, and nothing leaves
-//! the host.
+//! which its holder hears. Two fetches that end one object leave it
+//! whole, and a space paused while a fetch runs fetches nothing more
+//! until it is resumed. Every wait has a deadline, and nothing leaves the
+//! host.
 
 #[path = "../../../crates/frasil/tests/support/provider.rs"]
 mod provider;
@@ -793,5 +795,134 @@ async fn an_object_is_reported_while_any_fetch_of_it_runs() {
     drop((waiting, last));
     link.close();
     alice_link.close();
+    peer.shutdown().await;
+}
+
+/// Two fetches that run side by side complete one object between them:
+/// each chunk is kept once, the object is whole and reads as the blob,
+/// neither holder hears of an end, and nothing is reported as fetching
+/// afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_fetches_that_complete_one_object_leave_it_whole() {
+    let peer = spawn_loopback().await.unwrap();
+    let (proxy, faults) = spawn_proxy(&peer.origin).await;
+    let (_alice, alice_link, bob, _store, space, locator, big) =
+        setup_with(&peer.origin, SIX_CHUNKS).await;
+    bob.fetch_objects_on_demand();
+    let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
+
+    // Both wait for slice 3, which ends chunk 2 and begins chunk 3.
+    faults.hold(&[3]);
+    let first = bob.fetch_chunks(space, locator, 0..3, FetchPriority::Position);
+    let second = bob.fetch_chunks(space, locator, 3..6, FetchPriority::Position);
+    until(|| async {
+        faults.asked(&locator).contains(&3) && holds(&bob, &space, &locator, 1).await
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(bob.object(&space, &locator).await.is_err());
+    faults.hold(&[]);
+    until(|| async { bob.object(&space, &locator).await.is_ok() }).await;
+    assert_eq!(bob.object(&space, &locator).await.unwrap(), big);
+    assert!(
+        bob.read(&space, |replica| replica.holds_object(&locator))
+            .await
+            .unwrap()
+    );
+    until(|| async { link.status().fetching.is_empty() }).await;
+    assert_eq!((first.end(), second.end()), (None, None));
+    // Slice 3 carries the end of chunk 2 and the start of chunk 3: both
+    // fetches need it, and no slice is asked for more than twice.
+    let asked = faults.asked(&locator);
+    for slice in 0..6 {
+        let times = asked.iter().filter(|index| **index == slice).count();
+        assert!((1..=2).contains(&times), "slice {slice}: {asked:?}");
+    }
+    drop((first, second));
+    link.close();
+    alice_link.close();
+    peer.shutdown().await;
+}
+
+/// A space paused while fetches of one of its objects run, on two
+/// connections: each stops before its next slice, and nothing more is
+/// asked for while the space is paused. Resumed, they go on from the
+/// chunks kept, the object the two complete is whole, and the read that
+/// waited ends with the blob.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_space_paused_while_a_fetch_runs_fetches_no_more_until_resumed() {
+    use frasil::{Device, Level, Options, Storage};
+    let peer = spawn_loopback().await.unwrap();
+    let (proxy, faults) = spawn_proxy(&peer.origin).await;
+    let open = |key, options: Options| async move {
+        Device::open_with(Storage::Memory, &[key; 32], options.loopback())
+            .await
+            .expect("a device")
+    };
+    let alice = open(1, Options::new()).await;
+    let space = alice.create_space().await.unwrap();
+    alice.connect(&peer.origin).await.unwrap();
+    let files = space.create_blobs().unwrap();
+    let bob = open(2, Options::new().objects_on_demand()).await;
+    let joining = within(bob.join_via_peer(&proxy, "Bob", |_, _| async { true }))
+        .await
+        .unwrap();
+    within(space.admit(joining.text(), Level::Write, "Alice", |_, _| async { true }))
+        .await
+        .unwrap();
+    let bobs_space = within(joining.joined()).await.unwrap();
+    bob.connect(&proxy).await.unwrap();
+    // Three chunks and a half, which four slices carry.
+    let big: Vec<u8> = (0..3_670_000u32).map(|i| (i % 251) as u8).collect();
+    let blob = files.put(Some("big"), &big).await.unwrap();
+    let bobs_files = within(async {
+        loop {
+            if let Ok(blobs) = bobs_space.blobs(files.id()).await
+                && blobs.list().await.is_ok_and(|list| list.len() == 1)
+            {
+                break blobs;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    let locator = bobs_files.info(blob).await.unwrap().object;
+    // A read asks for the blob; slice 2 is held back.
+    faults.hold(&[2]);
+    let reading = {
+        let bobs_files = bobs_files.clone();
+        tokio::spawn(async move {
+            let mut read = Vec::new();
+            bobs_files
+                .get_stream(blob, &mut read, |_, _| {})
+                .await
+                .map(|()| read)
+        })
+    };
+    // Bob has two connections to the peer, the one he joined over and
+    // the one he opened since, and each fetches the blob: both wait for
+    // slice 2.
+    let twice = |slice: u64| {
+        let asked = faults.asked(&locator);
+        asked.iter().filter(|index| **index == slice).count() == 2
+    };
+    until(|| async { twice(2) }).await;
+    assert!(twice(0) && twice(1));
+
+    // Paused: the slice under way is taken, and no other.
+    bobs_space.pause_sync();
+    faults.hold(&[]);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(faults.asked(&locator).len(), 6);
+    assert!(!reading.is_finished());
+
+    // Resumed: the fetches go on after the chunks kept, and the two
+    // connections complete the blob between them.
+    bobs_space.resume_sync();
+    let read = within(reading).await.unwrap().unwrap();
+    assert_eq!(read, big);
+    let asked = faults.asked(&locator);
+    assert!(asked[6..].contains(&3), "{asked:?}");
+    assert!(!asked[6..].contains(&0), "{asked:?}");
     peer.shutdown().await;
 }

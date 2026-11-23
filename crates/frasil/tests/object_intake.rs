@@ -661,3 +661,69 @@ async fn a_request_past_the_end_does_not_hold_up_the_object() {
     assert!(!bobs.is_fetching(&blob.locator));
     drop((past, whole));
 }
+
+/// A member that never sends a header: each chunk it sends with none is
+/// not kept and is asked for again, eight times for the object and then
+/// no more, and the side is not refused.
+#[tokio::test]
+async fn a_member_that_never_sends_a_header_is_asked_again_eight_times() {
+    let blob = blob().await;
+    let (mut bobs, mut alices) = synced_on_demand(&blob).await;
+    let by_alice = Acknowledger::Member(blob.alice.device_id().0);
+    let by_bob = Acknowledger::Member(blob.bob.device_id().0);
+    let fetch = blob
+        .bob
+        .fetch_chunks(blob.space, blob.locator, 0..2, FetchPriority::Position);
+    let mut asked = blob.bob.sync_fetches(&mut bobs).await;
+    assert_eq!(wants(&asked), vec![(0, 2)]);
+    // Alice's answers, each with its header taken off.
+    let mut asked_again = 0;
+    for round in 0.. {
+        assert!(round < 32, "asked without end");
+        let mut answers = Vec::new();
+        for message in std::mem::take(&mut asked) {
+            answers.extend(
+                blob.alice
+                    .sync_receive(&mut alices, by_bob, message)
+                    .await
+                    .unwrap(),
+            );
+        }
+        if answers.is_empty() {
+            break;
+        }
+        for answer in answers {
+            let Message::ObjectChunks { index, chunk, .. } = answer.message else {
+                panic!("{answer:?}");
+            };
+            let headerless = chunks_message(blob.space, blob.locator, None, index, chunk);
+            let replies = blob
+                .bob
+                .sync_receive(&mut bobs, by_alice, headerless)
+                .await
+                .unwrap();
+            asked_again += wants(&replies).iter().map(|(_, count)| count).sum::<u64>();
+            asked.extend(replies);
+        }
+    }
+    assert_eq!(asked_again, 8);
+    assert!(!bobs.is_fetching(&blob.locator));
+    assert!(!holds(&blob, 0).await && !holds(&blob, 1).await);
+    assert_eq!(fetch.end(), None, "the side is not refused");
+
+    // With its header, the side serves the object on the same session.
+    let whole = blob.bob.fetch_chunks(
+        blob.space,
+        blob.locator,
+        0..u64::MAX,
+        FetchPriority::Position,
+    );
+    let asked = blob.bob.sync_fetches(&mut bobs).await;
+    assert_eq!(wants(&asked), vec![(0, 64)]);
+    pump(&blob, &mut bobs, &mut alices, asked).await;
+    assert_eq!(
+        blob.bob.object(&blob.space, &blob.locator).await.unwrap(),
+        blob.plaintext
+    );
+    drop((fetch, whole));
+}
