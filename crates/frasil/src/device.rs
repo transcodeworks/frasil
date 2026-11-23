@@ -3662,9 +3662,9 @@ impl Engine {
         let space = session.space();
         let (locator, index) = (part.locator, part.index);
         let named = self.missing_objects(&space).await.contains(&locator);
-        if !named && !self.shared.fetches.wants(&space, &locator, index) {
+        if !named && !self.chunk_requested(&space, &locator, index).await {
             let wants = self
-                .asking(&space, &locator, Some(named), |count, skip| {
+                .asking(&space, &locator, Some(named), |count, skip, _| {
                     session.chunk_arrived(locator, index, count, false, skip)
                 })
                 .await;
@@ -3685,7 +3685,7 @@ impl Engine {
             }
             Received::Headerless => {
                 let wants = self
-                    .asking(&space, &locator, Some(named), |_, skip| {
+                    .asking(&space, &locator, Some(named), |_, skip, _| {
                         session.chunk_again(locator, index, skip)
                     })
                     .await;
@@ -3694,7 +3694,7 @@ impl Engine {
             received => {
                 let whole = received == Received::Whole;
                 let wants = self
-                    .asking(&space, &locator, Some(named), |count, skip| {
+                    .asking(&space, &locator, Some(named), |count, skip, _| {
                         session.chunk_arrived(locator, index, count, whole, skip)
                     })
                     .await;
@@ -3703,16 +3703,41 @@ impl Engine {
         }
     }
 
+    /// Whether a request still wanted needs this chunk: one that names
+    /// it, or, of an object the device takes in order through a provider
+    /// (at-rest.md, "Held objects", receiving), one that names a later
+    /// chunk.
+    async fn chunk_requested(
+        &self,
+        space: &EventId,
+        locator: &frasil_adapter::Locator,
+        index: u64,
+    ) -> bool {
+        let fetches = &self.shared.fetches;
+        if fetches.wants(space, locator, index) {
+            return true;
+        }
+        if !fetches.reaches(space, locator, index) {
+            return false;
+        }
+        let state = self.lock().await;
+        self.receives_in_order(&state, space, locator)
+    }
+
     /// Runs `ask` with what a session needs to ask for chunks of an
-    /// object: its chunk count, once the device holds its header, and
-    /// which chunks are not to be asked for, those the device holds and
-    /// those nobody wants.
+    /// object: its chunk count, once the device holds its header, which
+    /// chunks are not to be asked for, those the device holds and those
+    /// nobody wants, and whether the device takes the object in order
+    /// through a provider (at-rest.md, "Held objects", receiving). Of
+    /// such an object, the header is the one its receive holds, the
+    /// chunks held are those the receive wrote, and every chunk before
+    /// one a request names is wanted.
     async fn asking<R>(
         &self,
         space: &EventId,
         locator: &frasil_adapter::Locator,
         named: Option<bool>,
-        ask: impl FnOnce(Option<u64>, &dyn Fn(u64) -> bool) -> R,
+        ask: impl FnOnce(Option<u64>, &dyn Fn(u64) -> bool, bool) -> R,
     ) -> R {
         // Whether a unit of the space names the object, which it lacks.
         let named = match named {
@@ -3721,13 +3746,24 @@ impl Engine {
         };
         let state = self.lock().await;
         let replica = state.replicas.get(space);
-        let count = replica.and_then(|replica| replica.object_chunk_count(locator));
+        let in_order = self.receives_in_order(&state, space, locator);
+        let receive = Self::receive_progress(&state, space, locator).map(|(chunks, _)| chunks);
+        let count = replica
+            .and_then(|replica| replica.object_chunk_count(locator))
+            .or(receive.map(|(_, count)| count));
+        let written = receive.map_or(0, |(written, _)| written);
         let fetches = &self.shared.fetches;
         let skip = |index: u64| {
+            let wanted = if in_order {
+                fetches.reaches(space, locator, index)
+            } else {
+                fetches.wants(space, locator, index)
+            };
             replica.is_some_and(|replica| replica.holds_chunk(locator, index))
-                || !(named || fetches.wants(space, locator, index))
+                || index < written
+                || !(named || wanted)
         };
-        ask(count, &skip)
+        ask(count, &skip, in_order)
     }
 
     /// `ObjectWant`s on a session for the chunks `chunks` of an object,
@@ -3735,7 +3771,9 @@ impl Engine {
     /// a time for a background fetch. A state object with a limit
     /// ([`state_limit`](Self::state_limit)) whose header the device does
     /// not hold is asked for its first chunk alone first, which carries
-    /// the header.
+    /// the header. An object the device takes in order through a provider
+    /// is asked for from chunk 0, or from where its receive stands,
+    /// whichever chunks are wanted.
     pub(crate) async fn want_chunks_in(
         &self,
         session: &mut SyncSession,
@@ -3746,11 +3784,16 @@ impl Engine {
         use crate::fetch::{CHUNKS_PER_WANT, FetchPriority};
         let space = session.space();
         let limited = self.state_limit(&space, &locator).await.is_some();
-        self.asking(&space, &locator, None, |count, skip| {
+        self.asking(&space, &locator, None, |count, skip, in_order| {
             if limited && count.is_none() {
                 session.want_chunks(locator, 0..chunks.end, false, 1, None, skip)
             } else {
                 let at_once = priority != FetchPriority::Background;
+                let chunks = if in_order && !chunks.is_empty() {
+                    0..chunks.end
+                } else {
+                    chunks
+                };
                 session.want_chunks(locator, chunks, at_once, CHUNKS_PER_WANT, count, skip)
             }
         })

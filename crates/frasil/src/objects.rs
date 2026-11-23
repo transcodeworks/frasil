@@ -335,9 +335,17 @@ enum Fit {
 /// object", steps 2 to 4 and 6, by chunk): a header that reads, is the
 /// header held if one is, and names the locator's object ID; and a chunk
 /// that [`check_chunk`] takes under it, opened under the object's key
-/// when the replica holds the key of the state the header names.
-fn fits_object(replica: &Replica, space: &EventId, part: &ObjectPart) -> Fit {
-    let held = replica.object_header(&part.locator);
+/// when the replica holds the key of the state the header names. The
+/// header held is the replica's, or `receiving`, the one a receive
+/// through a provider holds while it runs (at-rest.md, "Held objects",
+/// receiving).
+fn fits_object(
+    replica: &Replica,
+    space: &EventId,
+    part: &ObjectPart,
+    receiving: Option<&[u8]>,
+) -> Fit {
+    let held = replica.object_header(&part.locator).or(receiving);
     let bytes = match (part.header.as_deref(), held) {
         (Some(new), Some(held)) if new != held => return Fit::Refused,
         (Some(new), _) => new,
@@ -1391,7 +1399,9 @@ impl Engine {
             if replica.holds_object(&part.locator) {
                 return Ok(Received::Whole);
             }
-            fits_object(replica, &space, &part)
+            let receiving = state.held.receive_at(&space, &part.locator);
+            let receiving = receiving.as_ref().map(|(header, _)| header.as_slice());
+            fits_object(replica, &space, &part, receiving)
         };
         match fits {
             Fit::Fits => {}
@@ -2061,7 +2071,11 @@ impl Engine {
     /// the device holds of it, if any, and the first of those chunks it
     /// holds no copy of, in memory or in the store. `None` when there is
     /// nothing to fetch: it holds the object whole or each of those
-    /// chunks, or the application holds the plaintext.
+    /// chunks, or the application holds the plaintext. An object the
+    /// device receives through a provider is taken in order (at-rest.md,
+    /// "Held objects", receiving): its fetch starts at chunk 0, or at the
+    /// chunk the receive takes next, under the header the receive holds,
+    /// and there is nothing to fetch once the receive is past `chunks`.
     #[cfg_attr(
         not(any(feature = "server", feature = "server-socket")),
         allow(dead_code)
@@ -2076,6 +2090,26 @@ impl Engine {
         let replica = state.replicas.get(space)?;
         if replica.holds_object(locator) || replica.is_held(locator) {
             return None;
+        }
+        if self.receives_in_order(&state, space, locator) {
+            // In order from chunk 0, or from where the receive stands,
+            // whichever chunks are asked for.
+            let (header, next) = match state.held.receive_at(space, locator) {
+                Some((header, next)) => (Some(header), next),
+                None => (None, 0),
+            };
+            let count = header
+                .as_deref()
+                .or_else(|| replica.object_header(locator))
+                .and_then(|header| frasil_units::objects::Header::read(header).ok())
+                .map(|header| {
+                    frasil_units::objects::chunk_count(
+                        header.size,
+                        frasil_units::limits::CHUNK_BYTES as u64,
+                    )
+                });
+            let end = count.map_or(chunks.end, |count| chunks.end.min(count));
+            return (chunks.start < end && next < end).then_some((header, next));
         }
         let Some(header) = replica.object_header(locator) else {
             return (!chunks.is_empty()).then_some((None, chunks.start));
@@ -2097,6 +2131,11 @@ impl Engine {
         locator: &Locator,
     ) -> Option<(u64, Option<u64>)> {
         let state = self.lock().await;
+        // A receive through a provider keeps nothing at the replica until
+        // it ends.
+        if let Some((_, bytes)) = Self::receive_progress(&state, space, locator) {
+            return Some((bytes.0, Some(bytes.1)));
+        }
         state.replicas.get(space)?.object_bytes_held(locator)
     }
 
@@ -2211,6 +2250,9 @@ impl Engine {
         locator: &Locator,
     ) -> Option<(u64, Option<u64>)> {
         let state = self.lock().await;
+        if let Some((chunks, _)) = Self::receive_progress(&state, space, locator) {
+            return Some((chunks.0, Some(chunks.1)));
+        }
         state.replicas.get(space)?.object_progress(locator)
     }
 

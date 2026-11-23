@@ -6,8 +6,12 @@
 //! corrupted slice keeps nothing. A range of chunks is fetched from any
 //! index, ahead of a download that runs beside the connection; a fetch
 //! that is cancelled stops before its next slice; and a fetch leaves out
-//! the chunks the device holds, wherever they are. Every wait has a
-//! deadline, and nothing leaves the host.
+//! the chunks the device holds, wherever they are. A device that holds
+//! its blobs as files takes an object in order, whichever chunks are
+//! asked for. Every wait has a deadline, and nothing leaves the host.
+
+#[path = "../../../crates/frasil/tests/support/provider.rs"]
+mod provider;
 
 use frasil::advanced::peer::{PeerHandle, connect_server};
 use frasil::advanced::{AdapterRegistry, Engine, FetchPriority, Platform};
@@ -601,6 +605,66 @@ async fn a_readers_position_takes_the_place_of_a_background_fetch() {
     .await;
     assert!(bob.object(&space, &locator).await.is_ok());
     drop((last, background, position));
+    link.close();
+    alice_link.close();
+    peer.shutdown().await;
+}
+
+/// A device that holds its blobs as files takes an object in order from
+/// chunk 0 (at-rest.md, "Held objects", receiving): a range asked for at
+/// chunk 4 is fetched from slice 0 through the slices of chunk 4, each
+/// chunk after the first checked under the header the receive holds, and
+/// the connection reports the bytes written. A later range goes on from
+/// where the receive stands, and the file is the blob once it is whole.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_range_of_an_object_held_as_a_file_is_fetched_in_order() {
+    let peer = spawn_loopback().await.unwrap();
+    let (proxy, faults) = spawn_proxy(&peer.origin).await;
+    let (_alice, alice_link, bob, _store, space, locator, big) =
+        setup_with(&peer.origin, SIX_CHUNKS).await;
+    let files = provider::DirProvider::new(provider::temp_dir("slices-held"));
+    bob.hold_all_objects(files.clone());
+    bob.fetch_objects_on_demand();
+    let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
+    // Bob knows the blob once its entry is current in its stream.
+    until(|| async {
+        bob.read(&space, |replica| replica.streams().next().is_some())
+            .await
+            .unwrap()
+    })
+    .await;
+
+    // Chunk 4, at a reader's position; slice 3, which ends chunk 2, is
+    // held back.
+    faults.hold(&[3]);
+    let ahead = bob.fetch_chunks(space, locator, 4..5, FetchPriority::Position);
+    until(|| async { faults.asked(&locator) == vec![0, 1, 2, 3] }).await;
+    // Chunks 0 and 1 are written: the header with its length and two
+    // sealed chunks, of the object's stored length.
+    until(|| async {
+        link.status()
+            .fetching
+            .get(&locator)
+            .is_some_and(|(held, total)| {
+                let total = total.expect("the stored length");
+                let prefix = total - big.len() as u64 - 6 * 40;
+                *held == prefix + 2 * (1 << 20)
+            })
+    })
+    .await;
+    faults.hold(&[]);
+    until(|| async { faults.asked(&locator) == vec![0, 1, 2, 3, 4, 5] }).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(faults.asked(&locator), vec![0, 1, 2, 3, 4, 5]);
+    assert!(bob.held_record(&space, &locator).await.is_none());
+
+    // The last chunk: the receive stands at chunk 5, which slice 5 is.
+    let last = bob.fetch_chunks(space, locator, 5..6, FetchPriority::Position);
+    until(|| async { bob.held_record(&space, &locator).await.is_some() }).await;
+    assert_eq!(faults.asked(&locator), vec![0, 1, 2, 3, 4, 5, 5]);
+    let record = bob.held_record(&space, &locator).await.unwrap();
+    assert_eq!(files.read(&record.token), big);
+    drop((ahead, last));
     link.close();
     alice_link.close();
     peer.shutdown().await;

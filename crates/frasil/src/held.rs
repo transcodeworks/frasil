@@ -816,6 +816,16 @@ impl HeldObjects {
         self.hints.contains_key(&(*space, *locator)) || self.asked.contains(&(*space, *locator))
     }
 
+    /// A receive in progress: the header it holds, and the index of the
+    /// next chunk it takes.
+    pub fn receive_at(&self, space: &EventId, locator: &Locator) -> Option<(Vec<u8>, u64)> {
+        let receiving = self.receiving.get(&(*space, *locator))?;
+        Some((
+            receiving.receiver.header().encode(),
+            receiving.receiver.next(),
+        ))
+    }
+
     /// The held entry of an object, by ID.
     pub fn entry(&self, space: &EventId, id: &[u8; 32]) -> Option<&HeldEntry> {
         self.objects.get(space)?.get(id)
@@ -1999,6 +2009,50 @@ impl Engine {
             .is_some_and(|replica| !is_frasils_own(replica, locator) && is_blob(replica, locator))
     }
 
+    /// Whether the device takes an object's chunks in order from chunk 0,
+    /// through the provider (at-rest.md, "Held objects", receiving): the
+    /// object is received as [`receives_held`](Self::receives_held) says,
+    /// and no chunk of it is stored sealed. A fetch of any of its chunks
+    /// then goes on from the chunk the receive takes next.
+    pub(crate) fn receives_in_order(
+        &self,
+        state: &State,
+        space: &EventId,
+        locator: &Locator,
+    ) -> bool {
+        self.receives_held(state, space, locator)
+            && !state
+                .replicas
+                .get(space)
+                .is_some_and(|replica| replica.holds_chunks(locator))
+    }
+
+    /// How far a receive in progress is: the chunks written, and their
+    /// count; and the same in stored bytes, the header with its length and
+    /// each sealed chunk, of the object's stored length.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) fn receive_progress(
+        state: &State,
+        space: &EventId,
+        locator: &Locator,
+    ) -> Option<((u64, u64), (u64, u64))> {
+        let (header, next) = state.held.receive_at(space, locator)?;
+        let size = Header::read(&header).ok()?.size;
+        let count = chunk_count(size, CHUNK_BYTES as u64);
+        let sealed = frasil_units::limits::SEALED_CHUNK_BYTES as u64;
+        let prefix = 4 + header.len() as u64;
+        let total = prefix
+            .saturating_add(size)
+            .saturating_add(count.saturating_mul(sealed - CHUNK_BYTES as u64));
+        let held = prefix
+            .saturating_add(next.saturating_mul(sealed))
+            .min(total);
+        Some(((next.min(count), count), (held, total)))
+    }
+
     /// Receives one part of an object through the provider, or `false`
     /// when the device lacks the key to open it yet, so that the part is
     /// stored sealed ([`Receiver`]): the header starts a receiver; each
@@ -2027,11 +2081,25 @@ impl Engine {
                 // A chunk before the header: it waits for the header's.
                 return Ok(true);
             };
+            // A receive starts with chunk 0 and takes the chunks in order
+            // (at-rest.md, "Held objects", receiving, step 2): a later
+            // chunk that carries the header, as the first of an answer
+            // does, starts none, so that nothing waits in memory for
+            // chunks not asked for yet.
+            if part.index != 0 {
+                return Ok(true);
+            }
             let header = Header::read(header_bytes).map_err(Error::class)?;
             if header.object_id != locator[..32] {
                 return Err(Error::Class("ObjectMismatch"));
             }
             let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
+            // Chunks of it stored sealed, for want of its key then: the
+            // rest joins them, and the object is held once whole
+            // (`hold_named_blobs`).
+            if replica.holds_chunks(&locator) {
+                return Ok(false);
+            }
             let state_key = replica
                 .object_key(&header.key_reference)
                 .map(|(key, _)| key);
