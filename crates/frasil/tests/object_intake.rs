@@ -8,6 +8,9 @@
 //! answer are asked for again, a few times in a row.
 #![cfg(feature = "adapter-blobs")]
 
+#[path = "support/provider.rs"]
+mod provider;
+
 use frasil::advanced::sync::SyncSession;
 use frasil::advanced::{Acknowledger, AdapterRegistry, Engine, FetchEnd, FetchPriority, Platform};
 use frasil_events::EventId;
@@ -807,4 +810,39 @@ async fn chunks_given_up_are_asked_for_again_on_the_session() {
         blob.plaintext
     );
     assert_eq!(fetch.end(), None);
+}
+
+/// A blob of which a chunk is stored sealed, from before the device held
+/// its blobs as files, takes its other chunks sealed too, whichever
+/// arrives: what a fetch reports as kept is kept, and the blob is held
+/// as a file once whole.
+#[tokio::test]
+async fn a_blob_with_a_chunk_stored_sealed_takes_the_rest_sealed() {
+    let blob = blob().await;
+    let (mut bobs, mut alices) = synced_on_demand(&blob).await;
+    let first = blob
+        .bob
+        .fetch_chunks(blob.space, blob.locator, 0..1, FetchPriority::Position);
+    let asked = blob.bob.sync_fetches(&mut bobs).await;
+    assert_eq!(wants(&asked), vec![(0, 1)]);
+    pump(&blob, &mut bobs, &mut alices, asked).await;
+    assert!(holds(&blob, 0).await && !holds(&blob, 1).await);
+
+    // From now on Bob holds his blobs as files.
+    let files = provider::DirProvider::new(provider::temp_dir("intake-sealed-first"));
+    blob.bob.hold_all_objects(files.clone());
+    let rest = blob
+        .bob
+        .fetch_chunks(blob.space, blob.locator, 1..2, FetchPriority::Position);
+    let asked = blob.bob.sync_fetches(&mut bobs).await;
+    assert_eq!(wants(&asked), vec![(1, 1)]);
+    pump(&blob, &mut bobs, &mut alices, asked).await;
+    let record = blob
+        .bob
+        .held_record(&blob.space, &blob.locator)
+        .await
+        .expect("whole, and held as a file");
+    assert_eq!(files.read(&record.token), blob.plaintext);
+    assert!(!bobs.is_fetching(&blob.locator));
+    drop((first, rest));
 }

@@ -4636,9 +4636,11 @@ impl SliceTask {
                     Ok(Received::Kept) => {}
                     Ok(Received::Whole) => return SliceFetch::Done,
                     Ok(Received::Refused) => return SliceFetch::Refused,
-                    // What the device held of the object went meanwhile:
-                    // a later fetch starts from its header.
-                    Ok(Received::Headerless) => return SliceFetch::Stopped,
+                    // What the device held of the object went meanwhile,
+                    // or the receive of it through a provider does not
+                    // take this chunk: a later fetch starts from where
+                    // the device stands then.
+                    Ok(Received::Headerless | Received::Left) => return SliceFetch::Stopped,
                     Err(error) => return SliceFetch::Failed(error),
                 }
             }

@@ -789,6 +789,20 @@ pub(crate) struct HeldEntry {
     pub locator: Option<Locator>,
 }
 
+/// What became of a part of an object the device receives through a
+/// provider ([`Engine::receive_held_part`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HeldPart {
+    /// Taken by the receive: written through the provider, or waiting for
+    /// the chunks before it; or the device holds it already.
+    Taken,
+    /// Not for the provider: the part is stored sealed.
+    Sealed,
+    /// Not taken, and not kept anywhere: no receive of the object runs
+    /// that this part could start, or the receive ended on it.
+    Left,
+}
+
 /// An object being received through a provider's writer, with the chunks
 /// that arrived before one they follow.
 struct Receiving {
@@ -2064,33 +2078,54 @@ impl Engine {
         Some(((next.min(count), count), (held, total)))
     }
 
-    /// Receives one part of an object through the provider, or `false`
-    /// when the device lacks the key to open it yet, so that the part is
-    /// stored sealed ([`Receiver`]): the header starts a receiver; each
-    /// chunk, in order,
-    /// is opened and written through; once every chunk is written, the
-    /// checks of the whole run and the header and the `held` record are
-    /// committed. A chunk that fails is the end of this receive: the
-    /// writer is aborted, and the device asks again when the object is
-    /// announced next. A file the commit does not keep is forgotten.
+    /// Receives one part of an object through the provider
+    /// ([`Receiver`]): the header, with chunk 0, starts a receiver; each
+    /// chunk, in order, is opened and written through; once every chunk
+    /// is written, the checks of the whole run and the header and the
+    /// `held` record are committed. A part is [`HeldPart::Sealed`], to be
+    /// stored sealed, when the device lacks the key to open the object
+    /// yet, or holds chunks of it sealed already: the rest joins them,
+    /// whichever chunk it is. A part no receive takes is
+    /// [`HeldPart::Left`]: one with no receive to join. A chunk that
+    /// fails is the end of this receive: the writer is aborted, and the
+    /// device asks again. A file the commit does not keep is forgotten.
     pub(crate) async fn receive_held_part(
         &self,
         state: &mut State,
         space: EventId,
         part: &ObjectPart,
-    ) -> Result<bool> {
+    ) -> Result<HeldPart> {
         let locator = part.locator;
         let key = (space, locator);
         if state.held.holds(&space, &locator) {
-            return Ok(true);
+            return Ok(HeldPart::Taken);
         }
         let Some(provider) = self.provider_of(state, &space) else {
-            return Ok(true);
+            return Ok(HeldPart::Left);
         };
         if !state.held.receiving.contains_key(&key) {
-            let Some(header_bytes) = &part.header else {
-                // A chunk before the header: it waits for the header's.
-                return Ok(true);
+            let header = match &part.header {
+                Some(bytes) => {
+                    let header = Header::read(bytes).map_err(Error::class)?;
+                    if header.object_id != locator[..32] {
+                        return Err(Error::Class("ObjectMismatch"));
+                    }
+                    Some((bytes, header))
+                }
+                None => None,
+            };
+            let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
+            // Chunks of it stored sealed, for want of its key then, or
+            // from before the device received it through a provider: the
+            // rest joins them, with or without a header and from any
+            // index, and the object is held once whole
+            // (`hold_named_blobs`).
+            if replica.holds_chunks(&locator) {
+                return Ok(HeldPart::Sealed);
+            }
+            let Some((header_bytes, header)) = header else {
+                // A chunk before the header: it is not taken.
+                return Ok(HeldPart::Left);
             };
             // A receive starts with chunk 0 and takes the chunks in order
             // (at-rest.md, "Held objects", receiving, step 2): a later
@@ -2098,18 +2133,7 @@ impl Engine {
             // does, starts none, so that nothing waits in memory for
             // chunks not asked for yet.
             if part.index != 0 {
-                return Ok(true);
-            }
-            let header = Header::read(header_bytes).map_err(Error::class)?;
-            if header.object_id != locator[..32] {
-                return Err(Error::Class("ObjectMismatch"));
-            }
-            let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
-            // Chunks of it stored sealed, for want of its key then: the
-            // rest joins them, and the object is held once whole
-            // (`hold_named_blobs`).
-            if replica.holds_chunks(&locator) {
-                return Ok(false);
+                return Ok(HeldPart::Left);
             }
             let state_key = replica
                 .object_key(&header.key_reference)
@@ -2120,7 +2144,7 @@ impl Engine {
                 (None, Some((source, object_key))) => (*source, ReceiveKey::Object(object_key)),
                 // No key yet: the part is stored sealed, and held once the
                 // key arrives (`hold_named_blobs`).
-                (None, None) => return Ok(false),
+                (None, None) => return Ok(HeldPart::Sealed),
             };
             let hint = state.held.hints.get(&key).cloned().unwrap_or_default();
             let receiver = Receiver::start(
@@ -2141,25 +2165,29 @@ impl Engine {
             );
         }
         let Some(receiving) = state.held.receiving.get_mut(&key) else {
-            return Ok(true);
+            return Ok(HeldPart::Left);
         };
         // Only a chunk of the object waits: its index below the header's
-        // chunk count (units.md, "Reading an object", step 4).
+        // chunk count (units.md, "Reading an object", step 4). A chunk
+        // the receive wrote already is held.
         let count = chunk_count(receiving.receiver.header().size, CHUNK_BYTES as u64);
-        if part.index >= receiving.receiver.next() && part.index < count {
+        if part.index >= receiving.receiver.next() {
+            if part.index >= count {
+                return Ok(HeldPart::Left);
+            }
             receiving.waiting.insert(part.index, part.chunk.clone());
         }
         while let Some(sealed) = receiving.waiting.remove(&receiving.receiver.next()) {
             if receiving.receiver.chunk(&sealed).await.is_err() {
                 self.abort_receive(state, key).await?;
-                return Ok(true);
+                return Ok(HeldPart::Left);
             }
         }
         if !receiving.receiver.is_complete() {
-            return Ok(true);
+            return Ok(HeldPart::Taken);
         }
         let Some(receiving) = state.held.receiving.remove(&key) else {
-            return Ok(true);
+            return Ok(HeldPart::Taken);
         };
         state.held.hints.remove(&key);
         let header = receiving.receiver.header().encode();
@@ -2191,12 +2219,12 @@ impl Engine {
         if let Some(replica) = state.replicas.get_mut(&space) {
             replica.take_snapshots();
         }
-        Ok(true)
+        Ok(HeldPart::Taken)
     }
 
     /// Ends a receive whose chunk failed: the writer is aborted and the
-    /// partial file goes. The device asks another party when the object is
-    /// announced next.
+    /// partial file goes. The chunk is reported as not taken, and a fetch
+    /// of the object starts again at chunk 0.
     async fn abort_receive(&self, state: &mut State, key: (EventId, Locator)) -> Result<()> {
         if let Some(receiving) = state.held.receiving.remove(&key) {
             receiving.receiver.abort().await;

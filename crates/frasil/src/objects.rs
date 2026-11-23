@@ -301,6 +301,11 @@ pub(crate) enum Received {
     /// object, so there is nothing to check it against. What the device
     /// holds of the object stays.
     Headerless,
+    /// Not kept: the device takes the object in order through a provider
+    /// (at-rest.md, "Held objects", receiving), and its receive did not
+    /// take this chunk ([`HeldPart::Left`](crate::held::HeldPart::Left)).
+    /// The chunk is asked for again.
+    Left,
     /// Refused: what the device held of the object is dropped, and it is
     /// asked of another party.
     Refused,
@@ -310,8 +315,9 @@ pub(crate) enum Received {
 /// ([`Engine::take_chunk`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Taken {
-    /// Not kept: nobody wants it any more, or it carries no header and
-    /// the device holds none of its object.
+    /// Not kept: nobody wants it any more, it carries no header and the
+    /// device holds none of its object, or the receive of its object
+    /// through a provider did not take it.
     Dropped,
     /// Refused, with what the device held of its object.
     Refused,
@@ -319,6 +325,17 @@ pub(crate) enum Taken {
     Kept,
     /// The object is whole.
     Whole,
+}
+
+/// What became of parts the device was given to keep
+/// ([`Engine::keep_parts`]).
+struct KeptParts {
+    /// The objects dropped because, whole, they did not hash to their
+    /// locators.
+    dropped: BTreeSet<Locator>,
+    /// The parts not kept, by locator and chunk index: those no receive
+    /// through a provider took.
+    left: BTreeSet<(Locator, u64)>,
 }
 
 /// Whether a part fits the object it names ([`fits_object`]).
@@ -1431,10 +1448,14 @@ impl Engine {
             return Ok(Received::Refused);
         }
         let locator = part.locator;
-        let dropped =
+        let kept =
             Box::pin(self.keep_parts_with(space, std::slice::from_ref(&part), false)).await?;
-        if dropped.contains(&locator) {
+        if kept.dropped.contains(&locator) {
             return Ok(Received::Refused);
+        }
+        // Reported as kept only when it was.
+        if kept.left.contains(&(locator, part.index)) {
+            return Ok(Received::Left);
         }
         let whole = self
             .read(&space, |replica| replica.holds_object(&locator))
@@ -1511,24 +1532,31 @@ impl Engine {
     }
 
     /// [`keep_parts`](Self::keep_parts): the objects dropped because,
-    /// whole, they did not hash to their locators.
+    /// whole, they did not hash to their locators, and the parts that
+    /// were not kept.
     async fn keep_parts_with(
         &self,
         space: EventId,
         parts: &[ObjectPart],
         checked: bool,
-    ) -> Result<BTreeSet<Locator>> {
+    ) -> Result<KeptParts> {
+        let mut left = BTreeSet::new();
         let sealed = {
             let mut state = self.lock().await;
             self.refresh_held(&mut state);
             // Under `held`, a blob's parts go through the provider instead
-            // (at-rest.md, "Held objects", receiving).
+            // (at-rest.md, "Held objects", receiving), unless chunks of
+            // it are stored sealed already.
             let (held, mut sealed): (Vec<&ObjectPart>, Vec<&ObjectPart>) = parts
                 .iter()
                 .partition(|part| self.receives_held(&state, &space, &part.locator));
             for part in held {
-                if !self.receive_held_part(&mut state, space, part).await? {
-                    sealed.push(part);
+                match self.receive_held_part(&mut state, space, part).await? {
+                    crate::held::HeldPart::Taken => {}
+                    crate::held::HeldPart::Sealed => sealed.push(part),
+                    crate::held::HeldPart::Left => {
+                        left.insert((part.locator, part.index));
+                    }
                 }
             }
             sealed
@@ -1639,7 +1667,7 @@ impl Engine {
         drop(state);
         // A blob whose entry is current now, stored sealed, is held.
         self.hold_named_blobs(space).await?;
-        Ok(dropped)
+        Ok(KeptParts { dropped, left })
     }
 
     /// Keeps an object another party handed over whole, by its stored

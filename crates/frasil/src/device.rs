@@ -3692,7 +3692,7 @@ impl Engine {
                 Ok((Taken::Refused, Vec::new()))
             }
             // Not kept, and so not counted as arrived: asked for again.
-            Received::Headerless => {
+            Received::Headerless | Received::Left => {
                 let (wants, ended) = self
                     .asking(&space, &locator, Some(named), |_, skip, _| {
                         session.chunk_again(locator, index, skip)
