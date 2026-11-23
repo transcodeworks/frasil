@@ -805,8 +805,9 @@ pub(crate) struct HeldObjects {
     receiving: BTreeMap<(EventId, Locator), Receiving>,
     /// Hints for fetches the application started, by space and locator.
     hints: BTreeMap<(EventId, Locator), Vec<u8>>,
-    /// Objects a read asked for, by space and locator: fetched on a device
-    /// that fetches blobs only when asked, with no hint for a provider.
+    /// Objects a read asked for and the device does not hold whole yet,
+    /// by space and locator: fetched on a device that fetches blobs only
+    /// when asked, with no hint for a provider.
     asked: BTreeSet<(EventId, Locator)>,
 }
 
@@ -814,6 +815,12 @@ impl HeldObjects {
     /// Whether the application started a fetch of the object, or read it.
     pub fn asked_for(&self, space: &EventId, locator: &Locator) -> bool {
         self.hints.contains_key(&(*space, *locator)) || self.asked.contains(&(*space, *locator))
+    }
+
+    /// Forgets that a read asked for an object: it is whole, or released,
+    /// and is asked for again by the next read that lacks it.
+    pub fn answered(&mut self, space: &EventId, locator: &Locator) {
+        self.asked.remove(&(*space, *locator));
     }
 
     /// A receive in progress: the header it holds, and the index of the
@@ -1937,6 +1944,10 @@ impl Engine {
             if let Some(replica) = state.replicas.get_mut(space) {
                 replica.mark_held(*locator, false);
             }
+            // Released, it is no longer asked for: a device that fetches
+            // blobs only when asked leaves it until the next read.
+            state.held.answered(space, locator);
+            state.held.hints.remove(&(*space, *locator));
             (provider, entry.record.token)
         };
         if let Some(provider) = provider {
@@ -1963,9 +1974,9 @@ impl Engine {
     }
 
     /// Asks for an object a read needs, on a device that fetches blobs
-    /// only when asked: it counts among the space's missing objects from
-    /// now on, and each member connection of the space asks the other
-    /// side for it. Unlike [`fetch_object`](Self::fetch_object), it gives
+    /// only when asked: it counts among the space's missing objects
+    /// until it is whole, and each member connection of the space asks
+    /// the other side for it. Unlike [`fetch_object`](Self::fetch_object), it gives
     /// no hint, and the object is stored as the space's policy says.
     #[cfg_attr(
         not(all(

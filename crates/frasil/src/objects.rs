@@ -1567,14 +1567,23 @@ impl Engine {
                 }
             }
         }
-        let (awaited, streams, records) = {
+        // Each object these parts made whole, past its checks.
+        let arrived: BTreeSet<Locator> = {
             let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
-            // Blob feeds hear of each object these parts made whole.
-            let arrived: BTreeSet<Locator> = parts
+            parts
                 .iter()
                 .map(|part| part.locator)
                 .filter(|locator| replica.holds_object(locator))
-                .collect();
+                .collect()
+        };
+        for locator in &arrived {
+            // The read that asked for it has it: it is not asked for
+            // again until a read lacks it.
+            state.held.answered(&space, locator);
+        }
+        let (awaited, streams, records) = {
+            let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
+            // Blob feeds hear of each.
             for locator in arrived {
                 self.arrived(space, locator);
             }
