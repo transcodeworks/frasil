@@ -681,6 +681,9 @@ hold, in order:
    part 0 record with the header, and the held record.
 ```
 
+- A device MAY bound how many chunks wait in memory in step 2. A chunk
+  that arrives further ahead of the next one to write than its bound is
+  not kept, and the device asks for it again.
 - On any failure the writer is aborted, which deletes the partial file,
   and nothing is committed; the device asks another party for the object,
   as for any chunk that fails.

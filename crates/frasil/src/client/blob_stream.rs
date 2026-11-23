@@ -315,6 +315,8 @@ impl Blobs {
         if peers.is_empty() && !engine.member_attached(&space) {
             return Err(Error::Class("Missing"));
         }
+        // A device that fetches blobs only when asked is asked here.
+        engine.ask_object(space, locator).await;
         for peer in &peers {
             peer.handle().fetch(space);
         }
@@ -326,6 +328,13 @@ impl Blobs {
                 .unwrap_or(false)
             {
                 return Ok(());
+            }
+            // Whole meanwhile, for another read, and released or dropped
+            // since: this read asks again.
+            if engine.ask_object_again(space, locator).await {
+                for peer in &peers {
+                    peer.handle().fetch(space);
+                }
             }
             let members = engine.object_progress(&space, &locator).await;
             let fetched = peers

@@ -106,6 +106,52 @@ async fn an_on_demand_member_materialises_from_a_member_without_a_peer() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A blob of several chunks from a member, to a device that holds its
+/// blobs as files: each chunk after the first arrives with no header and
+/// is checked under the one the receive holds, in order from chunk 0.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_on_demand_member_materialises_a_blob_of_several_chunks() {
+    let dir = temp_dir("held-on-demand-chunks");
+    let alices = DirProvider::new(dir.join("alice"));
+    let bobs = DirProvider::new(dir.join("bob"));
+    let alice = device(27, Options::new().object_provider(alices.clone())).await;
+    let bob = device(
+        28,
+        Options::new()
+            .object_provider(bobs.clone())
+            .objects_on_demand(),
+    )
+    .await;
+    let space = alice.create_space().await.unwrap();
+    let invitation = space
+        .invite(Level::Write, "Alice's laptop", |_, _| async { true })
+        .await
+        .unwrap();
+    let bobs_space = within(bob.join(invitation.text(), "Bob's laptop", |_, _| async { true }))
+        .await
+        .unwrap();
+    within(invitation.admitted()).await.unwrap();
+    let files = space.create_blobs().unwrap();
+    let file: Vec<u8> = (0..2 * frasil_units::limits::CHUNK_BYTES + 300)
+        .map(|i| (i % 241) as u8)
+        .collect();
+    let token = alices.write("take.wav", &file);
+    let blob = files.put_from("take", &token).await.unwrap();
+    let bobs_files = until_stream(&bobs_space, files.id()).await;
+    until(|| async { bobs_files.info(blob).await.is_ok() }).await;
+
+    let bobs_token = tokio::time::timeout(
+        Duration::from_secs(20),
+        bobs_files.materialise(blob, b"take.wav"),
+    )
+    .await
+    .expect("each chunk is kept")
+    .unwrap();
+    assert_eq!(bobs.read(&bobs_token), file);
+    drop(alice);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_held_file_is_served_to_a_sealed_member_and_read_as_its_bytes() {
     let dir = temp_dir("held-serve");

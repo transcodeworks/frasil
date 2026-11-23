@@ -392,7 +392,7 @@ mod tests {
                 .collect();
             assert_eq!(slices, expected, "size {size}");
 
-            let mut reader = SliceReader::start(sealed.locator, None);
+            let mut reader = SliceReader::start(sealed.locator, None, 0..u64::MAX);
             let mut chunks = Vec::new();
             for (_, slice) in &slices {
                 chunks.extend(reader.take(slice).unwrap());

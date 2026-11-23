@@ -789,6 +789,27 @@ pub(crate) struct HeldEntry {
     pub locator: Option<Locator>,
 }
 
+/// How many chunks ahead of the one a receive takes next wait in memory
+/// for it, each a sealed chunk of about a mebibyte: as many as the device
+/// reads of an object at a time. A chunk further ahead is not taken, and
+/// is asked for again.
+const WAITING_MOST: u64 = 8;
+
+/// What became of a part of an object the device receives through a
+/// provider ([`Engine::receive_held_part`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HeldPart {
+    /// Taken by the receive: written through the provider, or waiting for
+    /// the chunks before it; or the device holds it already.
+    Taken,
+    /// Not for the provider: the part is stored sealed.
+    Sealed,
+    /// Not taken, and not kept anywhere: no receive of the object runs
+    /// that this part could start, the receive does not reach this chunk
+    /// yet, or it ended on it.
+    Left,
+}
+
 /// An object being received through a provider's writer, with the chunks
 /// that arrived before one they follow.
 struct Receiving {
@@ -805,12 +826,32 @@ pub(crate) struct HeldObjects {
     receiving: BTreeMap<(EventId, Locator), Receiving>,
     /// Hints for fetches the application started, by space and locator.
     hints: BTreeMap<(EventId, Locator), Vec<u8>>,
+    /// Objects a read asked for and the device does not hold whole yet,
+    /// by space and locator: fetched on a device that fetches blobs only
+    /// when asked, with no hint for a provider.
+    asked: BTreeSet<(EventId, Locator)>,
 }
 
 impl HeldObjects {
-    /// Whether the application started a fetch of the object.
+    /// Whether the application started a fetch of the object, or read it.
     pub fn asked_for(&self, space: &EventId, locator: &Locator) -> bool {
-        self.hints.contains_key(&(*space, *locator))
+        self.hints.contains_key(&(*space, *locator)) || self.asked.contains(&(*space, *locator))
+    }
+
+    /// Forgets that a read asked for an object: it is whole, or released,
+    /// and is asked for again by the next read that lacks it.
+    pub fn answered(&mut self, space: &EventId, locator: &Locator) {
+        self.asked.remove(&(*space, *locator));
+    }
+
+    /// A receive in progress: the header it holds, and the index of the
+    /// next chunk it takes.
+    pub fn receive_at(&self, space: &EventId, locator: &Locator) -> Option<(Vec<u8>, u64)> {
+        let receiving = self.receiving.get(&(*space, *locator))?;
+        Some((
+            receiving.receiver.header().encode(),
+            receiving.receiver.next(),
+        ))
     }
 
     /// The held entry of an object, by ID.
@@ -1924,6 +1965,10 @@ impl Engine {
             if let Some(replica) = state.replicas.get_mut(space) {
                 replica.mark_held(*locator, false);
             }
+            // Released, it is no longer asked for: a device that fetches
+            // blobs only when asked leaves it until the next read.
+            state.held.answered(space, locator);
+            state.held.hints.remove(&(*space, *locator));
             (provider, entry.record.token)
         };
         if let Some(provider) = provider {
@@ -1949,6 +1994,58 @@ impl Engine {
         });
     }
 
+    /// Asks for an object a read needs, on a device that fetches blobs
+    /// only when asked: it counts among the space's missing objects
+    /// until it is whole, and each member connection of the space asks
+    /// the other side for it. Unlike [`fetch_object`](Self::fetch_object), it gives
+    /// no hint, and the object is stored as the space's policy says.
+    #[cfg_attr(
+        not(all(
+            any(feature = "server", feature = "iroh", feature = "server-socket"),
+            feature = "adapter-blobs"
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) async fn ask_object(&self, space: EventId, locator: Locator) {
+        {
+            let mut state = self.lock().await;
+            state.held.asked.insert((space, locator));
+        }
+        let _ = self.notices().send(Notice {
+            space,
+            placed: Vec::new(),
+            withdrawn: Vec::new(),
+            wanted: vec![locator],
+        });
+    }
+
+    /// Asks again for an object a read still waits for
+    /// ([`ask_object`](Self::ask_object)) when nothing asks for it any
+    /// more and the device does not hold it whole: it became whole
+    /// meanwhile, which took the read's mark away, and was released or
+    /// dropped since. Whether it asked.
+    #[cfg_attr(
+        not(all(
+            any(feature = "server", feature = "iroh", feature = "server-socket"),
+            feature = "adapter-blobs"
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) async fn ask_object_again(&self, space: EventId, locator: Locator) -> bool {
+        {
+            let state = self.lock().await;
+            let whole = state
+                .replicas
+                .get(&space)
+                .is_none_or(|replica| replica.holds_object(&locator));
+            if whole || state.held.asked_for(&space, &locator) {
+                return false;
+            }
+        }
+        self.ask_object(space, locator).await;
+        true
+    }
+
     // -- Receiving
 
     /// Whether an arriving part of an object is received through the
@@ -1971,39 +2068,108 @@ impl Engine {
             .is_some_and(|replica| !is_frasils_own(replica, locator) && is_blob(replica, locator))
     }
 
-    /// Receives one part of an object through the provider, or `false`
-    /// when the device lacks the key to open it yet, so that the part is
-    /// stored sealed ([`Receiver`]): the header starts a receiver; each
-    /// chunk, in order,
-    /// is opened and written through; once every chunk is written, the
-    /// checks of the whole run and the header and the `held` record are
-    /// committed. A chunk that fails is the end of this receive: the
-    /// writer is aborted, and the device asks again when the object is
-    /// announced next. A file the commit does not keep is forgotten.
+    /// Whether the device takes an object's chunks in order from chunk 0,
+    /// through the provider (at-rest.md, "Held objects", receiving): the
+    /// object is received as [`receives_held`](Self::receives_held) says,
+    /// and no chunk of it is stored sealed. A fetch of any of its chunks
+    /// then goes on from the chunk the receive takes next.
+    pub(crate) fn receives_in_order(
+        &self,
+        state: &State,
+        space: &EventId,
+        locator: &Locator,
+    ) -> bool {
+        self.receives_held(state, space, locator)
+            && !state
+                .replicas
+                .get(space)
+                .is_some_and(|replica| replica.holds_chunks(locator))
+    }
+
+    /// How far a receive in progress is: the chunks written, and their
+    /// count; and the same in stored bytes, the header with its length and
+    /// each sealed chunk, of the object's stored length.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) fn receive_progress(
+        state: &State,
+        space: &EventId,
+        locator: &Locator,
+    ) -> Option<((u64, u64), (u64, u64))> {
+        let (header, next) = state.held.receive_at(space, locator)?;
+        let size = Header::read(&header).ok()?.size;
+        let count = chunk_count(size, CHUNK_BYTES as u64);
+        let sealed = frasil_units::limits::SEALED_CHUNK_BYTES as u64;
+        let prefix = 4 + header.len() as u64;
+        let total = prefix
+            .saturating_add(size)
+            .saturating_add(count.saturating_mul(sealed - CHUNK_BYTES as u64));
+        let held = prefix
+            .saturating_add(next.saturating_mul(sealed))
+            .min(total);
+        Some(((next.min(count), count), (held, total)))
+    }
+
+    /// Receives one part of an object through the provider
+    /// ([`Receiver`]): the header, with chunk 0, starts a receiver; each
+    /// chunk, in order, is opened and written through; once every chunk
+    /// is written, the checks of the whole run and the header and the
+    /// `held` record are committed. A part is [`HeldPart::Sealed`], to be
+    /// stored sealed, when the device lacks the key to open the object
+    /// yet, or holds chunks of it sealed already: the rest joins them,
+    /// whichever chunk it is. A part no receive takes is
+    /// [`HeldPart::Left`]: one with no receive to join, or more than a
+    /// few chunks ahead of the one the receive takes next. A chunk that
+    /// fails is the end of this receive: the writer is aborted, and the
+    /// device asks again. A file the commit does not keep is forgotten.
     pub(crate) async fn receive_held_part(
         &self,
         state: &mut State,
         space: EventId,
         part: &ObjectPart,
-    ) -> Result<bool> {
+    ) -> Result<HeldPart> {
         let locator = part.locator;
         let key = (space, locator);
         if state.held.holds(&space, &locator) {
-            return Ok(true);
+            return Ok(HeldPart::Taken);
         }
         let Some(provider) = self.provider_of(state, &space) else {
-            return Ok(true);
+            return Ok(HeldPart::Left);
         };
         if !state.held.receiving.contains_key(&key) {
-            let Some(header_bytes) = &part.header else {
-                // A chunk before the header: it waits for the header's.
-                return Ok(true);
+            let header = match &part.header {
+                Some(bytes) => {
+                    let header = Header::read(bytes).map_err(Error::class)?;
+                    if header.object_id != locator[..32] {
+                        return Err(Error::Class("ObjectMismatch"));
+                    }
+                    Some((bytes, header))
+                }
+                None => None,
             };
-            let header = Header::read(header_bytes).map_err(Error::class)?;
-            if header.object_id != locator[..32] {
-                return Err(Error::Class("ObjectMismatch"));
-            }
             let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
+            // Chunks of it stored sealed, for want of its key then, or
+            // from before the device received it through a provider: the
+            // rest joins them, with or without a header and from any
+            // index, and the object is held once whole
+            // (`hold_named_blobs`).
+            if replica.holds_chunks(&locator) {
+                return Ok(HeldPart::Sealed);
+            }
+            let Some((header_bytes, header)) = header else {
+                // A chunk before the header: it is not taken.
+                return Ok(HeldPart::Left);
+            };
+            // A receive starts with chunk 0 and takes the chunks in order
+            // (at-rest.md, "Held objects", receiving, step 2): a later
+            // chunk that carries the header, as the first of an answer
+            // does, starts none, so that nothing waits in memory for
+            // chunks not asked for yet.
+            if part.index != 0 {
+                return Ok(HeldPart::Left);
+            }
             let state_key = replica
                 .object_key(&header.key_reference)
                 .map(|(key, _)| key);
@@ -2013,7 +2179,7 @@ impl Engine {
                 (None, Some((source, object_key))) => (*source, ReceiveKey::Object(object_key)),
                 // No key yet: the part is stored sealed, and held once the
                 // key arrives (`hold_named_blobs`).
-                (None, None) => return Ok(false),
+                (None, None) => return Ok(HeldPart::Sealed),
             };
             let hint = state.held.hints.get(&key).cloned().unwrap_or_default();
             let receiver = Receiver::start(
@@ -2034,25 +2200,33 @@ impl Engine {
             );
         }
         let Some(receiving) = state.held.receiving.get_mut(&key) else {
-            return Ok(true);
+            return Ok(HeldPart::Left);
         };
         // Only a chunk of the object waits: its index below the header's
-        // chunk count (units.md, "Reading an object", step 4).
+        // chunk count (units.md, "Reading an object", step 4), and no
+        // more than a few chunks ahead of the one the receive takes
+        // next, so that a side that withholds one chunk and sends the
+        // rest fills no memory. A chunk the receive wrote already is
+        // held.
         let count = chunk_count(receiving.receiver.header().size, CHUNK_BYTES as u64);
-        if part.index >= receiving.receiver.next() && part.index < count {
+        let next = receiving.receiver.next();
+        if part.index >= next {
+            if part.index >= count || part.index - next > WAITING_MOST {
+                return Ok(HeldPart::Left);
+            }
             receiving.waiting.insert(part.index, part.chunk.clone());
         }
         while let Some(sealed) = receiving.waiting.remove(&receiving.receiver.next()) {
             if receiving.receiver.chunk(&sealed).await.is_err() {
                 self.abort_receive(state, key).await?;
-                return Ok(true);
+                return Ok(HeldPart::Left);
             }
         }
         if !receiving.receiver.is_complete() {
-            return Ok(true);
+            return Ok(HeldPart::Taken);
         }
         let Some(receiving) = state.held.receiving.remove(&key) else {
-            return Ok(true);
+            return Ok(HeldPart::Taken);
         };
         state.held.hints.remove(&key);
         let header = receiving.receiver.header().encode();
@@ -2084,12 +2258,12 @@ impl Engine {
         if let Some(replica) = state.replicas.get_mut(&space) {
             replica.take_snapshots();
         }
-        Ok(true)
+        Ok(HeldPart::Taken)
     }
 
     /// Ends a receive whose chunk failed: the writer is aborted and the
-    /// partial file goes. The device asks another party when the object is
-    /// announced next.
+    /// partial file goes. The chunk is reported as not taken, and a fetch
+    /// of the object starts again at chunk 0.
     async fn abort_receive(&self, state: &mut State, key: (EventId, Locator)) -> Result<()> {
         if let Some(receiving) = state.held.receiving.remove(&key) {
             receiving.receiver.abort().await;
@@ -2108,6 +2282,7 @@ impl Engine {
         state.held.objects.remove(space);
         state.held.receiving.retain(|(s, _), _| s != space);
         state.held.hints.retain(|(s, _), _| s != space);
+        state.held.asked.retain(|(s, _)| s != space);
         provider.map(|provider| (provider, tokens))
     }
 }

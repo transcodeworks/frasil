@@ -17,6 +17,7 @@
 //! It turns what arrives into [`Action`]s; the device places events, stores
 //! them and sends what the session asks.
 
+use crate::fetch::{Asks, CHUNKS_PER_WANT, Requests, Taker, Want};
 use crate::replica::Replica;
 use frasil_adapter::Locator;
 use frasil_crypto::device::DeviceId;
@@ -26,9 +27,7 @@ use frasil_units::limits::{MAX_MESSAGE_BYTES, MAX_MESSAGE_ITEMS};
 use frasil_units::messages::{Message, SyncMessage, VectorEntry};
 use frasil_units::stream::StreamId;
 use std::collections::{BTreeMap, BTreeSet};
-
-/// The most chunks one `ObjectWant` asks for.
-const CHUNKS_PER_WANT: u64 = 64;
+use std::sync::Arc;
 
 /// The room a message keeps for its own keys, beside its events.
 const MESSAGE_OVERHEAD: usize = 64;
@@ -132,9 +131,16 @@ pub struct SyncSession {
     paths: BTreeMap<(EventId, EventId), Vec<EventId>>,
     /// What this side may serve the other.
     serving: Serving,
-    /// Objects asked for by `ObjectWant`, with the index of the next chunk
-    /// to ask for.
-    fetching: BTreeMap<Locator, u64>,
+    /// The chunks of objects asked for by `ObjectWant` and not yet
+    /// arrived, and those yet to ask.
+    asks: Asks,
+    /// The device's requests for chunks taken on this session, by their
+    /// numbers.
+    requested: BTreeSet<u64>,
+    /// The session's place among the connections that take the device's
+    /// requests, from the first time it takes them or gives an object
+    /// up; copies of the session share it.
+    taker: Option<Arc<Taker>>,
     /// Objects the other side announced in `ObjectHave` that this side did
     /// not hold whole then: asked for once the device finds them missing.
     announced: BTreeSet<Locator>,
@@ -170,7 +176,9 @@ impl SyncSession {
             asked: BTreeSet::new(),
             paths: BTreeMap::new(),
             serving: Serving::Everything,
-            fetching: BTreeMap::new(),
+            asks: Asks::default(),
+            requested: BTreeSet::new(),
+            taker: None,
             announced: BTreeSet::new(),
             refused: BTreeSet::new(),
             snapshot: SnapshotAsk::NotAsked,
@@ -271,33 +279,93 @@ impl SyncSession {
     }
 
     fn want_first(&mut self, locator: Locator, count: u64) -> Option<SyncMessage> {
-        if self.fetching.contains_key(&locator) || self.refused.contains(&locator) {
+        if self.asks.has(&locator) {
             return None;
         }
-        self.fetching.insert(locator, count);
-        Some(SyncMessage {
-            space: self.space,
-            message: Message::ObjectWant {
-                locator,
-                first: 0,
-                count,
-            },
-        })
+        self.want_chunks(locator, 0..u64::MAX, false, count, None, |_| false)
+            .into_iter()
+            .next()
     }
 
-    /// Whether this side asked the other for an object's chunks on this
-    /// session, and has not had it whole since.
+    /// `ObjectWant`s for the chunks `chunks` of an object the other side
+    /// holds, from any first index (units.md, "Sync", objects), unless it
+    /// refused the object on this session. `count` is the object's chunk
+    /// count when the device holds its header, and `skip` says which
+    /// chunks are not to be asked for: those the device holds, and those
+    /// nobody wants any more. With `at_once`, the first chunks are asked
+    /// for now, at most 64, beside whatever is awaited; the rest goes
+    /// `batch` chunks at a time, the first batch now when nothing is
+    /// awaited, and each of the others once the one before arrived.
+    pub(crate) fn want_chunks(
+        &mut self,
+        locator: Locator,
+        chunks: core::ops::Range<u64>,
+        at_once: bool,
+        batch: u64,
+        count: Option<u64>,
+        skip: impl Fn(u64) -> bool,
+    ) -> Vec<SyncMessage> {
+        if self.refused.contains(&locator) {
+            return Vec::new();
+        }
+        let wants = self.asks.want(locator, chunks, at_once, batch, count, skip);
+        self.wants(locator, wants)
+    }
+
+    fn wants(&self, locator: Locator, wants: Vec<Want>) -> Vec<SyncMessage> {
+        wants
+            .into_iter()
+            .map(|(first, count)| SyncMessage {
+                space: self.space,
+                message: Message::ObjectWant {
+                    locator,
+                    first,
+                    count,
+                },
+            })
+            .collect()
+    }
+
+    /// Whether this side asked the other for chunks of an object on this
+    /// session that have not all arrived, or has more of it to ask for.
     pub fn is_fetching(&self, locator: &Locator) -> bool {
-        self.fetching.contains_key(locator)
+        self.asks.has(locator)
+    }
+
+    /// Whether this side asked the other for this chunk on this session,
+    /// and it has not arrived.
+    pub fn awaits_chunk(&self, locator: &Locator, index: u64) -> bool {
+        self.asks.awaits(locator, index)
     }
 
     /// A chunk of an object from the other side failed its checks: the
     /// object is not asked of it again on this session, and another party
     /// is asked (units.md, "Sync", objects).
     pub fn refuse_object(&mut self, locator: Locator) {
-        self.fetching.remove(&locator);
+        self.asks.forget(&locator);
         self.announced.remove(&locator);
         self.refused.insert(locator);
+    }
+
+    /// Notes a request for chunks the device made: `true` the first time
+    /// this session hears of it.
+    pub(crate) fn take_request(&mut self, id: u64) -> bool {
+        self.requested.insert(id)
+    }
+
+    /// The session's place among the connections that take the requests
+    /// made of the device ([`Requests::attach`]), taken the first time
+    /// this is called: through it the session says which objects it asks
+    /// the other side for no further.
+    pub(crate) fn taker(&mut self, requests: &Arc<Requests>) -> &Taker {
+        let space = self.space;
+        self.taker
+            .get_or_insert_with(|| Arc::new(requests.attach(space)))
+    }
+
+    /// Forgets the device's requests that ended.
+    pub(crate) fn keep_requests(&mut self, live: &BTreeSet<u64>) {
+        self.requested.retain(|id| live.contains(id));
     }
 
     /// Where this session is with a space snapshot asked of the other side.
@@ -332,35 +400,65 @@ impl SyncSession {
         self.announced.retain(|locator| !held(locator));
     }
 
-    /// After a chunk of an object asked for arrived: `ObjectWant` for the
-    /// next chunks once the last one asked for is in, and the object is not
-    /// yet whole. `total` is the object's chunk count, once its header is
-    /// known.
-    pub fn next_chunks(
+    /// After a chunk of an object asked for arrived: `ObjectWant`s for the
+    /// next chunks once every chunk awaited is in, and the object is not
+    /// yet whole. `count` is the object's chunk count, once its header is
+    /// known, `kept` says whether the device kept the chunk, and `skip`
+    /// says which chunks are not to be asked for.
+    pub(crate) fn chunk_arrived(
         &mut self,
         locator: Locator,
         index: u64,
-        total: Option<u64>,
+        count: Option<u64>,
         whole: bool,
-    ) -> Option<SyncMessage> {
+        kept: bool,
+        skip: impl Fn(u64) -> bool,
+    ) -> Vec<SyncMessage> {
         if whole {
-            self.fetching.remove(&locator);
-            return None;
+            self.asks.forget(&locator);
+            return Vec::new();
         }
-        let next = *self.fetching.get(&locator)?;
-        if index.checked_add(1) != Some(next) || total.is_some_and(|total| next >= total) {
-            return None;
-        }
-        self.fetching
-            .insert(locator, next.saturating_add(CHUNKS_PER_WANT));
-        Some(SyncMessage {
-            space: self.space,
-            message: Message::ObjectWant {
-                locator,
-                first: next,
-                count: CHUNKS_PER_WANT,
-            },
-        })
+        let (_, wants) = self.asks.arrived(&locator, index, count, kept, skip);
+        self.wants(locator, wants)
+    }
+
+    /// A chunk asked for arrived and was not kept, for want of a header
+    /// or because the device does not take it yet: it is asked for
+    /// again, in an answer of its own, whose first chunk carries the
+    /// header (units.md, "Sync", objects). `true` when the object's
+    /// chunks were asked for again so often, with none kept, that the
+    /// session asks for it no further.
+    pub(crate) fn chunk_again(
+        &mut self,
+        locator: Locator,
+        index: u64,
+        skip: impl Fn(u64) -> bool,
+    ) -> (Vec<SyncMessage>, bool) {
+        let (wants, ended) = self.asks.again(&locator, index, skip);
+        (self.wants(locator, wants), ended)
+    }
+
+    /// The objects with chunks asked for and not yet arrived, or yet to
+    /// ask for.
+    pub(crate) fn fetching(&self) -> Vec<Locator> {
+        self.asks.objects()
+    }
+
+    /// Time passed with nothing asked for arriving: chunks past the end
+    /// of an object whose header is held by now are awaited no longer,
+    /// those that got no answer for too long are given up and asked for
+    /// again with what is yet to ask for, and the `ObjectWant`s follow.
+    /// `true` when the object's chunks were given up so often, with none
+    /// kept, that the session asks for it no further.
+    pub(crate) fn chunks_waited(
+        &mut self,
+        locator: Locator,
+        elapsed: std::time::Duration,
+        count: Option<u64>,
+        skip: impl Fn(u64) -> bool,
+    ) -> (Vec<SyncMessage>, bool) {
+        let (wants, ended) = self.asks.waited(&locator, elapsed, count, skip);
+        (self.wants(locator, wants), ended)
     }
 
     /// Withholds these events from the other side: this device's own
