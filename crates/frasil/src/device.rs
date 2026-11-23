@@ -3664,7 +3664,7 @@ impl Engine {
         let named = self.missing_objects(&space).await.contains(&locator);
         if !named && !self.shared.fetches.wants(&space, &locator, index) {
             let wants = self
-                .asking(&space, &locator, |count, skip| {
+                .asking(&space, &locator, Some(named), |count, skip| {
                     session.chunk_arrived(locator, index, count, false, skip)
                 })
                 .await;
@@ -3685,7 +3685,7 @@ impl Engine {
             }
             Received::Headerless => {
                 let wants = self
-                    .asking(&space, &locator, |_, skip| {
+                    .asking(&space, &locator, Some(named), |_, skip| {
                         session.chunk_again(locator, index, skip)
                     })
                     .await;
@@ -3694,7 +3694,7 @@ impl Engine {
             received => {
                 let whole = received == Received::Whole;
                 let wants = self
-                    .asking(&space, &locator, |count, skip| {
+                    .asking(&space, &locator, Some(named), |count, skip| {
                         session.chunk_arrived(locator, index, count, whole, skip)
                     })
                     .await;
@@ -3711,9 +3711,14 @@ impl Engine {
         &self,
         space: &EventId,
         locator: &frasil_adapter::Locator,
+        named: Option<bool>,
         ask: impl FnOnce(Option<u64>, &dyn Fn(u64) -> bool) -> R,
     ) -> R {
-        let named = self.missing_objects(space).await.contains(locator);
+        // Whether a unit of the space names the object, which it lacks.
+        let named = match named {
+            Some(named) => named,
+            None => self.missing_objects(space).await.contains(locator),
+        };
         let state = self.lock().await;
         let replica = state.replicas.get(space);
         let count = replica.and_then(|replica| replica.object_chunk_count(locator));
@@ -3741,7 +3746,7 @@ impl Engine {
         use crate::fetch::{CHUNKS_PER_WANT, FetchPriority};
         let space = session.space();
         let limited = self.state_limit(&space, &locator).await.is_some();
-        self.asking(&space, &locator, |count, skip| {
+        self.asking(&space, &locator, None, |count, skip| {
             if limited && count.is_none() {
                 session.want_chunks(locator, 0..chunks.end, false, 1, None, skip)
             } else {
