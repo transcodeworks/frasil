@@ -2130,6 +2130,9 @@ impl Driver {
         let mut closing: Option<BoxFuture<'static, ()>> = None;
         // The device's requests for chunks, as they are made and end.
         let mut requests = self.device.fetches().follow();
+        // How long chunks asked for on a stream have been awaited, every
+        // few seconds.
+        let mut waited = self.runtime.sleep(crate::fetch::AWAIT_TICK);
         loop {
             if closing.is_some() && !self.attaching() {
                 return Ended::Stopped("closed by the device".into());
@@ -2186,6 +2189,10 @@ impl Driver {
                 },
                 () = overdue => return Ended::Stopped("closed by the device".into()),
                 () = requested => self.on_requests().await,
+                () = &mut waited => {
+                    waited = self.runtime.sleep(crate::fetch::AWAIT_TICK);
+                    self.on_waited().await
+                }
                 notice = notices.recv() => match notice {
                     Ok(notice) => self.on_placed(notice.space, &notice.placed).await,
                     Err(broadcast::error::RecvError::Lagged(_)) => self.resync().await,
@@ -4235,6 +4242,37 @@ impl Driver {
         }
         #[cfg(any(feature = "server", feature = "server-socket"))]
         self.pump().await;
+        Ok(())
+    }
+
+    /// A few seconds passed: on a stream, each space gives up the chunks
+    /// it awaited too long with no answer and asks for what it has yet
+    /// to ask for (units.md, "Sync", objects), and an object none of
+    /// whose chunks is awaited any longer is no longer reported.
+    async fn on_waited(&mut self) -> Result<()> {
+        if self.wire.by_slices() || self.transport_ended() {
+            return Ok(());
+        }
+        let spaces: Vec<EventId> = self.spaces.keys().copied().collect();
+        for space in spaces {
+            if self.paused(&space) {
+                continue;
+            }
+            let Some(attached) = self.spaces.get_mut(&space) else {
+                continue;
+            };
+            let wants = self
+                .device
+                .sync_waited(&mut attached.session, crate::fetch::AWAIT_TICK)
+                .await;
+            self.send_raw(space, wants).await?;
+        }
+        let spaces = &self.spaces;
+        lock(&self.status).fetching.retain(|locator, _| {
+            spaces
+                .values()
+                .any(|attached| attached.session.is_fetching(locator))
+        });
         Ok(())
     }
 

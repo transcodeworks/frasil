@@ -614,3 +614,50 @@ async fn a_chunk_with_no_header_is_kept_under_the_header_held() {
         blob.plaintext
     );
 }
+
+/// A request that starts past the object's end, made while Bob holds no
+/// header of it, gets no answer. It does not hold the object up: once
+/// the wait for an answer is over, the chunks are given up and what the
+/// session has yet to ask for is asked.
+#[tokio::test]
+async fn a_request_past_the_end_does_not_hold_up_the_object() {
+    let blob = blob().await;
+    let (mut bobs, mut alices) = synced_on_demand(&blob).await;
+    let by_bob = Acknowledger::Member(blob.bob.device_id().0);
+    let past = blob
+        .bob
+        .fetch_chunks(blob.space, blob.locator, 10..20, FetchPriority::Position);
+    let asked = blob.bob.sync_fetches(&mut bobs).await;
+    assert_eq!(wants(&asked), vec![(10, 10)]);
+    for message in asked {
+        let answers = blob
+            .alice
+            .sync_receive(&mut alices, by_bob, message)
+            .await
+            .unwrap();
+        assert!(answers.is_empty(), "nothing is past the end: {answers:?}");
+    }
+    assert!(bobs.awaits_chunk(&blob.locator, 10));
+
+    // The whole object, behind the chunks awaited.
+    let whole = blob.bob.fetch_chunks(
+        blob.space,
+        blob.locator,
+        0..u64::MAX,
+        FetchPriority::Background,
+    );
+    assert!(blob.bob.sync_fetches(&mut bobs).await.is_empty());
+    let tick = std::time::Duration::from_secs(5);
+    for _ in 0..5 {
+        assert!(blob.bob.sync_waited(&mut bobs, tick).await.is_empty());
+    }
+    let asked = blob.bob.sync_waited(&mut bobs, tick).await;
+    assert_eq!(wants(&asked), vec![(0, 64)]);
+    pump(&blob, &mut bobs, &mut alices, asked).await;
+    assert_eq!(
+        blob.bob.object(&blob.space, &blob.locator).await.unwrap(),
+        blob.plaintext
+    );
+    assert!(!bobs.is_fetching(&blob.locator));
+    drop((past, whole));
+}

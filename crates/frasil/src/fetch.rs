@@ -25,6 +25,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 use tokio::sync::{Notify, watch};
 
 /// The most chunks one `ObjectWant` asks for (units.md, "Sync messages").
@@ -154,11 +155,11 @@ impl Request {
     not(any(feature = "server", feature = "server-socket")),
     allow(dead_code)
 )]
-pub(crate) fn again_after(stopped: u32) -> std::time::Duration {
+pub(crate) fn again_after(stopped: u32) -> Duration {
     const FIRST_MS: u64 = 500;
     const MOST_MS: u64 = 30_000;
     let wait = FIRST_MS.saturating_mul(1u64.checked_shl(stopped).unwrap_or(u64::MAX));
-    std::time::Duration::from_millis(wait.min(MOST_MS))
+    Duration::from_millis(wait.min(MOST_MS))
 }
 
 /// The requests made of a device and still wanted.
@@ -597,12 +598,29 @@ struct Asked {
     later: VecDeque<Range<u64>>,
     /// The object's chunk count, once a header is held or arrived.
     count: Option<u64>,
-    /// How many chunks were asked for again.
+    /// How many chunks were asked for again, and how many times those
+    /// awaited were given up for want of an answer.
     again: u32,
+    /// How long chunks have been awaited with none of the object
+    /// arriving.
+    idle: Duration,
 }
 
 /// How many chunks of one object are asked for again on a stream.
 const ASK_AGAIN: u32 = 8;
+
+/// How long chunks asked for on a stream are awaited while nothing of
+/// their object arrives, before they are given up: the other side sends
+/// nothing for a chunk past the object's end, and nothing says so.
+pub(crate) const AWAIT_MOST: Duration = Duration::from_secs(30);
+
+/// How often a connection tells its sessions of the time passed
+/// ([`Asks::waited`]).
+#[cfg_attr(
+    not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+    allow(dead_code)
+)]
+pub(crate) const AWAIT_TICK: Duration = Duration::from_secs(5);
 
 /// How many chunks in a row a range with no known end is searched for one
 /// to ask for, before the rest of it is left.
@@ -696,6 +714,9 @@ impl Asks {
             asked.learn(count);
         }
         let awaited = asked.awaited.remove(&index);
+        if awaited {
+            asked.idle = Duration::ZERO;
+        }
         let wants = if awaited && asked.awaited.is_empty() {
             asked.next_batch(CHUNKS_PER_WANT, &skip)
         } else {
@@ -721,6 +742,7 @@ impl Asks {
         if !asked.awaited.remove(&index) {
             return Vec::new();
         }
+        asked.idle = Duration::ZERO;
         if asked.again < ASK_AGAIN {
             asked.again += 1;
             asked.later.push_front(index..index.saturating_add(1));
@@ -730,6 +752,49 @@ impl Asks {
         } else {
             Vec::new()
         };
+        self.drop_idle(locator);
+        wants
+    }
+
+    /// The objects with chunks awaited or yet to ask for.
+    pub(crate) fn objects(&self) -> Vec<Locator> {
+        self.objects.keys().copied().collect()
+    }
+
+    /// Time passed with no chunk of an object arriving: the
+    /// `ObjectWant`s that follow. `count` is the object's chunk count
+    /// when the device holds its header by now, from this side or
+    /// another: no chunk past it is awaited any longer. Chunks awaited
+    /// for [`AWAIT_MOST`] are given up, so that what is yet to ask for
+    /// is asked; an object whose chunks were given up, or asked for
+    /// again, as often as a chunk is asked for again is asked for no
+    /// further.
+    pub(crate) fn waited(
+        &mut self,
+        locator: &Locator,
+        elapsed: Duration,
+        count: Option<u64>,
+        skip: impl Fn(u64) -> bool,
+    ) -> Vec<Want> {
+        let Some(asked) = self.objects.get_mut(locator) else {
+            return Vec::new();
+        };
+        if let Some(count) = count {
+            asked.learn(count);
+        }
+        if !asked.awaited.is_empty() {
+            asked.idle = asked.idle.saturating_add(elapsed);
+            if asked.idle < AWAIT_MOST {
+                return Vec::new();
+            }
+            asked.awaited.clear();
+            asked.again = asked.again.saturating_add(1);
+            if asked.again > ASK_AGAIN {
+                asked.later.clear();
+            }
+        }
+        asked.idle = Duration::ZERO;
+        let wants = asked.next_batch(CHUNKS_PER_WANT, &skip);
         self.drop_idle(locator);
         wants
     }
@@ -795,6 +860,10 @@ impl Asked {
         }
         for (first, count) in &wants {
             self.awaited.extend(*first..first.saturating_add(*count));
+        }
+        if !wants.is_empty() {
+            // The wait for an answer starts with the latest ask.
+            self.idle = Duration::ZERO;
         }
         (wants, at)
     }
@@ -1139,6 +1208,90 @@ mod tests {
             index != 6
         });
         assert_eq!(wants, vec![(6, 1)]);
+    }
+
+    /// Chunks asked for past the end of an object, of which no header is
+    /// held, get no answer: once the header is held by another route
+    /// they are awaited no longer, and without one they are given up
+    /// after a wait. Either way what is yet to ask for is asked then.
+    #[test]
+    fn chunks_past_the_end_do_not_hold_up_the_object() {
+        use super::AWAIT_MOST;
+        use std::time::Duration;
+        let tick = Duration::from_secs(5);
+        let locator = [3; 64];
+        // The header arrives by another route.
+        let mut asks = Asks::default();
+        assert_eq!(
+            asks.want(locator, 10..20, true, CHUNKS_PER_WANT, None, |_| false),
+            vec![(10, 10)]
+        );
+        assert!(
+            asks.want(locator, 0..u64::MAX, false, CHUNKS_PER_WANT, None, |_| {
+                false
+            })
+            .is_empty(),
+            "the batch waits for the chunks awaited"
+        );
+        assert!(asks.waited(&locator, tick, None, |_| false).is_empty());
+        assert_eq!(
+            asks.waited(&locator, tick, Some(5), |_| false),
+            vec![(0, 5)]
+        );
+        assert!(!asks.awaits(&locator, 10));
+        // No header by any route: given up after the wait, not before.
+        let mut asks = Asks::default();
+        asks.want(locator, 10..20, true, CHUNKS_PER_WANT, None, |_| false);
+        asks.want(locator, 0..2, false, CHUNKS_PER_WANT, None, |_| false);
+        let mut waited = Duration::ZERO;
+        let wants = loop {
+            let wants = asks.waited(&locator, tick, None, |_| false);
+            waited += tick;
+            if !wants.is_empty() {
+                break wants;
+            }
+            assert!(waited < AWAIT_MOST, "{waited:?}");
+        };
+        assert_eq!(waited, AWAIT_MOST);
+        assert_eq!(wants, vec![(0, 2)]);
+        assert!(!asks.awaits(&locator, 10));
+        // An arrival starts the wait again.
+        assert!(
+            asks.waited(&locator, AWAIT_MOST - tick, None, |_| false)
+                .is_empty()
+        );
+        assert!(asks.arrived(&locator, 0, None, |_| false).0);
+        assert!(
+            asks.waited(&locator, AWAIT_MOST - tick, None, |_| false)
+                .is_empty()
+        );
+        assert!(asks.awaits(&locator, 1));
+        // Nothing awaited and nothing to ask for: forgotten.
+        assert!(asks.waited(&locator, tick, None, |_| false).is_empty());
+        assert!(!asks.has(&locator));
+        assert!(asks.objects().is_empty());
+    }
+
+    /// A side that answers nothing at all is asked a few times, and then
+    /// no more.
+    #[test]
+    fn a_side_that_never_answers_is_not_asked_without_end() {
+        use super::AWAIT_MOST;
+        let locator = [3; 64];
+        let mut asks = Asks::default();
+        let first = asks.want(locator, 0..u64::MAX, false, 4, None, |_| false);
+        assert_eq!(first, vec![(0, 4)]);
+        let mut asked = 1;
+        while asks.has(&locator) {
+            if !asks
+                .waited(&locator, AWAIT_MOST, None, |_| false)
+                .is_empty()
+            {
+                asked += 1;
+            }
+            assert!(asked < 100);
+        }
+        assert_eq!(asked, 9);
     }
 
     /// A chunk that was not kept is asked for again with the next batch,

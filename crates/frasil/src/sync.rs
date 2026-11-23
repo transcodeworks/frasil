@@ -417,6 +417,27 @@ impl SyncSession {
         self.wants(locator, wants)
     }
 
+    /// The objects with chunks asked for and not yet arrived, or yet to
+    /// ask for.
+    pub(crate) fn fetching(&self) -> Vec<Locator> {
+        self.asks.objects()
+    }
+
+    /// Time passed with no chunk of an object arriving: chunks past the
+    /// end of an object whose header is held by now are awaited no
+    /// longer, those that got no answer for too long are given up, and
+    /// the `ObjectWant`s for what is yet to ask for follow.
+    pub(crate) fn chunks_waited(
+        &mut self,
+        locator: Locator,
+        elapsed: std::time::Duration,
+        count: Option<u64>,
+        skip: impl Fn(u64) -> bool,
+    ) -> Vec<SyncMessage> {
+        let wants = self.asks.waited(&locator, elapsed, count, skip);
+        self.wants(locator, wants)
+    }
+
     /// Withholds these events from the other side: this device's own
     /// skeleton events, which travel only on administration connections
     /// (peers.md, "Administration connections").

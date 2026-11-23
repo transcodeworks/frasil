@@ -372,6 +372,10 @@ async fn drive(
         driver.offer_next().await?;
     }
     let mut tick = tokio::time::interval(Duration::from_millis(500));
+    // How long chunks asked for have been awaited, every few seconds.
+    let mut waited = tokio::time::interval(crate::fetch::AWAIT_TICK);
+    waited.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    waited.reset();
     // The device's requests for chunks of objects, as they are made.
     let mut requests = device.fetches().follow();
     loop {
@@ -398,6 +402,7 @@ async fn drive(
                     return Ok(());
                 }
             }
+            _ = waited.tick() => driver.on_waited().await?,
             (space, frame) = outgoing_next(outgoing) => {
                 driver.send_ephemeral(space, frame).await;
             }
@@ -1269,6 +1274,29 @@ impl Driver {
                 continue;
             };
             let wants = self.device.want_requests(&mut state.sync, true).await;
+            self.queue(attach, wants).await?;
+        }
+        Ok(())
+    }
+
+    /// A few seconds passed: each attach gives up the chunks it awaited
+    /// too long with no answer, and asks for what it has yet to ask for
+    /// (units.md, "Sync", objects).
+    async fn on_waited(&mut self) -> Result<()> {
+        let attaches: Vec<u32> = self
+            .attaches
+            .iter()
+            .filter(|(_, a)| a.started)
+            .map(|(n, _)| *n)
+            .collect();
+        for attach in attaches {
+            let Some(state) = self.attaches.get_mut(&attach) else {
+                continue;
+            };
+            let wants = self
+                .device
+                .sync_waited(&mut state.sync, crate::fetch::AWAIT_TICK)
+                .await;
             self.queue(attach, wants).await?;
         }
         Ok(())

@@ -31,7 +31,8 @@
 //! - [`Engine::fetch_chunks`]: asks the space's connections for a range of
 //!   an object's chunks at a [`FetchPriority`], until its [`Fetch`] is
 //!   cancelled or dropped; the [`Fetch`] says when a connection gave the
-//!   request up for good ([`FetchEnd`]).
+//!   request up for good ([`FetchEnd`]). A caller that drives a session
+//!   itself tells it of time passed with [`Engine::sync_waited`].
 //! - [`intake`]: the client's readers, through which every byte another
 //!   party or the store hands the device passes first.
 //! - [`maintenance`], [`persons`] and [`snapshots`]: heals and cascades,

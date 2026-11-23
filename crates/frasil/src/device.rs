@@ -3813,6 +3813,38 @@ impl Engine {
         self.want_requests(session, true).await
     }
 
+    /// Tells a session that `elapsed` passed: the `ObjectWant`s that
+    /// follow. A chunk asked for past the end of an object gets no
+    /// answer (units.md, "Sync", objects), so chunks awaited past the end
+    /// of an object whose header the device holds by now are awaited no
+    /// longer, and chunks awaited for half a minute with nothing of
+    /// their object arriving are given up; what the session has yet to
+    /// ask for of the object is asked then. A connection calls it every
+    /// few seconds.
+    pub async fn sync_waited(
+        &self,
+        session: &mut SyncSession,
+        elapsed: std::time::Duration,
+    ) -> Vec<SyncMessage> {
+        let fetching = session.fetching();
+        if fetching.is_empty() {
+            return Vec::new();
+        }
+        let space = session.space();
+        let missing = self.missing_objects(&space).await;
+        let mut out = Vec::new();
+        for locator in fetching {
+            let named = missing.contains(&locator);
+            out.extend(
+                self.asking(&space, &locator, Some(named), |count, skip, _| {
+                    session.chunks_waited(locator, elapsed, count, skip)
+                })
+                .await,
+            );
+        }
+        out
+    }
+
     /// `ObjectWant`s on a session for the requests for chunks made of
     /// this device ([`Engine::fetch_chunks`]) that the session has not
     /// taken yet: with `announced`, only for objects the other side
