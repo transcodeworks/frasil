@@ -3649,9 +3649,10 @@ impl Engine {
     /// asked it for: checked and kept ([`Engine::receive_part`]) if it is
     /// still wanted, by a unit of the space that names its object or by
     /// a request for it ([`Engine::fetch_chunks`]), and dropped as it
-    /// arrives if nobody wants it any more. Returns what became of it and
-    /// the `ObjectWant`s that follow: the next chunks, once every chunk
-    /// awaited is in.
+    /// arrives if nobody wants it any more. A chunk that is wanted and
+    /// could not be kept is asked for again, a few times in a row. Returns
+    /// what became of it and the `ObjectWant`s that follow: the next
+    /// chunks, once every chunk awaited is in.
     ///
     /// # Errors
     ///
@@ -3668,7 +3669,7 @@ impl Engine {
         if !named && !self.chunk_requested(&space, &locator, index).await {
             let wants = self
                 .asking(&space, &locator, Some(named), |count, skip, _| {
-                    session.chunk_arrived(locator, index, count, false, skip)
+                    session.chunk_arrived(locator, index, count, false, false, skip)
                 })
                 .await;
             return Ok((Taken::Dropped, wants));
@@ -3690,19 +3691,23 @@ impl Engine {
                 });
                 Ok((Taken::Refused, Vec::new()))
             }
+            // Not kept, and so not counted as arrived: asked for again.
             Received::Headerless => {
-                let wants = self
+                let (wants, ended) = self
                     .asking(&space, &locator, Some(named), |_, skip, _| {
                         session.chunk_again(locator, index, skip)
                     })
                     .await;
+                if ended {
+                    session.taker(&self.shared.fetches).unserved(&locator);
+                }
                 Ok((Taken::Dropped, wants))
             }
             received => {
                 let whole = received == Received::Whole;
                 let wants = self
                     .asking(&space, &locator, Some(named), |count, skip, _| {
-                        session.chunk_arrived(locator, index, count, whole, skip)
+                        session.chunk_arrived(locator, index, count, whole, true, skip)
                     })
                     .await;
                 Ok((if whole { Taken::Whole } else { Taken::Kept }, wants))
@@ -3820,10 +3825,14 @@ impl Engine {
     /// follow. A chunk asked for past the end of an object gets no
     /// answer (units.md, "Sync", objects), so chunks awaited past the end
     /// of an object whose header the device holds by now are awaited no
-    /// longer, and chunks awaited for half a minute with nothing of
-    /// their object arriving are given up; what the session has yet to
-    /// ask for of the object is asked then. A connection calls it every
-    /// few seconds.
+    /// longer, and chunks awaited for two minutes with nothing the
+    /// session asked for arriving are given up and asked for again, with
+    /// what the session has yet to ask for of the object. An object whose
+    /// chunks were given up eight times in a row with none of it kept is
+    /// asked for no further on the session, and the requests for it hear
+    /// [`FetchEnd::Unserved`](crate::fetch::FetchEnd::Unserved) unless
+    /// another connection of the space will still try. A connection
+    /// calls it every few seconds.
     pub async fn sync_waited(
         &self,
         session: &mut SyncSession,
@@ -3838,12 +3847,15 @@ impl Engine {
         let mut out = Vec::new();
         for locator in fetching {
             let named = missing.contains(&locator);
-            out.extend(
-                self.asking(&space, &locator, Some(named), |count, skip, _| {
+            let (wants, ended) = self
+                .asking(&space, &locator, Some(named), |count, skip, _| {
                     session.chunks_waited(locator, elapsed, count, skip)
                 })
-                .await,
-            );
+                .await;
+            if ended {
+                session.taker(&self.shared.fetches).unserved(&locator);
+            }
+            out.extend(wants);
         }
         out
     }

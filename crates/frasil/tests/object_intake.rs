@@ -4,7 +4,8 @@
 //! another party. A member serves a range of chunks from any index, the
 //! first of each answer with the header; a chunk that arrives with no
 //! header the device can check it against is not kept, and an answer
-//! nobody wants any more is dropped as it arrives.
+//! nobody wants any more is dropped as it arrives. Chunks that get no
+//! answer are asked for again, a few times in a row.
 #![cfg(feature = "adapter-blobs")]
 
 use frasil::advanced::sync::SyncSession;
@@ -647,8 +648,9 @@ async fn a_request_past_the_end_does_not_hold_up_the_object() {
         FetchPriority::Background,
     );
     assert!(blob.bob.sync_fetches(&mut bobs).await.is_empty());
+    // Two minutes, less the last five seconds.
     let tick = std::time::Duration::from_secs(5);
-    for _ in 0..5 {
+    for _ in 0..23 {
         assert!(blob.bob.sync_waited(&mut bobs, tick).await.is_empty());
     }
     let asked = blob.bob.sync_waited(&mut bobs, tick).await;
@@ -663,8 +665,9 @@ async fn a_request_past_the_end_does_not_hold_up_the_object() {
 }
 
 /// A member that never sends a header: each chunk it sends with none is
-/// not kept and is asked for again, eight times for the object and then
-/// no more, and the side is not refused.
+/// not kept and is asked for again, eight times in a row for the object
+/// and then no more, which the request's holder hears; the side is not
+/// refused.
 #[tokio::test]
 async fn a_member_that_never_sends_a_header_is_asked_again_eight_times() {
     let blob = blob().await;
@@ -709,7 +712,11 @@ async fn a_member_that_never_sends_a_header_is_asked_again_eight_times() {
     assert_eq!(asked_again, 8);
     assert!(!bobs.is_fetching(&blob.locator));
     assert!(!holds(&blob, 0).await && !holds(&blob, 1).await);
-    assert_eq!(fetch.end(), None, "the side is not refused");
+    assert_eq!(
+        fetch.end(),
+        Some(FetchEnd::Unserved),
+        "the holder hears, and the side is not refused"
+    );
 
     // With its header, the side serves the object on the same session.
     let whole = blob.bob.fetch_chunks(
@@ -720,10 +727,84 @@ async fn a_member_that_never_sends_a_header_is_asked_again_eight_times() {
     );
     let asked = blob.bob.sync_fetches(&mut bobs).await;
     assert_eq!(wants(&asked), vec![(0, 64)]);
+    assert_eq!(whole.end(), None);
     pump(&blob, &mut bobs, &mut alices, asked).await;
     assert_eq!(
         blob.bob.object(&blob.space, &blob.locator).await.unwrap(),
         blob.plaintext
     );
     drop((fetch, whole));
+}
+
+/// A side that answers nothing for an object, time after time, is asked
+/// eight times more and then no further: the holder of the request hears
+/// that it went unserved, and a request made afterwards is asked for on
+/// the same session.
+#[tokio::test]
+async fn a_side_that_never_answers_ends_the_request_unserved() {
+    let blob = blob().await;
+    let (mut bobs, mut alices) = synced_on_demand(&blob).await;
+    let fetch = blob
+        .bob
+        .fetch_chunks(blob.space, blob.locator, 0..2, FetchPriority::Position);
+    let asked = blob.bob.sync_fetches(&mut bobs).await;
+    assert_eq!(wants(&asked), vec![(0, 2)]);
+    let tick = std::time::Duration::from_secs(5);
+    let mut again = 0;
+    for _ in 0..24 * 9 {
+        assert_eq!(fetch.end(), None);
+        let asked = blob.bob.sync_waited(&mut bobs, tick).await;
+        if !asked.is_empty() {
+            assert_eq!(wants(&asked), vec![(0, 2)]);
+            again += 1;
+        }
+    }
+    assert_eq!(again, 8);
+    assert_eq!(fetch.end(), Some(FetchEnd::Unserved));
+    assert!(!bobs.is_fetching(&blob.locator));
+
+    let later = blob
+        .bob
+        .fetch_chunks(blob.space, blob.locator, 0..2, FetchPriority::Position);
+    assert_eq!(later.end(), None);
+    let asked = blob.bob.sync_fetches(&mut bobs).await;
+    assert_eq!(wants(&asked), vec![(0, 2)]);
+    pump(&blob, &mut bobs, &mut alices, asked).await;
+    assert_eq!(
+        blob.bob.object(&blob.space, &blob.locator).await.unwrap(),
+        blob.plaintext
+    );
+    drop((fetch, later));
+}
+
+/// Chunks whose answer does not come within the wait are given up and
+/// asked for again on the same session: with one connection, the object
+/// still arrives, and the request hears of no end.
+#[tokio::test]
+async fn chunks_given_up_are_asked_for_again_on_the_session() {
+    let blob = blob().await;
+    let (mut bobs, mut alices) = synced_on_demand(&blob).await;
+    let fetch = blob
+        .bob
+        .fetch_chunks(blob.space, blob.locator, 0..2, FetchPriority::Position);
+    let asked = blob.bob.sync_fetches(&mut bobs).await;
+    assert_eq!(wants(&asked), vec![(0, 2)]);
+    // The ask is lost: no answer comes.
+    drop(asked);
+    let tick = std::time::Duration::from_secs(5);
+    let mut again = Vec::new();
+    for _ in 0..120 {
+        again = blob.bob.sync_waited(&mut bobs, tick).await;
+        if !again.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(wants(&again), vec![(0, 2)], "asked for again");
+    assert!(bobs.awaits_chunk(&blob.locator, 0));
+    pump(&blob, &mut bobs, &mut alices, again).await;
+    assert_eq!(
+        blob.bob.object(&blob.space, &blob.locator).await.unwrap(),
+        blob.plaintext
+    );
+    assert_eq!(fetch.end(), None);
 }

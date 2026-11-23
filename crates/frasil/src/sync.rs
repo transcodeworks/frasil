@@ -403,34 +403,39 @@ impl SyncSession {
     /// After a chunk of an object asked for arrived: `ObjectWant`s for the
     /// next chunks once every chunk awaited is in, and the object is not
     /// yet whole. `count` is the object's chunk count, once its header is
-    /// known, and `skip` says which chunks are not to be asked for.
+    /// known, `kept` says whether the device kept the chunk, and `skip`
+    /// says which chunks are not to be asked for.
     pub(crate) fn chunk_arrived(
         &mut self,
         locator: Locator,
         index: u64,
         count: Option<u64>,
         whole: bool,
+        kept: bool,
         skip: impl Fn(u64) -> bool,
     ) -> Vec<SyncMessage> {
         if whole {
             self.asks.forget(&locator);
             return Vec::new();
         }
-        let (_, wants) = self.asks.arrived(&locator, index, count, skip);
+        let (_, wants) = self.asks.arrived(&locator, index, count, kept, skip);
         self.wants(locator, wants)
     }
 
-    /// A chunk asked for arrived and was not kept, for want of a header:
-    /// it is asked for again, in an answer of its own, whose first chunk
-    /// carries the header (units.md, "Sync", objects).
+    /// A chunk asked for arrived and was not kept, for want of a header
+    /// or because the device does not take it yet: it is asked for
+    /// again, in an answer of its own, whose first chunk carries the
+    /// header (units.md, "Sync", objects). `true` when the object's
+    /// chunks were asked for again so often, with none kept, that the
+    /// session asks for it no further.
     pub(crate) fn chunk_again(
         &mut self,
         locator: Locator,
         index: u64,
         skip: impl Fn(u64) -> bool,
-    ) -> Vec<SyncMessage> {
-        let wants = self.asks.again(&locator, index, skip);
-        self.wants(locator, wants)
+    ) -> (Vec<SyncMessage>, bool) {
+        let (wants, ended) = self.asks.again(&locator, index, skip);
+        (self.wants(locator, wants), ended)
     }
 
     /// The objects with chunks asked for and not yet arrived, or yet to
@@ -439,19 +444,21 @@ impl SyncSession {
         self.asks.objects()
     }
 
-    /// Time passed with no chunk of an object arriving: chunks past the
-    /// end of an object whose header is held by now are awaited no
-    /// longer, those that got no answer for too long are given up, and
-    /// the `ObjectWant`s for what is yet to ask for follow.
+    /// Time passed with nothing asked for arriving: chunks past the end
+    /// of an object whose header is held by now are awaited no longer,
+    /// those that got no answer for too long are given up and asked for
+    /// again with what is yet to ask for, and the `ObjectWant`s follow.
+    /// `true` when the object's chunks were given up so often, with none
+    /// kept, that the session asks for it no further.
     pub(crate) fn chunks_waited(
         &mut self,
         locator: Locator,
         elapsed: std::time::Duration,
         count: Option<u64>,
         skip: impl Fn(u64) -> bool,
-    ) -> Vec<SyncMessage> {
-        let wants = self.asks.waited(&locator, elapsed, count, skip);
-        self.wants(locator, wants)
+    ) -> (Vec<SyncMessage>, bool) {
+        let (wants, ended) = self.asks.waited(&locator, elapsed, count, skip);
+        (self.wants(locator, wants), ended)
     }
 
     /// Withholds these events from the other side: this device's own

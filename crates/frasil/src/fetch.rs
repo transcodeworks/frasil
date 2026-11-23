@@ -111,6 +111,12 @@ pub enum FetchEnd {
     /// header gives them (transport.md, "Objects over HTTP"): what the
     /// device held of the object was dropped.
     Malformed,
+    /// The other side of a stream sent nothing the device could keep of
+    /// the chunks asked for, time after time: no answer, or chunks it
+    /// could not check or take. What the device holds of the object
+    /// stays, and the object is not refused: a request made afterwards
+    /// asks for it again.
+    Unserved,
 }
 
 /// One request for chunks of an object.
@@ -370,6 +376,22 @@ impl Taker {
         }
         if live.given_up(&self.space, locator, None).is_some() {
             live.tell(&self.space, locator, end);
+        }
+    }
+
+    /// The connection asks no further for the chunks it asked of an
+    /// object, for want of an answer it could keep, without giving the
+    /// object up: a request made afterwards is asked for again. Each
+    /// request wanted for it now hears of it, unless another connection
+    /// of the space will still try.
+    pub(crate) fn unserved(&self, locator: &Locator) {
+        let live = self.requests.live();
+        let others = live
+            .takers
+            .iter()
+            .any(|(id, taking)| *id != self.id && taking.space == self.space);
+        if !others || live.given_up(&self.space, locator, Some(self.id)).is_some() {
+            live.tell(&self.space, locator, FetchEnd::Unserved);
         }
     }
 }
@@ -696,21 +718,29 @@ struct Asked {
     later: VecDeque<Range<u64>>,
     /// The object's chunk count, once a header is held or arrived.
     count: Option<u64>,
-    /// How many chunks were asked for again, and how many times those
-    /// awaited were given up for want of an answer.
+    /// How many times in a row, with no chunk of the object kept
+    /// between, a chunk was asked for again or those awaited were given
+    /// up for want of an answer.
     again: u32,
-    /// How long chunks have been awaited with none of the object
-    /// arriving.
+    /// How long chunks have been awaited with nothing asked for arriving
+    /// on the session.
     idle: Duration,
 }
 
-/// How many chunks of one object are asked for again on a stream.
+/// How many times in a row chunks of one object are asked for again on a
+/// stream with none of it kept, before the object is asked for no
+/// further.
 const ASK_AGAIN: u32 = 8;
 
-/// How long chunks asked for on a stream are awaited while nothing of
-/// their object arrives, before they are given up: the other side sends
-/// nothing for a chunk past the object's end, and nothing says so.
-pub(crate) const AWAIT_MOST: Duration = Duration::from_secs(30);
+/// How long chunks asked for on a stream are awaited while nothing asked
+/// for arrives on the session, before they are given up and asked for
+/// again: the other side sends nothing for a chunk past the object's end,
+/// and nothing says so. A session hears of a chunk only once all of it
+/// arrived, so the wait is long enough for one sealed chunk, about a
+/// mebibyte, on a link of 70 kbit/s, and a chunk of any object the
+/// session asked for starts it over, since the other side answers what it
+/// was asked in turn.
+pub(crate) const AWAIT_MOST: Duration = Duration::from_secs(120);
 
 /// How often a connection tells its sessions of the time passed
 /// ([`Asks::waited`]).
@@ -797,12 +827,15 @@ impl Asks {
     /// A chunk arrived: whether it was awaited, and the `ObjectWant`s for
     /// the next batch, once none is awaited. `count` is the object's
     /// chunk count when the chunk carries a header or the device holds
-    /// one.
+    /// one, and `kept` says whether the device kept the chunk: one
+    /// awaited and kept shows that the other side serves the object, so
+    /// that what was asked for again before counts no longer.
     pub(crate) fn arrived(
         &mut self,
         locator: &Locator,
         index: u64,
         count: Option<u64>,
+        kept: bool,
         skip: impl Fn(u64) -> bool,
     ) -> (bool, Vec<Want>) {
         let Some(asked) = self.objects.get_mut(locator) else {
@@ -812,8 +845,8 @@ impl Asks {
             asked.learn(count);
         }
         let awaited = asked.awaited.remove(&index);
-        if awaited {
-            asked.idle = Duration::ZERO;
+        if awaited && kept {
+            asked.again = 0;
         }
         let wants = if awaited && asked.awaited.is_empty() {
             asked.next_batch(CHUNKS_PER_WANT, &skip)
@@ -821,37 +854,53 @@ impl Asks {
             Vec::new()
         };
         self.drop_idle(locator);
+        if awaited {
+            self.heard();
+        }
         (awaited, wants)
     }
 
     /// A chunk awaited arrived and was not kept: it is asked for again
     /// with the next batch, whose `ObjectWant`s these are once nothing
-    /// else is awaited. A few times for one object, so that a side whose
-    /// answers are never kept is not asked without end.
+    /// else is awaited. [`ASK_AGAIN`] times in a row for one object, so
+    /// that a side whose answers are never kept is not asked without
+    /// end: after that the object is asked for no further, which `true`
+    /// says.
     pub(crate) fn again(
         &mut self,
         locator: &Locator,
         index: u64,
         skip: impl Fn(u64) -> bool,
-    ) -> Vec<Want> {
+    ) -> (Vec<Want>, bool) {
         let Some(asked) = self.objects.get_mut(locator) else {
-            return Vec::new();
+            return (Vec::new(), false);
         };
         if !asked.awaited.remove(&index) {
-            return Vec::new();
+            return (Vec::new(), false);
         }
-        asked.idle = Duration::ZERO;
-        if asked.again < ASK_AGAIN {
-            asked.again += 1;
-            asked.later.push_front(index..index.saturating_add(1));
+        asked.again = asked.again.saturating_add(1);
+        if asked.again > ASK_AGAIN {
+            self.objects.remove(locator);
+            self.heard();
+            return (Vec::new(), true);
         }
+        asked.put_back(index);
         let wants = if asked.awaited.is_empty() {
             asked.next_batch(CHUNKS_PER_WANT, &skip)
         } else {
             Vec::new()
         };
         self.drop_idle(locator);
-        wants
+        self.heard();
+        (wants, false)
+    }
+
+    /// Something asked for arrived on the session: the other side
+    /// answers, and the wait for each object's chunks starts over.
+    fn heard(&mut self) {
+        for asked in self.objects.values_mut() {
+            asked.idle = Duration::ZERO;
+        }
     }
 
     /// The objects with chunks awaited or yet to ask for.
@@ -859,23 +908,24 @@ impl Asks {
         self.objects.keys().copied().collect()
     }
 
-    /// Time passed with no chunk of an object arriving: the
-    /// `ObjectWant`s that follow. `count` is the object's chunk count
-    /// when the device holds its header by now, from this side or
-    /// another: no chunk past it is awaited any longer. Chunks awaited
-    /// for [`AWAIT_MOST`] are given up, so that what is yet to ask for
-    /// is asked; an object whose chunks were given up, or asked for
-    /// again, as often as a chunk is asked for again is asked for no
-    /// further.
+    /// Time passed with nothing asked for arriving on the session: the
+    /// `ObjectWant`s that follow for an object. `count` is the object's
+    /// chunk count when the device holds its header by now, from this
+    /// side or another: no chunk past it is awaited any longer. Chunks
+    /// awaited for [`AWAIT_MOST`] are given up and put back among those
+    /// yet to ask for, so that they are asked for again with the rest.
+    /// An object whose chunks were given up, or asked for again,
+    /// [`ASK_AGAIN`] times in a row with none of it kept is asked for no
+    /// further, which `true` says.
     pub(crate) fn waited(
         &mut self,
         locator: &Locator,
         elapsed: Duration,
         count: Option<u64>,
         skip: impl Fn(u64) -> bool,
-    ) -> Vec<Want> {
+    ) -> (Vec<Want>, bool) {
         let Some(asked) = self.objects.get_mut(locator) else {
-            return Vec::new();
+            return (Vec::new(), false);
         };
         if let Some(count) = count {
             asked.learn(count);
@@ -883,18 +933,23 @@ impl Asks {
         if !asked.awaited.is_empty() {
             asked.idle = asked.idle.saturating_add(elapsed);
             if asked.idle < AWAIT_MOST {
-                return Vec::new();
+                return (Vec::new(), false);
             }
-            asked.awaited.clear();
             asked.again = asked.again.saturating_add(1);
             if asked.again > ASK_AGAIN {
-                asked.later.clear();
+                self.objects.remove(locator);
+                return (Vec::new(), true);
+            }
+            // From the last, so that a run of them joins the range it
+            // was taken from.
+            for index in std::mem::take(&mut asked.awaited).into_iter().rev() {
+                asked.put_back(index);
             }
         }
         asked.idle = Duration::ZERO;
         let wants = asked.next_batch(CHUNKS_PER_WANT, &skip);
         self.drop_idle(locator);
-        wants
+        (wants, false)
     }
 
     fn drop_idle(&mut self, locator: &Locator) {
@@ -917,6 +972,32 @@ impl Asked {
             later.end = later.end.min(count);
         }
         self.later.retain(|later| !later.is_empty());
+    }
+
+    /// Puts a chunk no longer awaited back among those yet to ask for,
+    /// in the order of their indices: into a range that holds it or ends
+    /// beside it, or else before the first range after it.
+    fn put_back(&mut self, index: u64) {
+        if self.count.is_some_and(|count| index >= count)
+            || self.later.iter().any(|later| later.contains(&index))
+        {
+            return;
+        }
+        let after = index.saturating_add(1);
+        if let Some(later) = self.later.iter_mut().find(|later| later.start == after) {
+            later.start = index;
+            return;
+        }
+        if let Some(later) = self.later.iter_mut().find(|later| later.end == index) {
+            later.end = after;
+            return;
+        }
+        let at = self
+            .later
+            .iter()
+            .position(|later| later.start > index)
+            .unwrap_or(self.later.len());
+        self.later.insert(at, index..after);
     }
 
     /// Awaits the first chunks of `chunks` that are neither awaited nor
@@ -1155,7 +1236,24 @@ mod tests {
         assert_eq!(other.end(), None);
         drop(second);
         assert_eq!(other.ended().await, FetchEnd::Refused);
-        drop((first, elsewhere));
+
+        // Chunks left unserved are told of when no other connection will
+        // try, and the object is not given up: a later request waits.
+        let third = requests.attach(SPACE);
+        let unserved = requests.add(SPACE, [4; 64], 0..1, FetchPriority::Position);
+        third.unserved(&[4; 64]);
+        assert_eq!(unserved.end(), None, "the first connection will try");
+        first.give_up(&[4; 64], FetchEnd::Refused);
+        assert_eq!(unserved.end(), None, "the third has not given it up");
+        third.unserved(&[4; 64]);
+        assert_eq!(unserved.ended().await, FetchEnd::Unserved);
+        drop(first);
+        third.unserved(&[5; 64]);
+        let again = requests.add(SPACE, [5; 64], 0..1, FetchPriority::Position);
+        assert_eq!(again.end(), None);
+        third.unserved(&[5; 64]);
+        assert_eq!(again.ended().await, FetchEnd::Unserved);
+        drop(elsewhere);
     }
 
     /// Two fetches that need one slice ask for it once, and it goes once
@@ -1242,23 +1340,26 @@ mod tests {
             .is_empty()
         );
         // Chunk 0 carries the header: 100 chunks.
-        let (awaited, wants) = asks.arrived(&locator, 0, Some(100), |_| false);
+        let (awaited, wants) = asks.arrived(&locator, 0, Some(100), true, |_| false);
         assert!(awaited && wants.is_empty());
         for index in 1..63 {
-            let (awaited, wants) = asks.arrived(&locator, index, None, |_| false);
+            let (awaited, wants) = asks.arrived(&locator, index, None, true, |_| false);
             assert!(awaited && wants.is_empty(), "{index}");
         }
-        let (awaited, wants) = asks.arrived(&locator, 63, None, |_| false);
+        let (awaited, wants) = asks.arrived(&locator, 63, None, true, |_| false);
         assert!(awaited);
         assert_eq!(wants, vec![(64, 36)]);
         // A chunk nobody awaits is not taken.
-        assert_eq!(asks.arrived(&locator, 63, None, |_| false), (false, vec![]));
         assert_eq!(
-            asks.arrived(&locator, 200, None, |_| false),
+            asks.arrived(&locator, 63, None, true, |_| false),
+            (false, vec![])
+        );
+        assert_eq!(
+            asks.arrived(&locator, 200, None, true, |_| false),
             (false, vec![])
         );
         for index in 64..100 {
-            assert!(asks.arrived(&locator, index, None, |_| false).0);
+            assert!(asks.arrived(&locator, index, None, true, |_| false).0);
         }
         assert!(!asks.has(&locator));
     }
@@ -1274,19 +1375,19 @@ mod tests {
             asks.want(locator, 0..u64::MAX, false, 1, None, |_| false),
             vec![(0, 1)]
         );
-        let (awaited, wants) = asks.arrived(&locator, 0, Some(3), |_| false);
+        let (awaited, wants) = asks.arrived(&locator, 0, Some(3), true, |_| false);
         assert!(awaited);
         assert_eq!(wants, vec![(1, 2)]);
-        assert!(asks.arrived(&locator, 1, None, |_| false).0);
-        assert!(asks.arrived(&locator, 2, None, |_| false).0);
+        assert!(asks.arrived(&locator, 1, None, true, |_| false).0);
+        assert!(asks.arrived(&locator, 2, None, true, |_| false).0);
         assert!(!asks.has(&locator));
         // A whole batch asked of an object of two chunks.
         let other = [4; 64];
         asks.want(other, 0..u64::MAX, false, CHUNKS_PER_WANT, None, |_| false);
         assert!(asks.awaits(&other, 40));
-        assert!(asks.arrived(&other, 0, Some(2), |_| false).0);
+        assert!(asks.arrived(&other, 0, Some(2), true, |_| false).0);
         assert!(!asks.awaits(&other, 40));
-        assert!(asks.arrived(&other, 1, None, |_| false).0);
+        assert!(asks.arrived(&other, 1, None, true, |_| false).0);
         assert!(!asks.has(&other));
     }
 
@@ -1320,12 +1421,12 @@ mod tests {
         // The batch ends: the next one leaves out the chunks held.
         let held = |index: u64| (10..14).contains(&index) || index == 5;
         for index in [0, 1, 2] {
-            assert!(asks.arrived(&locator, index, None, held).1.is_empty());
+            assert!(asks.arrived(&locator, index, None, true, held).1.is_empty());
         }
         for index in (10..14).chain(100..164).filter(|index| *index != 11) {
-            assert!(asks.arrived(&locator, index, None, held).0);
+            assert!(asks.arrived(&locator, index, None, true, held).0);
         }
-        let (awaited, wants) = asks.arrived(&locator, 3, Some(40), held);
+        let (awaited, wants) = asks.arrived(&locator, 3, Some(40), true, held);
         assert!(awaited);
         assert_eq!(wants, vec![(4, 1), (6, 4), (14, 26)]);
     }
@@ -1348,7 +1449,7 @@ mod tests {
     /// Chunks asked for past the end of an object, of which no header is
     /// held, get no answer: once the header is held by another route
     /// they are awaited no longer, and without one they are given up
-    /// after a wait. Either way what is yet to ask for is asked then.
+    /// after a wait and asked for again with what is yet to ask for.
     #[test]
     fn chunks_past_the_end_do_not_hold_up_the_object() {
         use super::AWAIT_MOST;
@@ -1368,19 +1469,21 @@ mod tests {
             .is_empty(),
             "the batch waits for the chunks awaited"
         );
-        assert!(asks.waited(&locator, tick, None, |_| false).is_empty());
+        assert!(asks.waited(&locator, tick, None, |_| false).0.is_empty());
         assert_eq!(
             asks.waited(&locator, tick, Some(5), |_| false),
-            vec![(0, 5)]
+            (vec![(0, 5)], false)
         );
         assert!(!asks.awaits(&locator, 10));
-        // No header by any route: given up after the wait, not before.
+        // No header by any route: given up after the wait, not before,
+        // and asked for again behind the chunks before them.
         let mut asks = Asks::default();
         asks.want(locator, 10..20, true, CHUNKS_PER_WANT, None, |_| false);
         asks.want(locator, 0..2, false, CHUNKS_PER_WANT, None, |_| false);
         let mut waited = Duration::ZERO;
         let wants = loop {
-            let wants = asks.waited(&locator, tick, None, |_| false);
+            let (wants, ended) = asks.waited(&locator, tick, None, |_| false);
+            assert!(!ended);
             waited += tick;
             if !wants.is_empty() {
                 break wants;
@@ -1388,27 +1491,120 @@ mod tests {
             assert!(waited < AWAIT_MOST, "{waited:?}");
         };
         assert_eq!(waited, AWAIT_MOST);
-        assert_eq!(wants, vec![(0, 2)]);
-        assert!(!asks.awaits(&locator, 10));
-        // An arrival starts the wait again.
+        assert_eq!(wants, vec![(0, 2), (10, 10)]);
+        assert!(asks.awaits(&locator, 10));
+        // An arrival starts the wait again, and its header ends the wait
+        // for the chunks past the end.
         assert!(
             asks.waited(&locator, AWAIT_MOST - tick, None, |_| false)
+                .0
                 .is_empty()
         );
-        assert!(asks.arrived(&locator, 0, None, |_| false).0);
+        assert!(asks.arrived(&locator, 0, Some(2), true, |_| false).0);
+        assert!(!asks.awaits(&locator, 10));
         assert!(
             asks.waited(&locator, AWAIT_MOST - tick, None, |_| false)
+                .0
                 .is_empty()
         );
         assert!(asks.awaits(&locator, 1));
+        assert!(asks.arrived(&locator, 1, None, true, |_| false).0);
         // Nothing awaited and nothing to ask for: forgotten.
-        assert!(asks.waited(&locator, tick, None, |_| false).is_empty());
         assert!(!asks.has(&locator));
         assert!(asks.objects().is_empty());
     }
 
+    /// Chunks given up for want of an answer are asked for again, in the
+    /// order of their indices, with what was yet to ask for.
+    #[test]
+    fn chunks_given_up_are_asked_for_again() {
+        use super::AWAIT_MOST;
+        let locator = [3; 64];
+        let mut asks = Asks::default();
+        let first = asks.want(locator, 0..u64::MAX, false, 4, Some(10), |_| false);
+        assert_eq!(first, vec![(0, 4)]);
+        // Chunks 0 and 2 arrive; 1 and 3 do not.
+        assert!(asks.arrived(&locator, 0, None, true, |_| false).0);
+        assert!(asks.arrived(&locator, 2, None, true, |_| false).0);
+        let (wants, ended) = asks.waited(&locator, AWAIT_MOST, None, |_| false);
+        assert!(!ended);
+        assert_eq!(wants, vec![(1, 1), (3, 7)]);
+        assert!(asks.awaits(&locator, 1) && asks.awaits(&locator, 9));
+        // A chunk not kept goes back to its place too.
+        let (wants, ended) = asks.again(&locator, 5, |_| false);
+        assert!(wants.is_empty() && !ended);
+        for index in [1, 3, 4, 6, 7, 8] {
+            assert!(asks.arrived(&locator, index, None, true, |_| false).0);
+        }
+        let (awaited, wants) = asks.arrived(&locator, 9, None, true, |_| false);
+        assert!(awaited);
+        assert_eq!(wants, vec![(5, 1)]);
+    }
+
+    /// A slow side is not given up: each chunk that is kept starts the
+    /// count of the times its object was asked for again over, so that
+    /// any number of waits across a download ends nothing.
+    #[test]
+    fn a_chunk_kept_starts_the_count_over() {
+        use super::AWAIT_MOST;
+        let locator = [3; 64];
+        let mut asks = Asks::default();
+        asks.want(locator, 0..u64::MAX, false, 1, Some(40), |_| false);
+        for index in 0..40 {
+            assert!(asks.awaits(&locator, index), "{index}");
+            // The chunk takes longer than the wait: asked for again.
+            let (wants, ended) = asks.waited(&locator, AWAIT_MOST, None, |_| false);
+            assert!(!ended, "{index}");
+            assert_eq!(wants.first(), Some(&(index, 40 - index)), "{index}");
+            assert!(asks.arrived(&locator, index, None, true, |_| false).0);
+        }
+        // A chunk that arrives and is not kept does not start it over.
+        let mut asks = Asks::default();
+        asks.want(locator, 0..u64::MAX, false, 2, Some(40), |_| false);
+        for round in 0..8 {
+            assert!(!asks.waited(&locator, AWAIT_MOST, None, |_| false).1);
+            assert!(
+                asks.arrived(&locator, round, None, false, |_| false).0,
+                "{round}"
+            );
+        }
+        assert!(asks.waited(&locator, AWAIT_MOST, None, |_| false).1);
+        assert!(!asks.has(&locator));
+    }
+
+    /// A chunk asked for that arrives starts the wait over for every
+    /// object of the session: the other side answers in turn.
+    #[test]
+    fn an_arrival_starts_every_objects_wait_over() {
+        use super::AWAIT_MOST;
+        use std::time::Duration;
+        let tick = Duration::from_secs(5);
+        let (first, second) = ([3; 64], [4; 64]);
+        let mut asks = Asks::default();
+        asks.want(first, 0..4, true, CHUNKS_PER_WANT, Some(4), |_| false);
+        asks.want(second, 0..4, true, CHUNKS_PER_WANT, Some(4), |_| false);
+        // The first object's chunks arrive, each just within the wait.
+        for index in 0..4 {
+            for locator in [first, second] {
+                let waited = asks.waited(&locator, AWAIT_MOST - tick, None, |_| false);
+                assert_eq!(waited, (Vec::new(), false), "{index}");
+            }
+            assert!(asks.arrived(&first, index, None, true, |_| false).0);
+        }
+        assert!(!asks.has(&first));
+        assert!(asks.awaits(&second, 0), "not given up meanwhile");
+        // Nothing more arrives: the second is given up after the wait,
+        // and asked for again.
+        let waited = asks.waited(&second, AWAIT_MOST - tick, None, |_| false);
+        assert_eq!(waited, (Vec::new(), false));
+        assert_eq!(
+            asks.waited(&second, tick, None, |_| false),
+            (vec![(0, 4)], false)
+        );
+    }
+
     /// A side that answers nothing at all is asked a few times, and then
-    /// no more.
+    /// no more, which the session hears.
     #[test]
     fn a_side_that_never_answers_is_not_asked_without_end() {
         use super::AWAIT_MOST;
@@ -1417,20 +1613,24 @@ mod tests {
         let first = asks.want(locator, 0..u64::MAX, false, 4, None, |_| false);
         assert_eq!(first, vec![(0, 4)]);
         let mut asked = 1;
+        let mut ended = false;
         while asks.has(&locator) {
-            if !asks
-                .waited(&locator, AWAIT_MOST, None, |_| false)
-                .is_empty()
-            {
+            assert!(!ended);
+            let (wants, end) = asks.waited(&locator, AWAIT_MOST, None, |_| false);
+            ended = end;
+            if !wants.is_empty() {
+                // The same chunks again, with those yet to ask for.
+                assert_eq!(wants, vec![(0, 64)]);
                 asked += 1;
             }
             assert!(asked < 100);
         }
         assert_eq!(asked, 9);
+        assert!(ended);
     }
 
     /// A chunk that was not kept is asked for again with the next batch,
-    /// a few times and then no more.
+    /// a few times in a row and then no more, which the session hears.
     #[test]
     fn a_chunk_not_kept_is_asked_for_again() {
         let mut asks = Asks::default();
@@ -1439,17 +1639,17 @@ mod tests {
             asks.want(locator, 4..6, true, 64, Some(9), |_| false),
             vec![(4, 2)]
         );
-        assert!(asks.again(&locator, 4, |_| false).is_empty());
+        assert_eq!(asks.again(&locator, 4, |_| false), (Vec::new(), false));
         assert!(!asks.awaits(&locator, 4));
         // Not awaited: nothing to ask for again.
-        assert!(asks.again(&locator, 4, |_| false).is_empty());
-        let (awaited, wants) = asks.arrived(&locator, 5, None, |_| false);
+        assert_eq!(asks.again(&locator, 4, |_| false), (Vec::new(), false));
+        let (awaited, wants) = asks.arrived(&locator, 5, None, false, |_| false);
         assert!(awaited);
         assert_eq!(wants, vec![(4, 1)]);
         for _ in 0..7 {
-            assert_eq!(asks.again(&locator, 4, |_| false), vec![(4, 1)]);
+            assert_eq!(asks.again(&locator, 4, |_| false), (vec![(4, 1)], false));
         }
-        assert!(asks.again(&locator, 4, |_| false).is_empty());
+        assert_eq!(asks.again(&locator, 4, |_| false), (Vec::new(), true));
         assert!(!asks.has(&locator));
         asks.want(locator, 0..2, true, 64, None, |_| false);
         asks.forget(&locator);
