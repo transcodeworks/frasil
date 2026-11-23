@@ -4367,7 +4367,7 @@ struct Fetched {
     /// The transport's number for the fetch.
     serial: u64,
     ended: SliceFetch,
-    /// Whether it kept a chunk.
+    /// Whether the device holds more of the object than when it began.
     kept: bool,
 }
 
@@ -4540,8 +4540,6 @@ struct SliceTask {
     /// Signalled when another fetch of the object found the peer's bytes
     /// wrong.
     refused: crate::fetch::Cancel,
-    /// Whether the fetch kept a chunk.
-    kept: bool,
     /// Set once the transport's readers end.
     ended: Arc<AtomicBool>,
     /// Set once the connection is to close.
@@ -4625,7 +4623,7 @@ impl SliceTask {
             drop(slice);
             for part in parts {
                 match self.device.receive_part(space, part).await {
-                    Ok(Received::Kept) => self.kept = true,
+                    Ok(Received::Kept) => {}
                     Ok(Received::Whole) => return SliceFetch::Done,
                     Ok(Received::Refused) => return SliceFetch::Refused,
                     // What the device held of the object went meanwhile:
@@ -4741,19 +4739,29 @@ impl Driver {
                 stop: self.fetches.stop.clone(),
                 gives_way,
                 refused,
-                kept: false,
                 ended: self.ended.clone(),
                 closing: self.closing.clone(),
                 status: self.status.clone(),
             };
             let incoming = self.incoming.clone();
             self.runtime.spawn(async move {
+                let held = |task: &SliceTask| {
+                    let device = task.device.clone();
+                    async move {
+                        device
+                            .object_bytes_held(&space, &locator)
+                            .await
+                            .map_or(0, |(held, _)| held)
+                    }
+                };
+                let before = held(&task).await;
                 let ended = task.run().await;
+                let kept = held(&task).await > before;
                 let _ = incoming.send(Incoming::Fetched(Fetched {
                     request: task.request,
                     serial,
                     ended,
-                    kept: task.kept,
+                    kept,
                 }));
             });
         }
