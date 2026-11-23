@@ -4377,7 +4377,7 @@ struct Fetched {
     /// The transport's number for the fetch.
     serial: u64,
     ended: SliceFetch,
-    /// Whether the device holds more of the object than when it began.
+    /// Whether it kept a chunk itself.
     kept: bool,
 }
 
@@ -4555,6 +4555,9 @@ struct SliceTask {
     /// Set once the connection is to close.
     closing: Arc<AtomicBool>,
     status: Arc<Mutex<PeerStatus>>,
+    /// Whether this fetch kept a chunk: its own progress, whatever other
+    /// fetches of the object kept meanwhile.
+    kept: bool,
 }
 
 #[cfg(any(feature = "server", feature = "server-socket"))]
@@ -4633,7 +4636,7 @@ impl SliceTask {
             drop(slice);
             for part in parts {
                 match self.device.receive_part(space, part).await {
-                    Ok(Received::Kept) => {}
+                    Ok(Received::Kept) => self.kept = true,
                     Ok(Received::Whole) => return SliceFetch::Done,
                     Ok(Received::Refused) => return SliceFetch::Refused,
                     // What the device held of the object went meanwhile,
@@ -4754,26 +4757,16 @@ impl Driver {
                 ended: self.ended.clone(),
                 closing: self.closing.clone(),
                 status: self.status.clone(),
+                kept: false,
             };
             let incoming = self.incoming.clone();
             self.runtime.spawn(async move {
-                let held = |task: &SliceTask| {
-                    let device = task.device.clone();
-                    async move {
-                        device
-                            .object_bytes_held(&space, &locator)
-                            .await
-                            .map_or(0, |(held, _)| held)
-                    }
-                };
-                let before = held(&task).await;
                 let ended = task.run().await;
-                let kept = held(&task).await > before;
                 let _ = incoming.send(Incoming::Fetched(Fetched {
                     request: task.request,
                     serial,
                     ended,
-                    kept,
+                    kept: task.kept,
                 }));
             });
         }
@@ -4894,8 +4887,10 @@ impl Driver {
     }
 
     /// Tries a request whose fetch stopped again, after a wait that grows
-    /// while nothing of it is kept. The request stays taken meanwhile, so
-    /// that it is queued once.
+    /// while its fetches keep nothing: `kept` says whether this one kept
+    /// a chunk itself, which starts the wait over, whatever another fetch
+    /// or connection kept of the object meanwhile. The request stays
+    /// taken meanwhile, so that it is queued once.
     fn again(&mut self, request: crate::fetch::Request, kept: bool) {
         let stopped = self.stopped.entry(request.id).or_default();
         if kept {

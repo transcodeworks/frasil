@@ -9,11 +9,12 @@
 //! the chunks the device holds, wherever they are. A device that holds
 //! its blobs as files takes an object in order, whichever chunks are
 //! asked for. A request whose transfer is cut is tried again after a
-//! wait, and one whose slices the peer sends wrong is given up for
-//! good, which its holder hears, as does the holder of a request made
-//! afterwards. Two fetches that end one object leave it whole, and a
-//! space paused while a fetch runs fetches nothing more until it is
-//! resumed. Every wait has a deadline, and nothing leaves the host.
+//! wait, which only its own progress starts over, and one whose slices
+//! the peer sends wrong is given up for good, which its holder hears,
+//! as does the holder of a request made afterwards. Two fetches that end
+//! one object leave it whole, and a space paused while a fetch runs
+//! fetches nothing more until it is resumed. Every wait has a deadline,
+//! and nothing leaves the host.
 
 #[path = "../../../crates/frasil/tests/support/provider.rs"]
 mod provider;
@@ -61,6 +62,8 @@ struct Faults {
     /// Chunk requests for this slice or a later one end the connection
     /// with no answer.
     cut_from: Mutex<Option<u64>>,
+    /// Chunk requests for these slices end the connection with no answer.
+    cut_only: Mutex<Vec<u64>>,
     /// This slice is served with its first byte flipped.
     corrupt: Mutex<Option<u64>>,
     /// Requests for these slices wait, once counted, until they are no
@@ -166,6 +169,7 @@ async fn serve(
             .lock()
             .unwrap()
             .is_some_and(|from| index >= from)
+            || faults.cut_only.lock().unwrap().contains(&index)
         {
             faults.cut.fetch_add(1, Ordering::SeqCst);
             return;
@@ -757,6 +761,88 @@ async fn a_refused_object_stops_its_other_fetches_and_tells_their_holders() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(faults.asked(&locator), vec![0, 4, 0, 1, 2]);
     drop((waiting, refused, later));
+    link.close();
+    alice_link.close();
+    peer.shutdown().await;
+}
+
+/// How many times a slice of the object was asked for.
+fn asked_times(faults: &Faults, locator: &[u8; 64], slice: u64) -> usize {
+    let asked = faults.asked(locator);
+    asked.iter().filter(|index| **index == slice).count()
+}
+
+/// A request whose fetch stops with nothing kept waits longer each time,
+/// and what another fetch keeps of the object meanwhile does not start
+/// its wait over: only a chunk its own fetch kept does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn another_fetchs_progress_does_not_start_a_stopped_requests_wait_over() {
+    let peer = spawn_loopback().await.unwrap();
+    let (proxy, faults) = spawn_proxy(&peer.origin).await;
+    let (_alice, alice_link, bob, _store, space, locator, _big) =
+        setup_with(&peer.origin, SIX_CHUNKS).await;
+    bob.fetch_objects_on_demand();
+    let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
+    let first = bob.fetch_chunks(space, locator, 0..1, FetchPriority::Position);
+    until(|| async { holds(&bob, &space, &locator, 0).await }).await;
+
+    // Chunk 1 is in slices 1 and 2; slice 2 never arrives. Four fetches
+    // stop with nothing kept: the request waits four seconds, then eight.
+    *faults.cut_only.lock().unwrap() = vec![2];
+    let stopped = bob.fetch_chunks(space, locator, 1..2, FetchPriority::Position);
+    until(|| async { faults.cut.load(Ordering::SeqCst) == 4 }).await;
+    assert_eq!(asked_times(&faults, &locator, 1), 5);
+
+    // Its fifth fetch waits for slice 1, and chunk 4 is kept beside it.
+    faults.hold(&[1]);
+    until(|| async { asked_times(&faults, &locator, 1) == 6 }).await;
+    let other = bob.fetch_chunks(space, locator, 4..5, FetchPriority::Position);
+    until(|| async { holds(&bob, &space, &locator, 4).await }).await;
+    faults.hold(&[]);
+    until(|| async { faults.cut.load(Ordering::SeqCst) == 5 }).await;
+
+    // The fifth fetch kept nothing itself: the wait goes on growing.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_eq!(faults.cut.load(Ordering::SeqCst), 5);
+    assert!(!holds(&bob, &space, &locator, 1).await);
+    drop((first, stopped, other));
+    link.close();
+    alice_link.close();
+    peer.shutdown().await;
+}
+
+/// A chunk a request's own fetch kept starts its wait over: the fetch
+/// that stops after it is tried again half a second later.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_requests_own_progress_starts_its_wait_over() {
+    let peer = spawn_loopback().await.unwrap();
+    let (proxy, faults) = spawn_proxy(&peer.origin).await;
+    let (_alice, alice_link, bob, _store, space, locator, _big) =
+        setup_with(&peer.origin, SIX_CHUNKS).await;
+    bob.fetch_objects_on_demand();
+    let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
+    let first = bob.fetch_chunks(space, locator, 0..1, FetchPriority::Position);
+    until(|| async { holds(&bob, &space, &locator, 0).await }).await;
+
+    // Chunks 2 and 3 are in slices 2 to 4. No slice from 2 on arrives:
+    // four fetches stop with nothing kept, and the request waits four
+    // seconds.
+    *faults.cut_from.lock().unwrap() = Some(2);
+    let stopped = bob.fetch_chunks(space, locator, 2..4, FetchPriority::Position);
+    until(|| async { faults.cut.load(Ordering::SeqCst) == 4 }).await;
+
+    // Slice 4 alone is cut now: the fifth fetch keeps chunk 2 and stops.
+    *faults.cut_from.lock().unwrap() = None;
+    *faults.cut_only.lock().unwrap() = vec![4];
+    until(|| async { holds(&bob, &space, &locator, 2).await }).await;
+    let kept = std::time::Instant::now();
+    until(|| async { faults.cut.load(Ordering::SeqCst) >= 6 }).await;
+    assert!(
+        kept.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        kept.elapsed()
+    );
+    drop((first, stopped));
     link.close();
     alice_link.close();
     peer.shutdown().await;
