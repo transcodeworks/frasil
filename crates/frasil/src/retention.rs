@@ -292,6 +292,9 @@ impl Staying {
     }
 }
 
+#[cfg(all(test, feature = "adapter-blobs", feature = "adapter-loro"))]
+mod tests;
+
 impl Engine {
     /// Sets the budget of the blob cache, in stored bytes: what the device
     /// holds of the blobs it fetched to read, across all its spaces. Zero
