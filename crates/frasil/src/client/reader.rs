@@ -322,8 +322,9 @@ fn report(blobs: &Blobs, id: BlobId) {
 
 impl BlobReader {
     /// Starts the task that follows the object, where the device's tasks
-    /// take one. Without it, the whole-object steps of a blob that becomes
-    /// whole in the store run when it is next read.
+    /// take one. Without it, a reader that does not read in order stays
+    /// at [`Verified::Chunks`] unless another read ran every step on the
+    /// stored blob.
     fn follow_object(&self) {
         let engine = self.blobs.space().device.engine();
         let following = Following {
@@ -611,7 +612,6 @@ impl BlobReader {
             if self.local || self.file {
                 return Err(Error::Class("Missing"));
             }
-            self.settle_whole().await?;
             // The chunk the reader stands in, by the size the entry
             // shows: the header travels with it.
             let last = self.entry.size.saturating_sub(1);
@@ -704,7 +704,6 @@ impl BlobReader {
                 if self.local {
                     return Err(Error::Class("Missing"));
                 }
-                self.settle_whole().await?;
                 self.slide(index).await;
                 self.wait(index, &mut changed).await?;
                 continue;
@@ -735,27 +734,6 @@ impl BlobReader {
                 .passed_whole(holder, &self.entry.object, self.reference.is_none())
                 .await;
         }
-    }
-
-    /// Runs the whole-object steps on the stored object when the device
-    /// holds it whole and no task follows it.
-    async fn settle_whole(&mut self) -> Result<()> {
-        if self.window.passing() || self.verified() == Verified::Whole {
-            return Ok(());
-        }
-        let engine = self.engine();
-        let mut whole = false;
-        for holder in &self.holders {
-            whole |= engine.holding(holder, &self.entry.object, 0..0).await.whole;
-        }
-        if !whole || !self.window.begin_verifying() {
-            return Ok(());
-        }
-        let verified = engine
-            .verify_whole(&self.space, &self.entry.object, self.reference)
-            .await;
-        self.window.end_verifying();
-        verified.map(drop)
     }
 
     /// What a chunk that did not open, or a whole-object step that
@@ -890,11 +868,12 @@ impl Through {
         let at = self.at;
         let read = self.reader.piece_at(at, usize::MAX).await?.len();
         if read == 0 {
-            // A read in order ends with every step passed.
+            // A read in order ends with every step passed: one that did
+            // not gives nothing more, as one that failed them.
             return if self.reader.verified() == Verified::Whole {
                 Ok(None)
             } else {
-                Err(Error::Class("Missing"))
+                Err(Error::Class("ObjectMismatch"))
             };
         }
         self.at += read as u64;

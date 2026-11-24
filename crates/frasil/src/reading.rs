@@ -263,11 +263,6 @@ impl Window {
         self.watched.changed.subscribe()
     }
 
-    /// Whether chunks the device does not store are taken into memory.
-    pub(crate) fn passing(&self) -> bool {
-        self.passing
-    }
-
     /// Sets what the window wants. Each run of `runs` is asked for, at
     /// its priority, with one request for those of its chunks that the
     /// window neither holds nor has asked for. The window holds in memory
