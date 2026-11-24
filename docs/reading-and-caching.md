@@ -314,7 +314,9 @@ back over iroh. Nothing else releases the blob: not another member's or
 another peer's acknowledgement, not a reopen, not a paused space. A blob
 that is still kept so, as when the change reached the peer through another
 device, is asked of the peer again when the device connects and from time
-to time, and uploaded again if the peer lost it. In a space with no always-on peer no
+to time, and uploaded again if the peer lost it. A blob that was put,
+removed and compacted away before a peer took it is no longer waited for:
+it is cached, or kept if the application asked for that. In a space with no always-on peer no
 other party is known to hold the bytes, so a blob put there is kept until
 the application drops it. `drop_local` refuses, with `NotAllowed`, a blob in
 use and, in a space with an always-on peer, a blob this device put that no

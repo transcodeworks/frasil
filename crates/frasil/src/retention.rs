@@ -23,6 +23,9 @@
 //! heard, and covers events alone. The device asks a peer again for each
 //! object still put ([`Engine::puts_to_offer`]): once that peer
 //! acknowledged a unit that names it, at each connection, and at upkeep.
+//! An object still put that no unit of the device's log names any more is
+//! one no peer will keep, and is put no longer
+//! ([`Engine::settle_unnamed`]).
 //!
 //! [`Engine::must_stay`] is the one place that says what the device never
 //! drops by itself: Frasil's own objects, an object of a unit this device
@@ -109,6 +112,9 @@ struct PutFacts {
     /// The always-on peers the device asked whether they hold the object,
     /// each with its latest question.
     asked: BTreeMap<crate::outbox::Acknowledger, Asked>,
+    /// The always-on peers that refused the object on the connection they
+    /// have now: none is offered it again before its next connection.
+    refused: BTreeSet<crate::outbox::Acknowledger>,
 }
 
 /// A question put to a peer: whether it holds an object this device put.
@@ -1154,6 +1160,25 @@ impl Engine {
         after
     }
 
+    /// Notes that the always-on peer `by` refused an object this device
+    /// put: it is not offered to that peer again before its next
+    /// connection ([`puts_to_offer`](Self::puts_to_offer)).
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) async fn put_refused(
+        &self,
+        space: EventId,
+        by: crate::outbox::Acknowledger,
+        locator: &Locator,
+    ) {
+        let mut state = self.lock().await;
+        if let Some(facts) = state.retained.puts.get_mut(&(space, object_id(locator))) {
+            facts.refused.insert(by);
+        }
+    }
+
     /// Takes the answer of the always-on peer `by` that it holds an object
     /// whole. `after` says that the question was put after that peer
     /// acknowledged a unit that names the object
@@ -1208,11 +1233,45 @@ impl Engine {
         self.record(state, space, id, retention).await
     }
 
+    /// Makes each object of a space put no longer that no unit of the
+    /// device's log names any more: one whose units a snapshot the replica
+    /// uses replaced without listing it, so that no entry names it. No
+    /// peer keeps such an object, since none holds a unit that references
+    /// it, so the device would wait for good; and no reader reaches it
+    /// through this device's log. It becomes kept where the application
+    /// asked to keep it, and cached otherwise. An object that a unit in
+    /// doubt names stays put ([`naming`]), and so does every object of a
+    /// partial replica, whose log does not hold every unit.
+    ///
+    /// # Errors
+    ///
+    /// The store's.
+    pub(crate) async fn settle_unnamed(&self, state: &mut State, space: EventId) -> Result<()> {
+        let ids = Self::put_ids(state, &space);
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let Some(replica) = state.replicas.get(&space) else {
+            return Ok(());
+        };
+        if replica.log().is_none() || replica.held_streams().is_some() {
+            return Ok(());
+        }
+        let naming = naming(replica, &ids);
+        for id in ids {
+            if !naming.standing.contains_key(&id) && !naming.doubtful.contains(&id) {
+                self.release_put(state, space, id).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// The objects of a space to ask the always-on peer `by` for now
     /// (at-rest.md, "Retention", an object the device put): those this
-    /// device put and holds whole, whose record still says so, and that
-    /// no unit of the outbox names. A unit of the outbox is sent behind
-    /// the upload of its objects, so its objects need no other. Of these:
+    /// device put and holds whole, whose record still says so, that no
+    /// unit of the outbox names, and that `by` did not refuse on this
+    /// connection. A unit of the outbox is sent behind the upload of its
+    /// objects, so its objects need no other. Of these:
     ///
     /// - with `connected`, the connection was just granted the space, and
     ///   every one is asked for;
@@ -1223,7 +1282,8 @@ impl Engine {
     ///   brings the object to a peer that lost it or never took it.
     ///
     /// The caller notes each question it then puts
-    /// ([`put_asking`](Self::put_asking)).
+    /// ([`put_asking`](Self::put_asking)). Objects that no unit names any
+    /// more are settled first ([`settle_unnamed`](Self::settle_unnamed)).
     ///
     /// # Errors
     ///
@@ -1239,6 +1299,7 @@ impl Engine {
         connected: bool,
     ) -> Result<Vec<Locator>> {
         let mut state = self.lock().await;
+        self.settle_unnamed(&mut state, space).await?;
         let ids = Self::put_ids(&state, &space);
         if ids.is_empty() {
             return Ok(Vec::new());
@@ -1273,9 +1334,10 @@ impl Engine {
                 continue;
             };
             if connected {
+                facts.refused.remove(&by);
                 facts.asked.remove(&by);
             }
-            if pending.contains(&id) {
+            if pending.contains(&id) || facts.refused.contains(&by) {
                 continue;
             }
             let asked = facts.asked.get(&by).copied();
@@ -1552,8 +1614,10 @@ impl Engine {
             Some(Stays::Kept) | None => {}
         }
         // An object this device put that no peer is known to hold: the
-        // peer of the space is about to take it. With no always-on peer
-        // no party is bound to, and the application decides.
+        // peer of the space is about to take it, unless no unit names the
+        // object any more. With no always-on peer no party is bound to,
+        // and the application decides.
+        self.settle_unnamed(&mut state, space).await?;
         if matches!(
             state.retained.get(&(space, object_id(locator))),
             Some(Retention::Put { .. })

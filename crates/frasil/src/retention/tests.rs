@@ -1763,6 +1763,13 @@ async fn a_blob_still_put_with_no_unit_to_send_is_offered_to_the_peer_again() {
     medium.clock.advance(1);
     assert_eq!(offer(false).await, vec![locator]);
 
+    // A peer that refuses the object is not offered it again on that
+    // connection, however long it lasts.
+    engine.put_refused(space, peer, &locator).await;
+    medium.clock.advance(10 * super::PUT_OFFER);
+    assert!(offer(false).await.is_empty());
+    assert_eq!(offer(true).await, vec![locator], "the next connection asks");
+
     let engine = medium.reopen(engine, &sealed).await;
     assert_eq!(
         engine.puts_to_offer(space, peer, false).await.unwrap(),
@@ -1846,4 +1853,104 @@ async fn an_acknowledged_unit_that_was_replaced_releases_nothing() {
         record_of(&engine, space, &locator).await,
         Some(Retention::Cached { .. })
     ));
+}
+
+/// A blob this device put, removed and compacted away before a peer took
+/// it: once the replica collected the units of the snapshot's cover, no
+/// unit of its log names the object, so no peer will ever hold a unit
+/// that references it. It is put no longer: the cache's, or kept where
+/// the application asked for that, and the application's to drop.
+async fn put_and_compacted_away(medium: &Medium, keep: bool) -> (Engine, EventId, Locator) {
+    let (engine, _, space) = medium.device().await;
+    engine
+        .keep_peer_hints(&space, &["https://peer.example".to_owned()])
+        .await
+        .unwrap();
+    let stream = engine.new_stream(frasil_adapter_blobs::TYPE).unwrap();
+    let member = Acknowledger::Member([8; 32]);
+    let (first, locator) = engine
+        .put_blob_under(space, &stream, [1; 16], None, &vec![7; SIZE])
+        .await
+        .unwrap();
+    if keep {
+        engine.retain(space, &locator, true).await.unwrap();
+    }
+    let removed = engine.remove_blob(space, &stream, [1; 16]).await.unwrap();
+    let snapshot = engine.compact(space, stream.stream()).await.unwrap();
+    engine
+        .acknowledge(space, member, &[first, removed, snapshot])
+        .await
+        .unwrap();
+    // The snapshot is not used yet: its cover may still stand.
+    let peer = Acknowledger::Peer([9; 32]);
+    assert_eq!(
+        engine.puts_to_offer(space, peer, true).await.unwrap(),
+        vec![locator]
+    );
+    assert_eq!(
+        record_of(&engine, space, &locator).await,
+        Some(Retention::Put { keep })
+    );
+    assert!(matches!(
+        engine.drop_local_object(space, &locator).await,
+        Err(Error::NotAllowed(_))
+    ));
+    // Settled, the snapshot is used and its cover collected.
+    medium.clock.advance(8 * 86_400);
+    let collected = engine.collect(space).await.unwrap();
+    assert!(collected.contains(&first), "collected: {collected:?}");
+    assert_eq!(
+        record_of(&engine, space, &locator).await,
+        Some(Retention::Put { keep })
+    );
+    (engine, space, locator)
+}
+
+#[tokio::test]
+async fn a_put_blob_that_no_unit_names_any_more_is_put_no_longer() {
+    let peer = Acknowledger::Peer([9; 32]);
+    // Offered to no peer again, and the cache's.
+    let medium = Medium::new();
+    let (engine, space, locator) = put_and_compacted_away(&medium, false).await;
+    assert!(
+        engine
+            .puts_to_offer(space, peer, true)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        record_of(&engine, space, &locator).await,
+        Some(Retention::Cached { .. })
+    ));
+    engine.set_blob_cache(0);
+    engine.evict().await.unwrap();
+    assert!(!holds(&engine, space, &locator).await);
+
+    // The application's to drop, with no connection made.
+    let medium = Medium::new();
+    let (engine, space, locator) = put_and_compacted_away(&medium, false).await;
+    engine.drop_local_object(space, &locator).await.unwrap();
+    assert!(!holds(&engine, space, &locator).await);
+    assert!(records(&engine, space).await.is_empty());
+
+    // Kept where the application asked to keep it.
+    let medium = Medium::new();
+    let (engine, space, locator) = put_and_compacted_away(&medium, true).await;
+    assert!(
+        engine
+            .puts_to_offer(space, peer, false)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        record_of(&engine, space, &locator).await,
+        Some(Retention::Kept)
+    );
+    engine.set_blob_cache(0);
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &locator).await);
+    engine.drop_local_object(space, &locator).await.unwrap();
+    assert!(!holds(&engine, space, &locator).await);
 }

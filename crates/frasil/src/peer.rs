@@ -4089,8 +4089,11 @@ impl Driver {
                             attached.asked.remove(&locator);
                         }
                         // A transfer of a transport that ended was no
-                        // refusal.
+                        // refusal. A peer that refused an object this
+                        // device put is not offered it again on this
+                        // connection.
                         if !self.transport_ended() {
+                            self.device.put_refused(space, self.by, &locator).await;
                             self.status().refused.push((space, code));
                         }
                         Ok(())
@@ -4133,8 +4136,11 @@ impl Driver {
                             attached.asked.remove(&locator);
                         }
                         // A transfer of a transport that ended was no
-                        // refusal.
+                        // refusal. A peer that refused an object this
+                        // device put is not offered it again on this
+                        // connection.
                         if !self.transport_ended() {
+                            self.device.put_refused(space, self.by, &locator).await;
                             self.status().refused.push((space, code));
                         }
                         Ok(())
