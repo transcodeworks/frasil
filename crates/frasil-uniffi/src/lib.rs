@@ -163,8 +163,8 @@ pub enum BlobStatus {
         /// The blob's size.
         total: u64,
     },
-    /// Nothing is sending them now: no peer or member is connected, or
-    /// they have not been asked for.
+    /// The device does not hold them, and nothing is sending them now. A
+    /// read fetches them while a peer or member is connected.
     Missing,
     /// The key they are sealed under has not reached this device yet.
     KeysPending,
@@ -1560,17 +1560,19 @@ impl Blobs {
         Ok(id.to_string())
     }
 
-    /// A blob's bytes, or none while this device does not hold them whole.
+    /// A blob's bytes. A blob this device does not hold whole is fetched
+    /// first from a connected peer or member, into the device's cache; none
+    /// when it is not here and nothing is connected that could send it.
     pub async fn get(&self, id: String) -> Result<Option<Vec<u8>>> {
         let id = parse(&id)?;
         let blobs = self.inner.clone();
-        Ok(run(async move { blobs.get(id).await }).await?)
+        Ok(run(async move { blobs.get(id, &frasil::Read::new()).await }).await?)
     }
 
     /// Writes a blob's bytes to a new file at `path`, replacing any file
-    /// there, fetching them first from connected peers or members while
-    /// this device does not hold them whole. It holds a few chunks at a
-    /// time, never the blob. `listener` hears the fetch, then the writing.
+    /// there, fetching them first from connected peers or members, into
+    /// the device's cache, while this device does not hold them whole. It
+    /// holds a few chunks at a time, never the blob. `listener` hears the fetch, then the writing.
     /// A read that fails deletes the file.
     pub async fn get_to_file(
         &self,
@@ -1593,7 +1595,9 @@ impl Blobs {
                     listener.progress(bytes, total);
                 }
             };
-            let read = blobs.get_stream(id, &mut file, progress).await;
+            let read = blobs
+                .get_stream(id, &mut file, &frasil::Read::new(), progress)
+                .await;
             let read = match read {
                 Ok(()) => file
                     .into_inner()
@@ -1612,15 +1616,22 @@ impl Blobs {
         .await
     }
 
-    /// `length` bytes of a blob from byte `offset`, fewer at its end; none
-    /// while this device does not hold the blob whole. It opens only the
-    /// chunks the range needs, once every check has run on the whole blob
-    /// since the device opened; the first range read of a blob reads it
-    /// through once, holding a few chunks at a time.
+    /// `length` bytes of a blob from byte `offset`, fewer at its end. A
+    /// blob this device does not hold whole is fetched first, whole, into
+    /// the device's cache; none when it is not here and nothing is
+    /// connected that could send it. It opens only the chunks the range
+    /// needs, once every check has run on the whole blob; the first range
+    /// read of a blob reads it through once, holding a few chunks at a
+    /// time.
     pub async fn get_range(&self, id: String, offset: u64, length: u64) -> Result<Option<Vec<u8>>> {
         let id = parse(&id)?;
         let blobs = self.inner.clone();
-        Ok(run(async move { blobs.get_range(id, offset, length).await }).await?)
+        Ok(run(async move {
+            blobs
+                .get_range(id, offset, length, &frasil::Read::new())
+                .await
+        })
+        .await?)
     }
 
     /// Where a blob's bytes stand on this device.
@@ -1630,12 +1641,13 @@ impl Blobs {
         Ok(run(async move { blobs.status(id).await }).await?.into())
     }
 
-    /// The SHA-256 of a blob's plaintext, computed on this device; none
-    /// while it cannot read the blob whole. It fetches nothing.
+    /// The SHA-256 of a blob's plaintext, computed on this device. A blob
+    /// this device does not hold whole is fetched first, into the device's
+    /// cache; none when it cannot be read whole.
     pub async fn content_hash(&self, id: String) -> Result<Option<Vec<u8>>> {
         let id = parse(&id)?;
         let blobs = self.inner.clone();
-        let hash = run(async move { blobs.content_hash(id).await }).await?;
+        let hash = run(async move { blobs.content_hash(id, &frasil::Read::new()).await }).await?;
         Ok(hash.map(|hash| hash.to_vec()))
     }
 

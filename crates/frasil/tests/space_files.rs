@@ -130,7 +130,11 @@ async fn a_file_with_keys_opens_anywhere_as_a_reader() {
     assert_eq!(text(&bobs.note).await, "hello");
     assert_eq!(bobs.space.level().await, None);
     assert_eq!(
-        bobs.files.get(blob).await.unwrap().as_deref(),
+        bobs.files
+            .get(blob, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&[7u8; 70_000][..]),
         "the embedded blob"
     );
@@ -442,8 +446,7 @@ async fn a_file_without_objects_fetches_them_later_into_the_provider() {
         62,
         Options::new()
             .local_discovery()
-            .object_provider(provider.clone())
-            .objects_on_demand(),
+            .object_provider(provider.clone()),
     )
     .await;
     let Opened::Invited(invited) = SpaceFile::<Notes>::import_bytes(&bob, file.bytes(), None)
@@ -454,7 +457,11 @@ async fn a_file_without_objects_fetches_them_later_into_the_provider() {
     };
     let bobs = invited.accept().await.unwrap();
     assert_eq!(bobs.space.object_policy().await, ObjectPolicy::Held);
-    assert_eq!(bobs.files.get(blob).await.unwrap(), None, "not embedded");
+    assert_eq!(
+        bobs.files.get(blob, &frasil::Read::new()).await.unwrap(),
+        None,
+        "not embedded"
+    );
     assert_eq!(
         std::fs::read_dir(provider.dir.as_path()).unwrap().count(),
         0
@@ -524,7 +531,11 @@ async fn a_file_without_objects_fetches_them_later_into_the_provider() {
     assert_eq!(token, b"photo.bin");
     assert_eq!(provider.read(&token), vec![7u8; 70_000]);
     assert_eq!(
-        bobs.files.get(blob).await.unwrap().as_deref(),
+        bobs.files
+            .get(blob, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&[7u8; 70_000][..])
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -592,7 +603,11 @@ async fn an_embedded_object_goes_to_the_provider_under_the_held_policy() {
     };
     assert_eq!(bobs.space.object_policy().await, ObjectPolicy::Held);
     assert_eq!(
-        bobs.files.get(blob).await.unwrap().as_deref(),
+        bobs.files
+            .get(blob, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&[7u8; 70_000][..])
     );
     assert_eq!(

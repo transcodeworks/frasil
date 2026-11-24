@@ -520,6 +520,9 @@ async fn members_work_offline_over_the_local_network_then_the_peer_catches_up() 
 async fn objects_travel_over_http_slices_and_iroh_chunks() {
     let peer = spawn_loopback().await.unwrap();
     let (alice, bob, _carol, space) = three_members().await;
+    // Each fetches the blobs the space names, without a read to ask.
+    alice.keep_all_blobs();
+    bob.keep_all_blobs();
     let alice_link = server(&alice, &peer, space).await;
     let bob_link = iroh(&bob, &peer, space).await;
     // Three sealed chunks and three HTTP slices.

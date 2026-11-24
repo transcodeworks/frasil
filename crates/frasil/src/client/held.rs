@@ -295,8 +295,14 @@ mod blobs {
                 .fetch_object(space, entry.object, hint.to_vec())
                 .await;
             let mut progress = super::super::blob_stream::Reporter::silent();
-            self.fetched(space, entry.object, entry.size, &mut progress)
-                .await?;
+            self.fetched(
+                space,
+                entry.object,
+                entry.size,
+                crate::fetch::FetchPriority::Position,
+                &mut progress,
+            )
+            .await?;
             engine.held_token(&space, &entry.object).await
         }
 

@@ -134,7 +134,8 @@ pub struct BlobChanges {
 #[wasm_bindgen]
 impl BlobChanges {
     /// The next change, as `{ kind, id }` with `kind` one of `"added"`,
-    /// `"removed"` (each with an `origin`), `"arrived"` and `"withdrawn"`;
+    /// `"removed"` (each with an `origin`), `"arrived"`, `"evicted"` and
+    /// `"withdrawn"`;
     /// `undefined` once the device is gone. One call at a time.
     pub fn next(&self) -> Result<Promise, JsValue> {
         next_of(
@@ -146,6 +147,7 @@ impl BlobChanges {
                     BlobChange::Added { id, origin } => ("added", id, Some(origin)),
                     BlobChange::Removed { id, origin } => ("removed", id, Some(origin)),
                     BlobChange::Arrived { id } => ("arrived", id, None),
+                    BlobChange::Evicted { id } => ("evicted", id, None),
                     BlobChange::Withdrawn { id } => ("withdrawn", id, None),
                     _ => ("changed", BlobId::from_bytes([0; 16]), None),
                 };
@@ -355,23 +357,28 @@ impl Blobs {
         })
     }
 
-    /// The SHA-256 of a blob's plaintext, 32 bytes, computed on this device;
-    /// `undefined` while it cannot read the blob whole. It fetches nothing.
+    /// The SHA-256 of a blob's plaintext, 32 bytes, computed on this device.
+    /// A blob this device does not hold whole is fetched first, into its
+    /// cache; `undefined` when it cannot be read whole.
     #[wasm_bindgen(js_name = contentHash)]
     pub fn content_hash(&self, blob: String) -> Result<Promise, JsValue> {
         let blob = id::<BlobId>(&blob)?;
         let blobs = self.inner.clone();
         Ok(promise(async move {
-            Ok(match blobs.content_hash(blob).await.js()? {
-                Some(hash) => bytes(&hash),
-                None => JsValue::UNDEFINED,
-            })
+            Ok(
+                match blobs.content_hash(blob, &frasil::Read::new()).await.js()? {
+                    Some(hash) => bytes(&hash),
+                    None => JsValue::UNDEFINED,
+                },
+            )
         }))
     }
 
     /// Where a blob's bytes stand on this device: `{ kind }`, one of
     /// `"readable"`, `"fetching"` (with `done` and `total`), `"missing"`,
-    /// `"keysPending"` and `"withdrawn"`.
+    /// `"keysPending"` and `"withdrawn"`. `"missing"` is a blob this device
+    /// does not hold: a read fetches it while a peer or member is
+    /// connected.
     pub fn status(&self, blob: String) -> Result<Promise, JsValue> {
         let blob = id::<BlobId>(&blob)?;
         let blobs = self.inner.clone();
@@ -380,8 +387,10 @@ impl Blobs {
         }))
     }
 
-    /// `length` bytes of a blob from byte `offset`, fewer at its end;
-    /// `undefined` while this device does not hold the blob whole.
+    /// `length` bytes of a blob from byte `offset`, fewer at its end. A
+    /// blob this device does not hold whole is fetched first, whole, into
+    /// its cache; `undefined` when it is not here and nothing is connected
+    /// that could send it.
     #[wasm_bindgen(js_name = getRange)]
     pub fn get_range(&self, blob: String, offset: f64, length: f64) -> Result<Promise, JsValue> {
         let blob = id::<BlobId>(&blob)?;
@@ -393,7 +402,10 @@ impl Blobs {
         let (offset, length) = (whole(offset, "offset")?, whole(length, "length")?);
         let blobs = self.inner.clone();
         Ok(promise(async move {
-            match blobs.get_range(blob, offset, length).await {
+            match blobs
+                .get_range(blob, offset, length, &frasil::Read::new())
+                .await
+            {
                 Ok(Some(data)) => Ok(bytes(&data)),
                 Ok(None) => Ok(JsValue::UNDEFINED),
                 Err(failure) => Err(error(failure)),
@@ -401,8 +413,9 @@ impl Blobs {
         }))
     }
 
-    /// A blob's bytes, once this device holds them whole, within
-    /// `within_ms`; rejects with `timeout` when they have not arrived.
+    /// A blob's bytes within `within_ms`, fetched into this device's cache
+    /// when it does not hold them; rejects with `timeout` when they are
+    /// not here in time.
     #[wasm_bindgen(js_name = getWhenAvailable)]
     pub fn get_when_available(&self, blob: String, within_ms: f64) -> Result<Promise, JsValue> {
         let blob = id::<BlobId>(&blob)?;

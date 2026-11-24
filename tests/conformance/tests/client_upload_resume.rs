@@ -177,7 +177,11 @@ async fn a_version_put_offline_reaches_the_peer_after_a_reopen() {
     reached(&peer, &space, &blobs, id).await;
     assert!(blobs.pending().await.unwrap().is_empty());
     assert_eq!(
-        blobs.get(id).await.unwrap().map(|bytes| bytes.len()),
+        blobs
+            .get(id, &frasil::Read::new())
+            .await
+            .unwrap()
+            .map(|bytes| bytes.len()),
         Some(3 << 20)
     );
     device.close().await.unwrap();

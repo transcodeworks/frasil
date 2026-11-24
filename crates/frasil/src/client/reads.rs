@@ -378,13 +378,16 @@ mod records {
 #[cfg(feature = "adapter-blobs")]
 mod blobs {
     use super::{Duration, Error, Observed, Result, Scope, Space, StreamId, key};
-    use crate::client::{Blob, BlobId, Blobs};
+    use crate::client::{Blob, BlobId, Blobs, Read};
 
     /// Where a blob's bytes stand on this device, from [`Blobs::status`].
+    /// [`Blobs::local`] tells whether a blob the device holds is kept or
+    /// cached.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     #[non_exhaustive]
     pub enum BlobStatus {
-        /// The device holds the bytes whole: [`Blobs::get`] reads them.
+        /// The device holds the bytes whole, kept or cached: a read gives
+        /// them at once, with no connection.
         Readable,
         /// A peer or member is sending them: `done` of `total` bytes.
         Fetching {
@@ -393,10 +396,13 @@ mod blobs {
             /// The blob's size.
             total: u64,
         },
-        /// The device does not hold them, and nothing is sending them now:
-        /// no peer or member is connected, or they have not been asked for
-        /// under [`Options::objects_on_demand`](crate::Options::objects_on_demand).
-        /// A blob whose key has not arrived is [`BlobStatus::KeysPending`].
+        /// The device does not hold them, and a peer or a member of the
+        /// space is connected: a read fetches them now. The device never
+        /// fetched them, or dropped them since.
+        Absent,
+        /// The device does not hold them, and neither a peer nor a member
+        /// of the space is connected, so a read cannot fetch them now. A
+        /// blob whose key has not arrived is [`BlobStatus::KeysPending`].
         Missing,
         /// The device cannot open the blob yet: the key of the state its
         /// bytes, or the change that adds it, are sealed under has not
@@ -425,7 +431,7 @@ mod blobs {
 
     impl Blobs {
         /// Where a blob's bytes stand on this device: readable, being
-        /// fetched, missing or withdrawn.
+        /// fetched, absent, missing or withdrawn.
         ///
         /// # Errors
         ///
@@ -477,6 +483,7 @@ mod blobs {
                     total: entry.size,
                 },
                 None if awaits_key => BlobStatus::KeysPending,
+                None if self.can_fetch() => BlobStatus::Absent,
                 None => BlobStatus::Missing,
             })
         }
@@ -564,22 +571,27 @@ mod blobs {
                 .await
         }
 
-        /// A blob's bytes, once this device holds them whole: at once if it
-        /// does, else as soon as they arrive, for at most `within`. Under
-        /// [`Options::objects_on_demand`](crate::Options::objects_on_demand),
-        /// ask for them first, with [`Blobs::get_stream`] or
-        /// [`Blobs::materialise`].
+        /// A blob's bytes, as [`Blobs::get`] reads them with
+        /// [`Read::new`], within a deadline: at once when this device holds
+        /// them, else fetched into the cache, for at most `within`. While
+        /// nothing is connected that could send them, it waits for the
+        /// space to change and tries again.
         ///
         /// # Errors
         ///
-        /// [`Error::Timeout`] when they have not arrived in time; as
+        /// [`Error::Timeout`] when they are not here in time; as
         /// [`Blobs::get`].
         pub async fn get_when_available(&self, id: BlobId, within: Duration) -> Result<Vec<u8>> {
-            self.space()
-                .when_available(within, || async move {
-                    self.get(id).await?.ok_or(Error::Class("Missing"))
-                })
-                .await
+            let deadline = self.space().device.sleep(within);
+            let read = Read::new();
+            let got = self.space().when_available(within, || async {
+                self.get(id, &read).await?.ok_or(Error::Class("Missing"))
+            });
+            tokio::pin!(deadline);
+            tokio::select! {
+                () = &mut deadline => Err(Error::Timeout),
+                got = got => got,
+            }
         }
 
         /// Observes the blobs the stream holds, as [`Blobs::list`] reads

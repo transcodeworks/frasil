@@ -1335,16 +1335,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_frasil_uniffi_checksum_method_blobstatuslistener_failed() != 6018) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_content_hash() != 64733) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_content_hash() != 10406) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get() != 3798) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get() != 22721) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get_range() != 52548) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get_range() != 58339) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get_to_file() != 13908) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get_to_file() != 51323) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_frasil_uniffi_checksum_method_blobs_id() != 54424) {
@@ -2994,30 +2994,35 @@ public object FfiConverterTypeBlobStatusListener: FfiConverter<BlobStatusListene
 public interface BlobsInterface {
 
     /**
-     * The SHA-256 of a blob's plaintext, computed on this device; none
-     * while it cannot read the blob whole. It fetches nothing.
+     * The SHA-256 of a blob's plaintext, computed on this device. A blob
+     * this device does not hold whole is fetched first, into the device's
+     * cache; none when it cannot be read whole.
      */
     suspend fun `contentHash`(`id`: kotlin.String): kotlin.ByteArray?
 
     /**
-     * A blob's bytes, or none while this device does not hold them whole.
+     * A blob's bytes. A blob this device does not hold whole is fetched
+     * first from a connected peer or member, into the device's cache; none
+     * when it is not here and nothing is connected that could send it.
      */
     suspend fun `get`(`id`: kotlin.String): kotlin.ByteArray?
 
     /**
-     * `length` bytes of a blob from byte `offset`, fewer at its end; none
-     * while this device does not hold the blob whole. It opens only the
-     * chunks the range needs, once every check has run on the whole blob
-     * since the device opened; the first range read of a blob reads it
-     * through once, holding a few chunks at a time.
+     * `length` bytes of a blob from byte `offset`, fewer at its end. A
+     * blob this device does not hold whole is fetched first, whole, into
+     * the device's cache; none when it is not here and nothing is
+     * connected that could send it. It opens only the chunks the range
+     * needs, once every check has run on the whole blob; the first range
+     * read of a blob reads it through once, holding a few chunks at a
+     * time.
      */
     suspend fun `getRange`(`id`: kotlin.String, `offset`: kotlin.ULong, `length`: kotlin.ULong): kotlin.ByteArray?
 
     /**
      * Writes a blob's bytes to a new file at `path`, replacing any file
-     * there, fetching them first from connected peers or members while
-     * this device does not hold them whole. It holds a few chunks at a
-     * time, never the blob. `listener` hears the fetch, then the writing.
+     * there, fetching them first from connected peers or members, into
+     * the device's cache, while this device does not hold them whole. It
+     * holds a few chunks at a time, never the blob. `listener` hears the fetch, then the writing.
      * A read that fails deletes the file.
      */
     suspend fun `getToFile`(`id`: kotlin.String, `path`: kotlin.String, `listener`: BlobProgressListener?)
@@ -3156,8 +3161,9 @@ open class Blobs: Disposable, AutoCloseable, BlobsInterface
 
 
     /**
-     * The SHA-256 of a blob's plaintext, computed on this device; none
-     * while it cannot read the blob whole. It fetches nothing.
+     * The SHA-256 of a blob's plaintext, computed on this device. A blob
+     * this device does not hold whole is fetched first, into the device's
+     * cache; none when it cannot be read whole.
      */
     @Throws(FrasilException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
@@ -3181,7 +3187,9 @@ open class Blobs: Disposable, AutoCloseable, BlobsInterface
 
 
     /**
-     * A blob's bytes, or none while this device does not hold them whole.
+     * A blob's bytes. A blob this device does not hold whole is fetched
+     * first from a connected peer or member, into the device's cache; none
+     * when it is not here and nothing is connected that could send it.
      */
     @Throws(FrasilException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
@@ -3205,11 +3213,13 @@ open class Blobs: Disposable, AutoCloseable, BlobsInterface
 
 
     /**
-     * `length` bytes of a blob from byte `offset`, fewer at its end; none
-     * while this device does not hold the blob whole. It opens only the
-     * chunks the range needs, once every check has run on the whole blob
-     * since the device opened; the first range read of a blob reads it
-     * through once, holding a few chunks at a time.
+     * `length` bytes of a blob from byte `offset`, fewer at its end. A
+     * blob this device does not hold whole is fetched first, whole, into
+     * the device's cache; none when it is not here and nothing is
+     * connected that could send it. It opens only the chunks the range
+     * needs, once every check has run on the whole blob; the first range
+     * read of a blob reads it through once, holding a few chunks at a
+     * time.
      */
     @Throws(FrasilException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
@@ -3234,9 +3244,9 @@ open class Blobs: Disposable, AutoCloseable, BlobsInterface
 
     /**
      * Writes a blob's bytes to a new file at `path`, replacing any file
-     * there, fetching them first from connected peers or members while
-     * this device does not hold them whole. It holds a few chunks at a
-     * time, never the blob. `listener` hears the fetch, then the writing.
+     * there, fetching them first from connected peers or members, into
+     * the device's cache, while this device does not hold them whole. It
+     * holds a few chunks at a time, never the blob. `listener` hears the fetch, then the writing.
      * A read that fails deletes the file.
      */
     @Throws(FrasilException::class)
@@ -7984,8 +7994,8 @@ sealed class BlobStatus {
     }
 
     /**
-     * Nothing is sending them now: no peer or member is connected, or
-     * they have not been asked for.
+     * The device does not hold them, and nothing is sending them now. A
+     * read fetches them while a peer or member is connected.
      */
     object Missing : BlobStatus()
 

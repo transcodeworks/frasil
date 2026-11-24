@@ -223,7 +223,11 @@ async fn a_version_put_from_a_file_or_a_seekable_source_supersedes_its_parents()
     let info = files.info(second).await.unwrap();
     assert_eq!(info.name.as_deref(), Some("notes.txt"));
     assert_eq!(
-        files.get(second).await.unwrap().as_deref(),
+        files
+            .get(second, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&b"second, from a seekable source"[..])
     );
 

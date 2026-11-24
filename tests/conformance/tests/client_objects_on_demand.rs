@@ -1,7 +1,7 @@
-//! A device that fetches blobs only when asked, through a peer on loopback
-//! (`Options::objects_on_demand`): it knows every file of a Blobs stream and
-//! holds none, until it asks for one, and then holds that one alone. Every
-//! wait has a deadline.
+//! A device fetches a blob when it is asked for, through a peer on
+//! loopback: it knows every file of a Blobs stream and holds none, until
+//! it reads or materialises one, and then holds that one alone. Every wait
+//! has a deadline.
 
 #[path = "../../../crates/frasil/tests/support/provider.rs"]
 mod provider;
@@ -34,13 +34,7 @@ async fn a_blob_is_fetched_when_asked_for_and_the_others_are_not() {
     let files = space.create_blobs().unwrap();
 
     let provider = DirProvider::new(temp_dir("on-demand"));
-    let bob = open(
-        2,
-        Options::new()
-            .object_provider(provider.clone())
-            .objects_on_demand(),
-    )
-    .await;
+    let bob = open(2, Options::new().object_provider(provider.clone())).await;
     let joining = within(bob.join_via_peer(&peer.origin, "Bob", |_, _| async { true }))
         .await
         .unwrap();
@@ -94,7 +88,7 @@ async fn a_read_fetches_a_blob_on_a_device_that_stores_objects_sealed() {
     let files = space.create_blobs().unwrap();
 
     // No provider: the device stores what it fetches sealed.
-    let bob = open(2, Options::new().objects_on_demand()).await;
+    let bob = open(2, Options::new()).await;
     let joining = within(bob.join_via_peer(&peer.origin, "Bob", |_, _| async { true }))
         .await
         .unwrap();
@@ -119,18 +113,22 @@ async fn a_read_fetches_a_blob_on_a_device_that_stores_objects_sealed() {
 
     // Long enough for a device that fetches by itself to have fetched both.
     tokio::time::sleep(Duration::from_secs(2)).await;
-    assert_eq!(bobs_files.get(asked).await.unwrap(), None);
-    assert_eq!(bobs_files.get(other).await.unwrap(), None);
+    let local = frasil::Read::new().local();
+    assert_eq!(bobs_files.get(asked, &local).await.unwrap(), None);
+    assert_eq!(bobs_files.get(other, &local).await.unwrap(), None);
 
     let mut read = Vec::new();
-    tokio::time::timeout(FETCH, bobs_files.get_stream(asked, &mut read, |_, _| {}))
-        .await
-        .expect("the read asks for the blob")
-        .unwrap();
+    tokio::time::timeout(
+        FETCH,
+        bobs_files.get_stream(asked, &mut read, &frasil::Read::new(), |_, _| {}),
+    )
+    .await
+    .expect("the read asks for the blob")
+    .unwrap();
     assert_eq!(read, b"asked for");
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(
-        bobs_files.get(other).await.unwrap(),
+        bobs_files.get(other, &local).await.unwrap(),
         None,
         "the other blob stays where it is"
     );
@@ -154,13 +152,7 @@ async fn a_blob_of_two_chunks_is_materialised_as_a_file() {
     let files = space.create_blobs().unwrap();
 
     let provider = DirProvider::new(temp_dir("on-demand-two-chunks"));
-    let bob = open(
-        2,
-        Options::new()
-            .object_provider(provider.clone())
-            .objects_on_demand(),
-    )
-    .await;
+    let bob = open(2, Options::new().object_provider(provider.clone())).await;
     let joining = within(bob.join_via_peer(&peer.origin, "Bob", |_, _| async { true }))
         .await
         .unwrap();
@@ -209,13 +201,7 @@ async fn a_released_blob_is_not_fetched_again_by_itself() {
     let files = space.create_blobs().unwrap();
 
     let provider = DirProvider::new(temp_dir("on-demand-released"));
-    let bob = open(
-        2,
-        Options::new()
-            .object_provider(provider.clone())
-            .objects_on_demand(),
-    )
-    .await;
+    let bob = open(2, Options::new().object_provider(provider.clone())).await;
     let joining = within(bob.join_via_peer(&peer.origin, "Bob", |_, _| async { true }))
         .await
         .unwrap();

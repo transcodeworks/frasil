@@ -744,7 +744,7 @@ pub use records::{LastChange, Records, Row, RowWithMetadata, Transaction};
 #[cfg(feature = "adapter-blobs")]
 mod blobs {
     use super::{Error, Opening, Result, Space, StreamId};
-    use crate::client::BlobId;
+    use crate::client::{BlobId, Read};
     use frasil_units::runtime::Stream;
 
     /// Blobs in a space (adapter-blobs.md): files and other bytes, each
@@ -859,17 +859,39 @@ mod blobs {
                 .await
         }
 
-        /// A blob's bytes; `None` while this device does not hold them
-        /// whole yet, as when a peer has not sent them. A reference reads
-        /// like any blob, with the key it carries.
+        /// A blob's bytes. A blob this device holds, kept or cached, is
+        /// read from the device; one it does not hold whole is fetched
+        /// first from a connected peer or member, and then left in the
+        /// cache, kept, or dropped again as `read` says ([`Read`]).
+        /// `None` when the blob is not here and is not fetched: the read
+        /// is [`local`](Read::local), or neither a peer nor a member of
+        /// the space is connected. A reference reads like any blob, with
+        /// the key it carries.
+        ///
+        /// The bytes are gathered whole in memory: for a large blob,
+        /// [`Blobs::get_stream`] writes them out chunk by chunk.
         ///
         /// # Errors
         ///
-        /// [`Error::Invalid`] when the stream holds no blob of this ID; a
-        /// class when the bytes do not open.
-        pub async fn get(&self, id: BlobId) -> Result<Option<Vec<u8>>> {
+        /// [`Error::Invalid`] when the stream holds no blob of this ID;
+        /// [`Error::Timeout`] when the fetch stops moving; a class when
+        /// the bytes do not open; [`Error::NotAllowed`] for a read that
+        /// [`keep`](Read::keep)s in a space this device keeps in memory
+        /// alone; [`Error::Unsupported`] for an
+        /// [`uncached`](Read::uncached) read that would fetch in a space
+        /// whose blobs the application holds as files, where each blob
+        /// fetched becomes a file.
+        pub async fn get(&self, id: BlobId, read: &Read) -> Result<Option<Vec<u8>>> {
             let entry = self.entry(id).await?;
-            match self.open_entry(&entry).await {
+            let mut progress = crate::client::blob_stream::Reporter::silent();
+            let reading = match self.ready(&entry, read, &mut progress).await {
+                Ok(Some(reading)) => reading,
+                Ok(None) | Err(Error::Class("Missing")) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            let bytes = self.open_entry(&entry).await;
+            reading.done().await?;
+            match bytes {
                 Ok(bytes) => Ok(Some(bytes)),
                 Err(Error::Class("Missing")) => Ok(None),
                 Err(error) => Err(error),

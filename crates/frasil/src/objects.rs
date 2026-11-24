@@ -1257,7 +1257,7 @@ impl Engine {
 
     /// Seals an object under the space's current state, outside the
     /// device's lock: its locator, key reference and parts.
-    async fn seal_parts(
+    pub(crate) async fn seal_parts(
         &self,
         space: EventId,
         plaintext: &[u8],
@@ -1358,6 +1358,8 @@ impl Engine {
         // A snapshot whose object was missing may now be used, read back
         // from the store.
         replica.take_snapshots();
+        let locators: Vec<Locator> = parts.iter().map(|part| part.locator).collect();
+        Self::resize_retained(state, space, &locators);
         if Self::fill_wanted(state, &space).await?
             && let Some(replica) = state.replicas.get_mut(&space)
         {
@@ -1425,7 +1427,7 @@ impl Engine {
             Fit::Headerless => return Ok(Received::Headerless),
             Fit::Refused => {
                 let mut state = self.lock().await;
-                Self::drop_object(&mut state, space, &part.locator).await?;
+                self.drop_object(&mut state, space, &part.locator).await?;
                 return Ok(Received::Refused);
             }
         }
@@ -1439,7 +1441,7 @@ impl Engine {
             && read.size > limit
         {
             let mut state = self.lock().await;
-            Self::drop_object(&mut state, space, &part.locator).await?;
+            self.drop_object(&mut state, space, &part.locator).await?;
             if let Some(replica) = state.replicas.get_mut(&space)
                 && replica.object_key(&read.key_reference).is_some()
             {
@@ -1467,26 +1469,23 @@ impl Engine {
         })
     }
 
-    /// Forgets an object the device held part of, and deletes its records:
-    /// it is missing again.
+    /// Forgets an object the device held part of because a check of it
+    /// failed, and deletes its records: it is missing again. How the
+    /// device retains the object stays as it was, so that what another
+    /// party then sends of it is kept or cached as before.
     ///
     /// # Errors
     ///
     /// The store's.
     pub(crate) async fn drop_object(
+        &self,
         state: &mut crate::device::State,
         space: EventId,
         locator: &Locator,
     ) -> Result<()> {
-        let Some(replica) = state.replicas.get_mut(&space) else {
-            return Ok(());
-        };
-        let Some(stored) = replica.forget_object(locator) else {
-            return Ok(());
-        };
-        let mut batch = Batch::default();
-        delete_object_records(&state.vault, &mut batch, &space, locator, &stored);
-        state.vault.commit(batch).await
+        self.drop_stored(state, space, &crate::replica::object_id(locator), false)
+            .await
+            .map(drop)
     }
 
     /// Whether an object the replica holds whole, sealed, hashes to its
@@ -1559,6 +1558,27 @@ impl Engine {
                     }
                 }
             }
+            // Room for what goes to the cache, before it is written
+            // (at-rest.md, "Retention", when).
+            let cached: Vec<&&ObjectPart> = sealed
+                .iter()
+                .filter(|part| {
+                    matches!(
+                        state
+                            .retained
+                            .get(&(space, crate::replica::object_id(&part.locator))),
+                        Some(frasil_store::tables::Retention::Cached { .. })
+                    )
+                })
+                .collect();
+            let incoming: usize = cached.iter().map(|part| part.chunk.len()).sum();
+            if incoming > 0 {
+                let writing = cached
+                    .iter()
+                    .map(|part| crate::replica::object_id(&part.locator))
+                    .collect();
+                self.evict_in(&mut state, incoming as u64, &writing).await?;
+            }
             sealed
         };
         // The chunks are sealed and written while the device goes on.
@@ -1588,7 +1608,7 @@ impl Engine {
                         }
                     }
                     Some(false) => {
-                        Self::drop_object(&mut state, space, &locator).await?;
+                        self.drop_object(&mut state, space, &locator).await?;
                         dropped.insert(locator);
                     }
                     None => {}
@@ -1604,11 +1624,6 @@ impl Engine {
                 .filter(|locator| replica.holds_object(locator))
                 .collect()
         };
-        for locator in &arrived {
-            // The read that asked for it has it: it is not asked for
-            // again until a read lacks it.
-            state.held.answered(&space, locator);
-        }
         let (awaited, streams, records) = {
             let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
             // Blob feeds hear of each.
@@ -2041,8 +2056,10 @@ impl Engine {
             })
     }
 
-    /// The objects the space's units name that the device does not hold
-    /// whole.
+    /// The objects the space's units name that the device means to hold
+    /// and does not hold whole: Frasil's own, and of its blobs those it
+    /// keeps, or every one on a device that keeps every blob
+    /// ([`Engine::keep_all_blobs`]).
     pub async fn missing_objects(&self, space: &EventId) -> Vec<Locator> {
         let mut state = self.lock().await;
         self.refresh_held(&mut state);
@@ -2074,16 +2091,24 @@ impl Engine {
                 })
                 .flat_map(|blobs| blobs.state().current().map(|(_, entry)| entry.object)),
         );
-        let on_demand = if self.objects_on_demand() {
-            blob_objects(replica)
-        } else {
+        // A blob is fetched when it is read, unless the device keeps every
+        // blob: of the blob streams' objects, only those it means to hold
+        // whole are missing, the kept ones and those the application
+        // started a fetch of. One it dropped is absent by its own choice.
+        let on_read = if self.keeps_all_blobs() {
             BTreeSet::new()
+        } else {
+            blob_objects(replica)
         };
         named
             .into_iter()
             .filter(|locator| !replica.holds_object(locator))
             .filter(|locator| !replica.is_oversized_state(locator))
-            .filter(|locator| !on_demand.contains(locator) || state.held.asked_for(space, locator))
+            .filter(|locator| {
+                !on_read.contains(locator)
+                    || state.held.asked_for(space, locator)
+                    || Self::keeps_object(&state, space, locator)
+            })
             .collect()
     }
 
@@ -2185,7 +2210,7 @@ impl Engine {
     #[cfg(any(feature = "server", feature = "server-socket"))]
     pub(crate) async fn drop_fetched(&self, space: EventId, locator: &Locator) -> Result<()> {
         let mut state = self.lock().await;
-        Self::drop_object(&mut state, space, locator).await
+        self.drop_object(&mut state, space, locator).await
     }
 
     /// `ObjectHave` for every object of a space the device holds whole,
@@ -2336,6 +2361,9 @@ impl Engine {
             Some((locator, key)) => (locator, key, Vec::new()),
             None => self.seal_parts(space, plaintext).await?,
         };
+        // Sealed here and not yet named: nothing of it is dropped until
+        // its unit is written, which holds it from then on.
+        let _using = self.use_object(space, &locator);
         // A large object is written before its unit and without the
         // device's lock, so that other writes go on meanwhile; a small one
         // goes in the unit's commit.
@@ -2466,6 +2494,7 @@ impl Engine {
         stored: Vec<ObjectPart>,
     ) -> Result<EventId> {
         use frasil_adapter_blobs::content::Change;
+        let named = objects.clone();
         let mut state = self.lock().await;
         let id = self
             .write_parts(
@@ -2507,6 +2536,11 @@ impl Engine {
                 },
             )
             .await?;
+        // An object this device put is cached or kept from now on; until
+        // its unit is durable it stays in either case.
+        for locator in &named {
+            self.retain_put(&mut state, space, locator).await?;
+        }
         Ok(id)
     }
 }

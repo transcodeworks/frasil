@@ -645,6 +645,8 @@ async fn a_member_announces_the_objects_it_sends_and_serves_them() {
         .await
         .unwrap();
     bob.follow(space).await;
+    // Bob keeps every blob, so he asks for each one a member announces.
+    bob.keep_all_blobs();
     let mut bobs = SyncSession::new(space);
     let mut alices = SyncSession::new(space);
     let first = bob.sync_start(&mut bobs).await.unwrap();

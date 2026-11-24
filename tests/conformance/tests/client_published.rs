@@ -62,7 +62,11 @@ async fn nothing_reaches_the_stream_without_a_peer() {
         .await
         .unwrap();
     assert_eq!(
-        files.get(id).await.unwrap().as_deref(),
+        files
+            .get(id, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&b"not yet anywhere else"[..])
     );
 }
@@ -96,7 +100,11 @@ async fn a_published_blob_stays_held_and_servable() {
     assert_eq!(files.info(id).await.unwrap().token, Some(token.clone()));
     assert!(provider.forgotten().is_empty());
     assert_eq!(
-        files.get(id).await.unwrap().as_deref(),
+        files
+            .get(id, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&b"held and at the peer"[..])
     );
 
@@ -113,7 +121,7 @@ async fn a_published_blob_stays_held_and_servable() {
     })
     .await;
     let mut fetched = Vec::new();
-    within(bobs_files.get_stream(id, &mut fetched, |_, _| {}))
+    within(bobs_files.get_stream(id, &mut fetched, &frasil::Read::new(), |_, _| {}))
         .await
         .unwrap();
     assert_eq!(fetched, b"held and at the peer");
@@ -254,7 +262,10 @@ async fn a_version_saved_over_offline_does_not_hold_back_the_stream() {
 async fn read(blobs: &frasil::Blobs, id: frasil::BlobId) -> Result<Vec<u8>> {
     loop {
         let mut fetched = Vec::new();
-        match blobs.get_stream(id, &mut fetched, |_, _| {}).await {
+        match blobs
+            .get_stream(id, &mut fetched, &frasil::Read::new(), |_, _| {})
+            .await
+        {
             Err(Error::Class("Sealed")) => tokio::time::sleep(Duration::from_millis(50)).await,
             other => return other.map(|_| fetched),
         }

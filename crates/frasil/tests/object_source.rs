@@ -253,14 +253,28 @@ async fn the_client_puts_from_a_reader_a_seekable_reader_and_a_file() {
         .await
         .unwrap();
     assert_eq!(empty_seen, vec![(0, Some(0))]);
-    assert_eq!(blobs.get(empty).await.unwrap().as_deref(), Some(&[][..]));
+    assert_eq!(
+        blobs
+            .get(empty, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(&[][..])
+    );
     assert_eq!(blobs.info(empty).await.unwrap().name, None);
 
     for blob in [at, seekable, file] {
         let info = blobs.info(blob).await.unwrap();
         assert_eq!(info.object, object);
         assert_eq!(info.size, bytes.len() as u64);
-        assert_eq!(blobs.get(blob).await.unwrap().as_deref(), Some(&bytes[..]));
+        assert_eq!(
+            blobs
+                .get(blob, &frasil::Read::new())
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(&bytes[..])
+        );
     }
     drop(device);
     let _ = std::fs::remove_dir_all(&dir);
@@ -285,7 +299,14 @@ async fn a_held_put_from_a_source_goes_through_the_provider() {
     assert_eq!(info.size, bytes.len() as u64);
     let token = info.token.expect("held through the provider");
     assert_eq!(provider.read(&token), bytes);
-    assert_eq!(blobs.get(blob).await.unwrap().as_deref(), Some(&bytes[..]));
+    assert_eq!(
+        blobs
+            .get(blob, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(&bytes[..])
+    );
     drop(device);
     let _ = std::fs::remove_dir_all(&dir);
 }

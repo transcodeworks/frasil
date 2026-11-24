@@ -394,8 +394,17 @@ mod blobs {
             /// Where it was removed.
             origin: Origin,
         },
-        /// A blob's bytes arrived whole: [`Blobs::get`] reads it now.
+        /// A blob's bytes arrived whole: a read gives them with no
+        /// connection now.
         Arrived {
+            /// The blob.
+            id: BlobId,
+        },
+        /// This device dropped a blob's bytes: to keep its cache within
+        /// its budget, at the end of a read that stores nothing, or
+        /// because the application asked with [`Blobs::drop_local`]. A
+        /// read fetches them again.
+        Evicted {
             /// The blob.
             id: BlobId,
         },
@@ -481,8 +490,9 @@ mod blobs {
     }
 
     impl Blobs {
-        /// The blobs that change from now on: put, removed, arrived or
-        /// withdrawn, this device's own puts and removals included.
+        /// The blobs that change from now on: put, removed, arrived,
+        /// evicted or withdrawn, this device's own puts and removals
+        /// included.
         ///
         /// # Errors
         ///
@@ -549,10 +559,12 @@ mod blobs {
                         Err(RecvError::Lagged(_)) => Origin::Remote,
                         Err(RecvError::Closed) => return Ok(None),
                     },
+                    // An object that became whole, or that the device
+                    // dropped.
                     arrival = self.arrivals.recv() => match arrival {
                         Ok((from, locator))
-                            if !self.known.values().any(|(l, s, holds)| {
-                                *l == locator && !holds && (from == space || Some(from) == *s)
+                            if !self.known.values().any(|(l, s, _)| {
+                                *l == locator && (from == space || Some(from) == *s)
                             }) => continue,
                         Ok(_) | Err(RecvError::Lagged(_)) => Origin::Remote,
                         Err(RecvError::Closed) => return Ok(None),
@@ -591,6 +603,9 @@ mod blobs {
                     None => self.queued.push_back(BlobChange::Added { id, origin }),
                     Some((_, _, false)) if *holds => {
                         self.queued.push_back(BlobChange::Arrived { id });
+                    }
+                    Some((_, _, true)) if !*holds => {
+                        self.queued.push_back(BlobChange::Evicted { id });
                     }
                     Some(_) => {}
                 }

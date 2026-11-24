@@ -1222,30 +1222,35 @@ public func FfiConverterTypeBlobStatusListener_lower(_ value: BlobStatusListener
 public protocol BlobsProtocol: AnyObject, Sendable {
 
     /**
-     * The SHA-256 of a blob's plaintext, computed on this device; none
-     * while it cannot read the blob whole. It fetches nothing.
+     * The SHA-256 of a blob's plaintext, computed on this device. A blob
+     * this device does not hold whole is fetched first, into the device's
+     * cache; none when it cannot be read whole.
      */
     func contentHash(id: String) async throws  -> Data?
 
     /**
-     * A blob's bytes, or none while this device does not hold them whole.
+     * A blob's bytes. A blob this device does not hold whole is fetched
+     * first from a connected peer or member, into the device's cache; none
+     * when it is not here and nothing is connected that could send it.
      */
     func get(id: String) async throws  -> Data?
 
     /**
-     * `length` bytes of a blob from byte `offset`, fewer at its end; none
-     * while this device does not hold the blob whole. It opens only the
-     * chunks the range needs, once every check has run on the whole blob
-     * since the device opened; the first range read of a blob reads it
-     * through once, holding a few chunks at a time.
+     * `length` bytes of a blob from byte `offset`, fewer at its end. A
+     * blob this device does not hold whole is fetched first, whole, into
+     * the device's cache; none when it is not here and nothing is
+     * connected that could send it. It opens only the chunks the range
+     * needs, once every check has run on the whole blob; the first range
+     * read of a blob reads it through once, holding a few chunks at a
+     * time.
      */
     func getRange(id: String, offset: UInt64, length: UInt64) async throws  -> Data?
 
     /**
      * Writes a blob's bytes to a new file at `path`, replacing any file
-     * there, fetching them first from connected peers or members while
-     * this device does not hold them whole. It holds a few chunks at a
-     * time, never the blob. `listener` hears the fetch, then the writing.
+     * there, fetching them first from connected peers or members, into
+     * the device's cache, while this device does not hold them whole. It
+     * holds a few chunks at a time, never the blob. `listener` hears the fetch, then the writing.
      * A read that fails deletes the file.
      */
     func getToFile(id: String, path: String, listener: BlobProgressListener?) async throws
@@ -1338,8 +1343,9 @@ open class Blobs: BlobsProtocol, @unchecked Sendable {
 
 
     /**
-     * The SHA-256 of a blob's plaintext, computed on this device; none
-     * while it cannot read the blob whole. It fetches nothing.
+     * The SHA-256 of a blob's plaintext, computed on this device. A blob
+     * this device does not hold whole is fetched first, into the device's
+     * cache; none when it cannot be read whole.
      */
 open func contentHash(id: String)async throws  -> Data?  {
     return
@@ -1359,7 +1365,9 @@ open func contentHash(id: String)async throws  -> Data?  {
 }
 
     /**
-     * A blob's bytes, or none while this device does not hold them whole.
+     * A blob's bytes. A blob this device does not hold whole is fetched
+     * first from a connected peer or member, into the device's cache; none
+     * when it is not here and nothing is connected that could send it.
      */
 open func get(id: String)async throws  -> Data?  {
     return
@@ -1379,11 +1387,13 @@ open func get(id: String)async throws  -> Data?  {
 }
 
     /**
-     * `length` bytes of a blob from byte `offset`, fewer at its end; none
-     * while this device does not hold the blob whole. It opens only the
-     * chunks the range needs, once every check has run on the whole blob
-     * since the device opened; the first range read of a blob reads it
-     * through once, holding a few chunks at a time.
+     * `length` bytes of a blob from byte `offset`, fewer at its end. A
+     * blob this device does not hold whole is fetched first, whole, into
+     * the device's cache; none when it is not here and nothing is
+     * connected that could send it. It opens only the chunks the range
+     * needs, once every check has run on the whole blob; the first range
+     * read of a blob reads it through once, holding a few chunks at a
+     * time.
      */
 open func getRange(id: String, offset: UInt64, length: UInt64)async throws  -> Data?  {
     return
@@ -1404,9 +1414,9 @@ open func getRange(id: String, offset: UInt64, length: UInt64)async throws  -> D
 
     /**
      * Writes a blob's bytes to a new file at `path`, replacing any file
-     * there, fetching them first from connected peers or members while
-     * this device does not hold them whole. It holds a few chunks at a
-     * time, never the blob. `listener` hears the fetch, then the writing.
+     * there, fetching them first from connected peers or members, into
+     * the device's cache, while this device does not hold them whole. It
+     * holds a few chunks at a time, never the blob. `listener` hears the fetch, then the writing.
      * A read that fails deletes the file.
      */
 open func getToFile(id: String, path: String, listener: BlobProgressListener?)async throws   {
@@ -5286,8 +5296,8 @@ public enum BlobStatus: Equatable, Hashable {
          */total: UInt64
     )
     /**
-     * Nothing is sending them now: no peer or member is connected, or
-     * they have not been asked for.
+     * The device does not hold them, and nothing is sending them now. A
+     * read fetches them while a peer or member is connected.
      */
     case missing
     /**
@@ -6750,16 +6760,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_frasil_uniffi_checksum_method_blobstatuslistener_failed() != 6018) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_frasil_uniffi_checksum_method_blobs_content_hash() != 64733) {
+    if (uniffi_frasil_uniffi_checksum_method_blobs_content_hash() != 10406) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_frasil_uniffi_checksum_method_blobs_get() != 3798) {
+    if (uniffi_frasil_uniffi_checksum_method_blobs_get() != 22721) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_frasil_uniffi_checksum_method_blobs_get_range() != 52548) {
+    if (uniffi_frasil_uniffi_checksum_method_blobs_get_range() != 58339) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_frasil_uniffi_checksum_method_blobs_get_to_file() != 13908) {
+    if (uniffi_frasil_uniffi_checksum_method_blobs_get_to_file() != 51323) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_frasil_uniffi_checksum_method_blobs_id() != 54424) {

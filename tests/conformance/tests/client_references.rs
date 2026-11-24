@@ -148,14 +148,17 @@ async fn a_file_is_stored_once_and_referenced_across_a_library() {
     assert_eq!(info.name.as_deref(), Some("opening.mp4"));
     assert!(!bank_blobs.info(stored).await.unwrap().is_reference());
     assert_eq!(
-        show_blobs.get(referenced).await.unwrap(),
+        show_blobs
+            .get(referenced, &frasil::Read::new())
+            .await
+            .unwrap(),
         Some(file.clone())
     );
     // A range of it, opened with the reference's key.
     let (at, len) = (FILE_BYTES / 3, 4096.min(FILE_BYTES / 3));
     assert_eq!(
         show_blobs
-            .get_range(referenced, at as u64, len as u64)
+            .get_range(referenced, at as u64, len as u64, &frasil::Read::new())
             .await
             .unwrap(),
         Some(file[at..at + len].to_vec())
@@ -216,13 +219,18 @@ async fn a_file_is_stored_once_and_referenced_across_a_library() {
     let bobs_info = bobs_blobs.info(referenced).await.unwrap();
     assert_eq!(bobs_info.source, Some(bank.id()));
     let mut played = Vec::new();
-    within(bobs_blobs.get_stream(referenced, &mut played, |_, _| {}))
+    within(bobs_blobs.get_stream(referenced, &mut played, &frasil::Read::new(), |_, _| {}))
         .await
         .unwrap();
     assert_eq!(played, file, "Bob plays the file");
     assert_eq!(
         bobs_blobs
-            .get_range(referenced, (FILE_BYTES - 10) as u64, 100)
+            .get_range(
+                referenced,
+                (FILE_BYTES - 10) as u64,
+                100,
+                &frasil::Read::new()
+            )
             .await
             .unwrap(),
         Some(file[FILE_BYTES - 10..].to_vec()),
