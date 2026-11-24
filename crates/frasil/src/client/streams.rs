@@ -898,7 +898,7 @@ mod blobs {
                     Ok(bytes)
                 }
                 .await;
-                through.close().await?;
+                let read = through.end(read).await;
                 return match read {
                     Ok(bytes) => Ok(Some(bytes)),
                     Err(Error::Class("Missing")) => Ok(None),

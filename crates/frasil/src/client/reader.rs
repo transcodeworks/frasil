@@ -1167,9 +1167,12 @@ impl Blobs {
             Ok(out)
         }
         .await;
+        // The read's own error, if it failed, and not that of ending it.
         let read = read.map_err(|error| reader.of_blob(error));
-        reader.close().await?;
-        read
+        let closed = reader.close().await;
+        let read = read?;
+        closed?;
+        Ok(read)
     }
 }
 
@@ -1202,9 +1205,13 @@ impl Through {
         }))
     }
 
-    /// Ends the read ([`BlobReader::close`]).
-    pub(super) async fn close(self) -> Result<()> {
-        self.reader.close().await
+    /// Ends the read ([`BlobReader::close`]) with what it gave: the
+    /// read's own error if it failed, and else the error of ending it.
+    pub(super) async fn end<T>(self, read: Result<T>) -> Result<T> {
+        let closed = self.reader.close().await;
+        let read = read?;
+        closed?;
+        Ok(read)
     }
 }
 

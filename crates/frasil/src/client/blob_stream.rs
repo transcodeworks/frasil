@@ -203,8 +203,7 @@ impl Blobs {
                     .map_err(|error| io(&error))
             }
             .await;
-            through.close().await?;
-            written?;
+            through.end(written).await?;
             progress.report(size, Some(size));
             return Ok(());
         }
@@ -265,7 +264,7 @@ impl Blobs {
                 Ok(hasher.finish())
             }
             .await;
-            through.close().await?;
+            let hashed = through.end(hashed).await;
             return match hashed {
                 Ok(hash) => {
                     engine.keep_content_hash(space, locator, hash);
