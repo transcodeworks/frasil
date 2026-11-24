@@ -4949,7 +4949,15 @@ impl SliceTask {
                 if self.request.cancel.is_cancelled() {
                     return SliceFetch::Cancelled;
                 }
-                match self.device.receive_part(space, part).await {
+                // Looked at again where the part is admitted to the
+                // store: the request may end between here and there, and
+                // a read that began since must not get its part.
+                let cancel = &self.request.cancel;
+                let asked = crate::objects::Asked {
+                    wanted: &|| !cancel.is_cancelled(),
+                    stores: self.request.stores,
+                };
+                match self.device.receive_part(space, part, asked).await {
                     Ok(Received::Kept) => self.kept = true,
                     Ok(Received::Whole) => return SliceFetch::Done,
                     Ok(Received::Refused) => return SliceFetch::Refused,

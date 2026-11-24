@@ -446,6 +446,17 @@ impl Requests {
         })
     }
 
+    /// Whether a request still wanted names this chunk for the store.
+    pub(crate) fn stores_chunk(&self, space: &EventId, locator: &Locator, index: u64) -> bool {
+        self.live().requests.values().any(|request| {
+            request.space == *space
+                && request.locator == *locator
+                && request.chunks.contains(&index)
+                && request.stores
+                && !request.cancel.is_cancelled()
+        })
+    }
+
     /// Whether a request still wanted names this chunk or a later one:
     /// what an object taken in order needs before the chunks asked for.
     pub(crate) fn reaches(&self, space: &EventId, locator: &Locator, index: u64) -> bool {

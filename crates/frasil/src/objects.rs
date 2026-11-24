@@ -349,6 +349,30 @@ struct KeptParts {
     left: BTreeSet<(Locator, u64)>,
 }
 
+/// What a part another party sent was asked for
+/// ([`Engine::receive_part`]): looked at again where the device
+/// decides whether it means to store the part, under its lock, so that a
+/// part that was on its way when its request ended is not stored for
+/// whoever uses the object by then.
+#[derive(Clone, Copy)]
+pub(crate) struct Asked<'a> {
+    /// Whether what the part was asked for still wants it: the request
+    /// was not cancelled, or a unit of the space names the object.
+    pub wanted: &'a (dyn Fn() -> bool + Sync),
+    /// Whether the part was asked for the store. One asked for a reader
+    /// that stores nothing joins what the device holds of its object,
+    /// and begins no cached object.
+    pub stores: bool,
+}
+
+impl Asked<'_> {
+    /// A part asked for the store, by something that still wants it.
+    pub(crate) const STORE: Asked<'static> = Asked {
+        wanted: &|| true,
+        stores: true,
+    };
+}
+
 /// Where parts the device is given to keep come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Source {
@@ -1470,7 +1494,7 @@ impl Engine {
     /// fails is dropped, and is missing again.
     #[cfg_attr(not(feature = "space-files"), allow(dead_code))]
     pub(crate) async fn keep_parts(&self, space: EventId, parts: &[ObjectPart]) -> Result<()> {
-        Box::pin(self.keep_parts_with(space, parts, Source::Given))
+        Box::pin(self.keep_parts_with(space, parts, Source::Given, Asked::STORE))
             .await
             .map(drop)
     }
@@ -1483,7 +1507,7 @@ impl Engine {
         space: EventId,
         parts: &[ObjectPart],
     ) -> Result<()> {
-        Box::pin(self.keep_parts_with(space, parts, Source::Checked))
+        Box::pin(self.keep_parts_with(space, parts, Source::Checked, Asked::STORE))
             .await
             .map(drop)
     }
@@ -1509,10 +1533,20 @@ impl Engine {
     /// object the device holds no header of cannot be checked: it is not
     /// kept, and nothing else changes.
     ///
+    /// `asked` says what the part was asked for ([`Asked`]): a part whose
+    /// request ended while it was on its way is not stored, whoever uses
+    /// its object by then, and one asked for a reader that stores nothing
+    /// begins no cached object.
+    ///
     /// # Errors
     ///
     /// [`Error::UnknownSpace`]; the store's.
-    pub(crate) async fn receive_part(&self, space: EventId, part: ObjectPart) -> Result<Received> {
+    pub(crate) async fn receive_part(
+        &self,
+        space: EventId,
+        part: ObjectPart,
+        asked: Asked<'_>,
+    ) -> Result<Received> {
         let key = (space, crate::replica::object_id(&part.locator));
         let fits = {
             let mut state = self.lock().await;
@@ -1582,8 +1616,9 @@ impl Engine {
             return Ok(Received::Refused);
         }
         let locator = part.locator;
-        let kept = Box::pin(self.keep_parts_with(space, std::slice::from_ref(&part), Source::Sent))
-            .await?;
+        let kept =
+            Box::pin(self.keep_parts_with(space, std::slice::from_ref(&part), Source::Sent, asked))
+                .await?;
         if kept.dropped.contains(&locator) {
             return Ok(Received::Refused);
         }
@@ -1607,6 +1642,13 @@ impl Engine {
         } else {
             Received::Kept
         })
+    }
+
+    /// [`receive_part`](Self::receive_part) for a part asked for the
+    /// store, by something that still wants it.
+    #[cfg(test)]
+    pub(crate) async fn receive_sent(&self, space: EventId, part: ObjectPart) -> Result<Received> {
+        self.receive_part(space, part, Asked::STORE).await
     }
 
     /// Forgets an object the device held part of because a check of it
@@ -1688,6 +1730,7 @@ impl Engine {
         space: EventId,
         parts: &[ObjectPart],
         source: Source,
+        asked: Asked<'_>,
     ) -> Result<KeptParts> {
         let checked = source == Source::Checked;
         let mut left = BTreeSet::new();
@@ -1724,9 +1767,19 @@ impl Engine {
                     let means = match meant.get(&part.locator) {
                         Some(means) => *means,
                         None => {
-                            let means = self
-                                .admit(&mut state, space, &part.locator, part.header.as_deref())
-                                .await?;
+                            // What asked for the part is looked at
+                            // before and after the device says whether
+                            // it means to hold the object: a request
+                            // ends before its reader's use of the object
+                            // does, so a part the device would store for
+                            // a read that began since is seen here to
+                            // have lost its own.
+                            let header = part.header.as_deref();
+                            let means = (asked.wanted)()
+                                && self
+                                    .admit(&mut state, space, &part.locator, header, asked.stores)
+                                    .await?
+                                && (asked.wanted)();
                             meant.insert(part.locator, means);
                             means
                         }

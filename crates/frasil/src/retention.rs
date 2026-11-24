@@ -867,6 +867,11 @@ impl Engine {
     /// it, or when it is larger than the whole budget (at-rest.md,
     /// "Retention", when).
     ///
+    /// `stores` says the part was asked for the store. One that was not,
+    /// asked for a reader that stores nothing, joins an object the device
+    /// holds part of or has a record of, and begins no cached object: no
+    /// record is committed for it, whatever other reads use the object.
+    ///
     /// # Errors
     ///
     /// The store's.
@@ -876,6 +881,7 @@ impl Engine {
         space: EventId,
         locator: &Locator,
         header: Option<&[u8]>,
+        stores: bool,
     ) -> Result<bool> {
         let key = (space, object_id(locator));
         // What arrives for readers that store nothing, and for nothing
@@ -908,7 +914,7 @@ impl Engine {
         if holds {
             return Ok(true);
         }
-        if let Some(want) = want {
+        if let Some(want) = want.filter(|_| stores) {
             let read = self.read_now(state);
             self.record(state, space, key.1, Retention::Cached { read })
                 .await?;
@@ -930,6 +936,7 @@ impl Engine {
         // object: what it brings is the cache's, as a read's is, and so
         // is what it brings of an object no unit the device holds names
         // yet, which may be a blob's.
+        let requested = requested && stores;
         if requested {
             let read = self.read_now(state);
             self.record(state, space, key.1, Retention::Cached { read })

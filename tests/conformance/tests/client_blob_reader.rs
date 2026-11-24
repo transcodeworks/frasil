@@ -58,10 +58,15 @@ where
 
 /// Alice's space at a peer with one blob there, and Bob, a member that
 /// reaches the peer through the proxy and holds nothing of the blob.
+/// Beside it a small blob, which Bob read once to know that the key both
+/// are sealed under is here: no test reads it again, and what the proxy
+/// saw asked of it is left out.
 struct Scene {
     peer: TestPeer,
     proxy: String,
     faults: Arc<Faults>,
+    /// The small blob's locator, as the proxy shows it.
+    probe: String,
     _alice: Device,
     _space: Space,
     files: Blobs,
@@ -94,26 +99,35 @@ async fn scene(options: Options) -> Scene {
         .unwrap();
     let joined = within(joining.joined()).await.unwrap();
     let link = bob.connect(&proxy).await.unwrap();
+    // The key the blobs are sealed under is here once the small one
+    // reads, whole and right. It is another blob than the one the tests
+    // read, so that nothing of this read, which each of Bob's connections
+    // may still be ending, is a fetch of theirs.
+    let small = vec![9; 2000];
+    let probe = files.put(Some("a probe"), &small).await.unwrap();
+    within(space.wait_durable(DEADLINE)).await.unwrap();
+    let blobs = listed(&joined, &files, 1).await;
+    until(|| async {
+        // Through a reader, which makes no file where the application
+        // holds the space's blobs.
+        let Ok(mut reader) = blobs.open_reader(probe, &Read::new().uncached()).await else {
+            return false;
+        };
+        let mut read = vec![0; small.len()];
+        matches!(reader.read_at(0, &mut read).await, Ok(len) if read[..len] == small[..])
+    })
+    .await;
+    let probe = faults.asked.lock().unwrap()[0].0.clone();
     let bytes = content(0);
     let id = files.put(Some("a film"), &bytes).await.unwrap();
     within(space.wait_durable(DEADLINE)).await.unwrap();
-    let blobs = listed(&joined, &files, 1).await;
-    // The key the blob is sealed under is here once its size reads.
-    until(|| async {
-        match blobs.open_reader(id, &Read::new().uncached()).await {
-            Ok(mut reader) => !matches!(
-                reader.fetch_size().await,
-                Err(frasil::Error::Class("Sealed"))
-            ),
-            Err(_) => false,
-        }
-    })
-    .await;
+    let blobs = listed(&joined, &files, 2).await;
     faults.clear();
     Scene {
         peer,
         proxy,
         faults,
+        probe,
         _alice: alice,
         _space: space,
         files,
@@ -160,10 +174,18 @@ impl Scene {
         &self.bytes[offset as usize..offset as usize + len]
     }
 
+    /// The slices asked for since the faults were last cleared, of any
+    /// blob but the small one, in the order they were asked for.
+    fn asked_in_order(&self) -> Vec<u64> {
+        let asked = self.faults.asked.lock().unwrap();
+        let others = asked.iter().filter(|(of, _)| *of != self.probe);
+        others.map(|(_, index)| *index).collect()
+    }
+
     /// The slices asked for since the faults were last cleared, each once,
     /// in order of index.
     fn asked(&self) -> Vec<u64> {
-        let mut asked = self.faults.asked_of_any();
+        let mut asked = self.asked_in_order();
         asked.sort_unstable();
         asked.dedup();
         asked
@@ -436,7 +458,7 @@ async fn an_uncached_reader_leaves_the_store_empty_and_the_cache_untouched() {
     let scene = scene(Options::new()).await;
     // Another blob, in the cache.
     let other = scene.files.put(Some("a still"), &[7; 1000]).await.unwrap();
-    until(|| async { scene.blobs.list().await.is_ok_and(|list| list.len() == 2) }).await;
+    until(|| async { scene.blobs.list().await.is_ok_and(|list| list.len() == 3) }).await;
     let got = within(async {
         loop {
             if let Ok(Some(got)) = scene.blobs.get(other, &Read::new()).await {
@@ -525,13 +547,13 @@ async fn a_reader_dropped_mid_fetch_leaves_no_fetch_running() {
         until(|| async { scene.asked().contains(&3) }).await;
         reading.abort();
         let _ = reading.await;
-        let asked = scene.faults.asked_of_any();
+        let asked = scene.asked_in_order();
         scene.faults.hold(&[]);
         tokio::time::sleep(Duration::from_secs(2)).await;
         // No slice is asked for after the drop, not even the second one
         // of the chunk, and nothing of the chunk is kept. Before it,
         // slice 3, behind slice 0 where the store held no header yet.
-        assert_eq!(scene.faults.asked_of_any(), asked);
+        assert_eq!(scene.asked_in_order(), asked);
         assert!(
             asked.iter().all(|slice| [0, 3].contains(slice)),
             "{asked:?} {mode:?}"
@@ -570,7 +592,7 @@ async fn eviction_leaves_a_blob_a_reader_has_open() {
         let bytes = vec![seed as u8; 1_500_000];
         others.push((scene.files.put(None, &bytes).await.unwrap(), bytes));
     }
-    until(|| async { scene.blobs.list().await.is_ok_and(|list| list.len() == 4) }).await;
+    until(|| async { scene.blobs.list().await.is_ok_and(|list| list.len() == 5) }).await;
     for (id, bytes) in &others {
         let got = within(async {
             loop {

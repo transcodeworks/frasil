@@ -190,7 +190,7 @@ impl Absent {
 
     async fn send(&self, index: usize) -> Received {
         self.engine
-            .receive_part(self.of, self.parts[index].clone())
+            .receive_sent(self.of, self.parts[index].clone())
             .await
             .unwrap()
     }
@@ -578,7 +578,7 @@ async fn a_bad_chunk_is_refused_and_the_good_ones_stay() {
     flipped.chunk[100] ^= 1;
     for bad in [replayed, flipped.clone(), flipped] {
         assert_eq!(
-            absent.engine.receive_part(absent.of, bad).await.unwrap(),
+            absent.engine.receive_sent(absent.of, bad).await.unwrap(),
             Received::BadChunk
         );
         assert!(absent.holds(0).await && !absent.holds(1).await && !absent.holds(3).await);
@@ -599,7 +599,7 @@ async fn a_bad_chunk_is_refused_and_the_good_ones_stay() {
         ..absent.parts[2].clone()
     };
     assert_eq!(
-        absent.engine.receive_part(absent.of, other).await.unwrap(),
+        absent.engine.receive_sent(absent.of, other).await.unwrap(),
         Received::BadChunk
     );
     assert!(absent.holds(0).await && absent.holds(1).await);
@@ -632,7 +632,7 @@ async fn a_bad_chunk_is_refused_and_the_good_ones_stay() {
         }
     };
     assert_eq!(
-        absent.engine.receive_part(absent.of, other).await.unwrap(),
+        absent.engine.receive_sent(absent.of, other).await.unwrap(),
         Received::Refused
     );
     assert!(!absent.holds(0).await && !absent.holds(1).await);
@@ -777,7 +777,7 @@ async fn a_blob_refused_whole_fails_its_readers_and_tells_the_application() {
                     read = &mut reading => break read.unwrap(),
                     () = tokio::time::sleep(Duration::from_millis(5)) => {
                         if !engine.fetches().of(&of).is_empty() {
-                            engine.receive_part(of, part(index)).await.unwrap();
+                            engine.receive_sent(of, part(index)).await.unwrap();
                         }
                     }
                 }
@@ -793,7 +793,7 @@ async fn a_blob_refused_whole_fails_its_readers_and_tells_the_application() {
     // The last chunk makes it whole: its bytes hash to the locator, and
     // its plaintext is not its ID's.
     assert_eq!(
-        engine.receive_part(of, part(4)).await.unwrap(),
+        engine.receive_sent(of, part(4)).await.unwrap(),
         Received::Whole
     );
     let refused = tokio::time::timeout(Duration::from_secs(20), async {
@@ -1019,7 +1019,7 @@ async fn a_forged_size_gives_neither_a_size_nor_an_end_of_a_reference() {
             }
             let _ = absent
                 .engine
-                .receive_part(absent.of, forged(&absent, size))
+                .receive_sent(absent.of, forged(&absent, size))
                 .await
                 .unwrap();
             let sized = tokio::time::timeout(Duration::from_millis(300), &mut sizing).await;
@@ -1043,7 +1043,7 @@ async fn a_forged_size_gives_neither_a_size_nor_an_end_of_a_reference() {
         }
         let _ = absent
             .engine
-            .receive_part(absent.of, forged(&absent, size))
+            .receive_sent(absent.of, forged(&absent, size))
             .await
             .unwrap();
         let ranged = tokio::time::timeout(Duration::from_millis(300), &mut ranging).await;
@@ -1125,7 +1125,7 @@ async fn read_with(
                 read = &mut reading => break read,
                 () = tokio::time::sleep(Duration::from_millis(5)) => {
                     if absent.asked().iter().any(|(at, _)| *at == part.index) {
-                        absent.engine.receive_part(absent.of, part.clone()).await.unwrap();
+                        absent.engine.receive_sent(absent.of, part.clone()).await.unwrap();
                     }
                 }
             }
@@ -1261,7 +1261,7 @@ async fn a_bad_chunk_to_a_reader_that_stores_nothing_is_asked_of_another_party()
             () = absent.asked_for(2) => {}
         }
         for bad in [flipped, short, foreign] {
-            let received = absent.engine.receive_part(absent.of, bad).await.unwrap();
+            let received = absent.engine.receive_sent(absent.of, bad).await.unwrap();
             assert_eq!(received, Received::BadChunk);
         }
         // That connection asks for no more of the object; the other one
@@ -1315,7 +1315,7 @@ async fn a_bad_first_chunk_fails_no_reader() {
                 }
                 let received = absent
                     .engine
-                    .receive_part(absent.of, flipped)
+                    .receive_sent(absent.of, flipped)
                     .await
                     .unwrap();
                 assert_eq!(received, Received::BadChunk, "{reference}");
@@ -1502,4 +1502,108 @@ async fn a_read_that_waits_for_a_chunk_read_ahead_asks_for_it_first() {
     assert_eq!(id_of(2), run);
     absent.send(1).await;
     assert_eq!(reading.await.unwrap(), 10);
+}
+
+/// A chunk on its way for a request that ended is stored for nobody: a
+/// reader that stores nothing asked for it on two connections, one
+/// brought it, the reader went, and the other brings it once a reader
+/// that caches has opened on the blob. A chunk asked for by a reader that
+/// stores nothing, while another reader caches the blob, begins no cached
+/// blob either.
+#[tokio::test]
+async fn a_chunk_that_arrives_for_a_request_that_ended_is_not_stored() {
+    use crate::objects::Asked;
+    let absent = absent().await;
+    let mut probe = absent
+        .blobs
+        .open_reader(absent.id, &Read::new().uncached())
+        .await
+        .unwrap();
+    probe.set_read_ahead(0);
+    let request = {
+        let mut buf = [0u8; 10];
+        let reading = probe.read_at(0, &mut buf);
+        tokio::pin!(reading);
+        tokio::select! {
+            _ = &mut reading => panic!("nothing arrived yet"),
+            () = absent.asked_for(0) => {}
+        }
+        let request = absent.engine.fetches().of(&absent.of).remove(0);
+        assert_eq!(absent.send(0).await, Received::Kept);
+        assert_eq!(reading.await.unwrap(), 10);
+        request
+    };
+    let asked = |request: &crate::fetch::Request| {
+        let cancel = request.cancel.clone();
+        (move || !cancel.is_cancelled(), request.stores)
+    };
+    // A reader that caches opens, and asks for another chunk; the probe
+    // asks for one more.
+    let mut reader = absent
+        .blobs
+        .open_reader(absent.id, &Read::new())
+        .await
+        .unwrap();
+    reader.set_read_ahead(0);
+    let (wanted, stores) = asked(&request);
+    assert!(!stores);
+    drop(probe);
+    assert!(request.cancel.is_cancelled());
+    // The other connection's copy of the chunk the probe asked for.
+    let late = absent
+        .engine
+        .receive_part(
+            absent.of,
+            absent.parts[0].clone(),
+            Asked {
+                wanted: &wanted,
+                stores,
+            },
+        )
+        .await
+        .unwrap();
+    assert_ne!(late, Received::Kept);
+    assert!(!absent.holds(0).await);
+    assert_eq!(absent.state().await, BlobState::Absent);
+    assert_eq!(absent.device.blob_cache_usage().await.cached, 0);
+
+    // A second reader that stores nothing, beside the one that caches:
+    // its chunk is its own.
+    let mut passing = absent
+        .blobs
+        .open_reader(absent.id, &Read::new().uncached())
+        .await
+        .unwrap();
+    passing.set_read_ahead(0);
+    let mut buf = [0u8; 10];
+    {
+        let reading = passing.read_at(2 * CHUNK, &mut buf);
+        tokio::pin!(reading);
+        tokio::select! {
+            _ = &mut reading => panic!("nothing arrived yet"),
+            () = absent.asked_for(2) => {}
+        }
+        let request = absent.engine.fetches().of(&absent.of).remove(0);
+        let (wanted, stores) = asked(&request);
+        let received = absent
+            .engine
+            .receive_part(
+                absent.of,
+                absent.parts[2].clone(),
+                Asked {
+                    wanted: &wanted,
+                    stores,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(received, Received::Kept);
+        assert_eq!(reading.await.unwrap(), 10);
+    }
+    assert!(!absent.holds(2).await);
+    assert_eq!(absent.state().await, BlobState::Absent);
+    // What the reader that caches asks for is the cache's.
+    absent.read(&mut reader, CHUNK, 10).await;
+    assert!(absent.holds(1).await);
+    assert_eq!(absent.state().await, BlobState::Cached);
 }

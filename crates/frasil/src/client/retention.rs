@@ -486,7 +486,7 @@ mod tests {
         let (sealed, _, parts) = engine.seal_parts(of, &bytes).await.unwrap();
         assert_eq!(sealed, locator);
         for part in parts {
-            engine.receive_part(of, part).await.unwrap();
+            engine.receive_sent(of, part).await.unwrap();
         }
         assert_eq!(blobs.local(id).await.unwrap().state, BlobState::Cached);
         (reading, blobs, id)

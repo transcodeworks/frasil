@@ -166,7 +166,7 @@ async fn fetch(
     engine.retain(space, locator, keep).await.unwrap();
     let mut last = Received::Kept;
     for part in parts {
-        last = engine.receive_part(space, part.clone()).await.unwrap();
+        last = engine.receive_sent(space, part.clone()).await.unwrap();
     }
     assert_eq!(last, Received::Whole);
 }
@@ -290,7 +290,7 @@ async fn a_part_the_device_holds_already_makes_nothing_go() {
     for _ in 0..2 {
         assert_eq!(
             engine
-                .receive_part(space, c_parts[0].clone())
+                .receive_sent(space, c_parts[0].clone())
                 .await
                 .unwrap(),
             Received::Kept
@@ -304,7 +304,7 @@ async fn a_part_the_device_holds_already_makes_nothing_go() {
     // The second half is new: the one read longest ago goes for it.
     assert_eq!(
         engine
-            .receive_part(space, c_parts[1].clone())
+            .receive_sent(space, c_parts[1].clone())
             .await
             .unwrap(),
         Received::Whole
@@ -658,7 +658,7 @@ async fn a_dropped_object_is_checked_from_the_start_when_it_comes_back() {
     engine.retain(space, &b, false).await.unwrap();
     assert_eq!(
         engine
-            .receive_part(space, b_parts[0].clone())
+            .receive_sent(space, b_parts[0].clone())
             .await
             .unwrap(),
         Received::BadChunk
@@ -703,7 +703,7 @@ async fn a_kept_object_the_device_does_not_hold_is_one_it_means_to_hold() {
 
     // Part of a kept object: still one the device fetches by itself.
     engine
-        .receive_part(space, a_parts[0].clone())
+        .receive_sent(space, a_parts[0].clone())
         .await
         .unwrap();
     assert!(Engine::keeps_object(&*engine.lock().await, &space, &a));
@@ -970,7 +970,7 @@ async fn a_part_that_arrives_after_its_blob_was_dropped_is_not_stored() {
 
     for part in &parts {
         assert_eq!(
-            engine.receive_part(space, part.clone()).await.unwrap(),
+            engine.receive_sent(space, part.clone()).await.unwrap(),
             Received::Left
         );
     }
@@ -987,7 +987,7 @@ async fn a_part_that_arrives_after_its_blob_was_dropped_is_not_stored() {
     engine.retain(space, &blob, false).await.unwrap();
     let mut last = Received::Kept;
     for part in &parts {
-        last = engine.receive_part(space, part.clone()).await.unwrap();
+        last = engine.receive_sent(space, part.clone()).await.unwrap();
     }
     assert_eq!(last, Received::Whole);
     drop(fetching);
@@ -1018,7 +1018,7 @@ async fn a_part_fetched_for_a_request_alone_is_cached_and_the_rest_is_not_fetche
 
     let fetching = engine.fetch_chunks(space, blob, 0..1, FetchPriority::Position);
     assert_eq!(
-        engine.receive_part(space, parts[0].clone()).await.unwrap(),
+        engine.receive_sent(space, parts[0].clone()).await.unwrap(),
         Received::Kept
     );
     assert!(matches!(
@@ -1056,7 +1056,7 @@ async fn a_part_fetched_for_a_request_before_a_unit_names_its_object_is_cached()
     let fetching = engine.fetch_chunks(space, a, 0..1, FetchPriority::Position);
     assert_eq!(
         engine
-            .receive_part(space, a_parts[0].clone())
+            .receive_sent(space, a_parts[0].clone())
             .await
             .unwrap(),
         Received::Kept
@@ -1082,7 +1082,7 @@ async fn an_object_is_not_dropped_while_its_parts_are_being_written() {
     engine.retain(space, &a, false).await.unwrap();
     assert_eq!(
         engine
-            .receive_part(space, a_parts[0].clone())
+            .receive_sent(space, a_parts[0].clone())
             .await
             .unwrap(),
         Received::Kept
@@ -1093,7 +1093,7 @@ async fn an_object_is_not_dropped_while_its_parts_are_being_written() {
     let writing = {
         let engine = engine.clone();
         let part = a_parts[1].clone();
-        tokio::spawn(async move { engine.receive_part(space, part).await.unwrap() })
+        tokio::spawn(async move { engine.receive_sent(space, part).await.unwrap() })
     };
     begun.await.unwrap();
     // The cache is over its budget meanwhile, and a read of the object
@@ -1152,7 +1152,7 @@ async fn a_read_that_fetches_nothing_records_nothing() {
     let reading = engine.want_object(space, &a, Want::Cache);
     let mut last = Received::Kept;
     for part in &a_parts {
-        last = engine.receive_part(space, part.clone()).await.unwrap();
+        last = engine.receive_sent(space, part.clone()).await.unwrap();
     }
     assert_eq!(last, Received::Whole);
     assert!(matches!(
@@ -1184,7 +1184,7 @@ async fn a_blob_fetched_to_store_nothing_is_held_beside_the_cache() {
 
     let passing = engine.want_object(space, &c, Want::Pass);
     for part in &c_parts {
-        engine.receive_part(space, part.clone()).await.unwrap();
+        engine.receive_sent(space, part.clone()).await.unwrap();
     }
     assert!(holds(&engine, space, &a).await, "nothing went for it");
     assert!(holds(&engine, space, &b).await);
@@ -1214,7 +1214,7 @@ async fn a_blob_fetched_to_store_nothing_is_held_beside_the_cache() {
     // the blob read longest ago goes for it.
     let passing = engine.want_object(space, &d, Want::Pass);
     engine
-        .receive_part(space, d_parts[0].clone())
+        .receive_sent(space, d_parts[0].clone())
         .await
         .unwrap();
     let caching = engine.want_object(space, &d, Want::Cache);
@@ -1249,7 +1249,7 @@ async fn a_blob_larger_than_the_budget_makes_no_other_blob_go() {
 
     let reading = engine.want_object(space, &large, Want::Cache);
     for part in &large_parts {
-        engine.receive_part(space, part.clone()).await.unwrap();
+        engine.receive_sent(space, part.clone()).await.unwrap();
     }
     assert!(holds(&engine, space, &large).await);
     assert!(holds(&engine, space, &a).await);
@@ -1299,7 +1299,7 @@ async fn a_store_with_no_retention_records_keeps_what_it_holds_whole_or_in_part(
     engine.drop_local_object(space, &partial).await.unwrap();
     engine.retain(space, &partial, false).await.unwrap();
     assert_eq!(
-        engine.receive_part(space, parts[0].clone()).await.unwrap(),
+        engine.receive_sent(space, parts[0].clone()).await.unwrap(),
         Received::Kept
     );
     // An object no unit names, as a fetch left it.
@@ -1339,7 +1339,7 @@ async fn a_store_with_no_retention_records_keeps_what_it_holds_whole_or_in_part(
     assert_eq!(usage.cached, 0);
     assert!(usage.kept > (2 * SIZE + chunk) as u64);
     for part in &parts[1..] {
-        engine.receive_part(space, part.clone()).await.unwrap();
+        engine.receive_sent(space, part.clone()).await.unwrap();
     }
     assert!(holds(&engine, space, &partial).await);
     assert!(
@@ -2215,7 +2215,7 @@ async fn a_read_that_stores_nothing_leaves_each_held_state_as_it_was() {
     ];
     assert_eq!(
         engine
-            .receive_part(space, bare_parts[1].clone())
+            .receive_sent(space, bare_parts[1].clone())
             .await
             .unwrap(),
         Received::Whole

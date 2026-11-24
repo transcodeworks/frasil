@@ -3798,7 +3798,25 @@ impl Engine {
                 .await;
             return Ok((Taken::Dropped, wants));
         }
-        match self.receive_part(space, part).await? {
+        // What wanted the chunk is looked at again where the device
+        // admits it to the store, since nothing on the wire cancels an
+        // answer: a unit names its object, or a request still names the
+        // chunk, for the store or for a reader's memory.
+        let fetches = self.shared.fetches.clone();
+        let in_order = {
+            let state = self.lock().await;
+            self.receives_in_order(&state, &space, &locator)
+        };
+        let wanted = || {
+            named
+                || fetches.wants(&space, &locator, index)
+                || (in_order && fetches.reaches(&space, &locator, index))
+        };
+        let asked = crate::objects::Asked {
+            wanted: &wanted,
+            stores: named || in_order || fetches.stores_chunk(&space, &locator, index),
+        };
+        match self.receive_part(space, part, asked).await? {
             // A chunk that does not open under the header held: the
             // header this side sent with its answer was compared with it
             // as it arrived, so the fault is the chunk's, and what the

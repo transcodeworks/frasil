@@ -884,7 +884,7 @@ mod tests {
         let serving = engine.fetches().attach(of);
         drop(coming);
         for part in parts {
-            engine.receive_part(of, part).await.unwrap();
+            engine.receive_sent(of, part).await.unwrap();
         }
         let read = tokio::time::timeout(Duration::from_secs(10), reading)
             .await
@@ -953,7 +953,7 @@ mod tests {
         let _holder = engine.fetches().attach(of);
         requested(&engine, of).await;
         for part in parts {
-            engine.receive_part(of, part).await.unwrap();
+            engine.receive_sent(of, part).await.unwrap();
         }
         let got = tokio::time::timeout(Duration::from_secs(10), waiting)
             .await
