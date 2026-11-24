@@ -1540,6 +1540,8 @@ impl Engine {
         // What must stay is brought up to date once for each space in a
         // pass; a drop changes neither a log nor an outbox.
         let mut read: BTreeSet<EventId> = BTreeSet::new();
+        // The objects each space holds by itself, read when first needed.
+        let mut itself: BTreeMap<EventId, BTreeSet<[u8; 32]>> = BTreeMap::new();
         let settle: Vec<Key> = state.retained.settle.iter().copied().collect();
         for (space, id) in settle {
             let Some(entry) = state.retained.entries.get(&(space, id)).copied() else {
@@ -1551,6 +1553,10 @@ impl Engine {
             }
             if read.insert(space) {
                 Self::refresh_staying(state, &space);
+            }
+            if entry.bytes > 0 && Self::held_by_itself(state, &mut itself, &space, &id) {
+                self.unrecord(state, space, id).await?;
+                continue;
             }
             // One a read still uses is looked at again when a read ends.
             if self.stays(state, &space, &id).is_some() {
@@ -1585,11 +1591,59 @@ impl Engine {
             if read.insert(space) {
                 Self::refresh_staying(state, &space);
             }
+            if Self::held_by_itself(state, &mut itself, &space, &id) {
+                self.unrecord(state, space, id).await?;
+                continue;
+            }
             if self.stays(state, &space, &id).is_some() {
                 continue;
             }
             self.drop_stored(state, space, &id, true).await?;
         }
+        Ok(())
+    }
+
+    /// Whether an object is one the device holds by itself, as a unit its
+    /// log holds shows: Frasil's own, or an object that a unit names and
+    /// no blob stream's entry does, which the device fetches without
+    /// being asked. Such an object has no `retention` record (at-rest.md,
+    /// "Retention"). `itself` keeps, for an eviction pass, what each
+    /// space's log says.
+    fn held_by_itself(
+        state: &State,
+        itself: &mut BTreeMap<EventId, BTreeSet<[u8; 32]>>,
+        space: &EventId,
+        id: &[u8; 32],
+    ) -> bool {
+        let Some(replica) = state.replicas.get(space) else {
+            return false;
+        };
+        let own = state
+            .retained
+            .staying
+            .get(space)
+            .is_some_and(|staying| staying.own.contains(id))
+            || any_own_beside_log(replica, |locator| locator[..32] == id[..]);
+        own || itself
+            .entry(*space)
+            .or_insert_with(|| crate::objects::fetched_by_itself_ids(replica))
+            .contains(id)
+    }
+
+    /// Deletes the cached record of an object the device holds by itself
+    /// ([`held_by_itself`](Self::held_by_itself)), and no longer counts
+    /// its bytes in the cache. A request for chunks of an object that no
+    /// unit the device held named yet left such a record
+    /// ([`admit`](Self::admit)); with none, the object is held as the
+    /// device holds its own, and fetched by the device where it is not
+    /// whole.
+    async fn unrecord(&self, state: &mut State, space: EventId, id: [u8; 32]) -> Result<()> {
+        let mut batch = Batch::default();
+        state
+            .vault
+            .delete(&mut batch, &space.0, Table::Retention, &id);
+        state.vault.commit(batch).await?;
+        state.retained.remove(&(space, id));
         Ok(())
     }
 

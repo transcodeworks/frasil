@@ -1955,6 +1955,55 @@ async fn a_put_blob_that_no_unit_names_any_more_is_put_no_longer() {
     assert!(!holds(&engine, space, &locator).await);
 }
 
+/// A request for chunks made before the device held the unit that names
+/// their object leaves a record that says cached. Once a unit shows the
+/// object to be Frasil's own, the record goes and its bytes are no longer
+/// counted in the cache: the object is held as Frasil's own are.
+#[tokio::test]
+async fn a_cached_record_of_an_object_that_proves_frasils_own_goes() {
+    let medium = Medium::new();
+    let (engine, sealed, space) = medium.device().await;
+    let doc = engine.new_document().unwrap();
+    engine
+        .edit_document(space, &doc, |d| {
+            d.get_text("body").insert(0, "text").unwrap();
+        })
+        .await
+        .unwrap();
+    let snapshot = engine.compact(space, doc.stream()).await.unwrap();
+    let own = engine
+        .read(&space, |replica| {
+            let event = replica.log().unwrap().event(snapshot).unwrap().clone();
+            frasil_units::Unit::from_event(event).unwrap().body.objects[0]
+        })
+        .await
+        .unwrap();
+    // The record a request made before the unit arrived would have left.
+    {
+        let mut state = engine.lock().await;
+        let read = engine.read_now(&mut state);
+        engine
+            .record(
+                &mut state,
+                space,
+                object_id(&own),
+                Retention::Cached { read },
+            )
+            .await
+            .unwrap();
+    }
+    assert!(engine.blob_cache_usage().await.cached > 0);
+    assert!(record_of(&engine, space, &own).await.is_some());
+    engine.set_blob_cache(0);
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &own).await);
+    assert_eq!(engine.blob_cache_usage().await.cached, 0);
+    assert_eq!(record_of(&engine, space, &own).await, None);
+    let engine = medium.reopen(engine, &sealed).await;
+    assert!(holds(&engine, space, &own).await);
+    assert_eq!(engine.blob_cache_usage().await.cached, 0);
+}
+
 /// A released blob is the cache's from then on, and the cache stays
 /// within its budget: the device drops what it read longest ago.
 #[tokio::test]

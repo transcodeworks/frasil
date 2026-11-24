@@ -809,6 +809,13 @@ and the device would fetch the rest by itself. While parts of an object
 are being written, the device drops nothing of the object, so that no
 write leaves parts whose record or earlier parts went meanwhile.
 
+A part asked for before the device held a unit that names its object is
+recorded under state 2, as a blob's is. Once a unit the device holds
+shows the object to be one it holds by itself, Frasil's own or an object
+that a unit names and no entry of a Blobs stream does, the device deletes
+that record and drops nothing of the object: it has none, as section 2.9
+says.
+
 **An object the device put.** A record of state 3 stands while this device
 may hold the only copy of the object. Whether a unit that names the object
 is durable does not say otherwise: an acknowledgement is about events

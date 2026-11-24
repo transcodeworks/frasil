@@ -1226,6 +1226,17 @@ pub(crate) fn fetched_by_itself(replica: &Replica, locator: &Locator) -> bool {
     named_to_replica(replica).contains(locator) && !fetched_on_read(replica, locator)
 }
 
+/// The objects the device fetches by itself whatever it keeps of its
+/// blobs ([`fetched_by_itself`]), by object ID.
+pub(crate) fn fetched_by_itself_ids(replica: &Replica) -> BTreeSet<[u8; 32]> {
+    let blobs = blob_objects(replica);
+    named_to_replica(replica)
+        .iter()
+        .filter(|locator| !blobs.contains(*locator))
+        .map(crate::replica::object_id)
+        .collect()
+}
+
 /// The objects a blob stream's entries name, past and current, without the
 /// snapshots of those streams, which are Frasil's own.
 #[cfg(feature = "adapter-blobs")]
