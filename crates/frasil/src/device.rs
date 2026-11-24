@@ -4170,6 +4170,8 @@ impl Engine {
         for part in &stored {
             crate::objects::put_part(&state.vault, &mut batch, &space, part)?;
         }
+        // Sealed here, and stored with the event that names them.
+        Self::note_sealed(state, space, stored.iter().map(|part| &part.locator));
         state.vault.commit(batch).await?;
         if due {
             state.last_kept = self.shared.platform.clock.monotonic();

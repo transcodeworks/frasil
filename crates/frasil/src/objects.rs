@@ -1272,6 +1272,7 @@ impl Engine {
     ) -> Result<(Locator, Vec<u8>)> {
         let (locator, reference, parts) = self.seal_parts(space, plaintext).await?;
         let parts: Vec<&ObjectPart> = parts.iter().collect();
+        self.mark_sealed(space, [&locator]).await;
         self.store_parts(space, &parts, true).await?;
         Ok((locator, reference))
     }
@@ -2429,6 +2430,7 @@ impl Engine {
         // device's lock, so that other writes go on meanwhile; a small one
         // goes in the unit's commit.
         if stored.iter().map(|part| part.chunk.len()).sum::<usize>() >= OWN_COMMIT_BYTES {
+            self.mark_sealed(space, [&locator]).await;
             self.store_parts(space, &stored.iter().collect::<Vec<_>>(), true)
                 .await?;
             stored.clear();

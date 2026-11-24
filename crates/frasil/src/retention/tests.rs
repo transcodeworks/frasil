@@ -1316,3 +1316,115 @@ async fn keeping_a_blob_this_device_put_leaves_it_put() {
     engine.drop_local_object(space, &locator).await.unwrap();
     assert!(!holds(&engine, space, &locator).await);
 }
+
+/// The record of one object, if it has one.
+async fn record_of(engine: &Engine, space: EventId, locator: &Locator) -> Option<Retention> {
+    records(engine, space)
+        .await
+        .into_iter()
+        .find_map(|(id, retention)| (id == object_id(locator)).then_some(retention))
+}
+
+/// An object that is kept, by its record or for want of one, stays kept
+/// when this device puts the same bytes again: it gains the put, and is
+/// kept, not cached, once a peer holds it. A cached one put again is no
+/// longer the cache's until a peer holds it.
+#[tokio::test]
+async fn an_object_put_again_keeps_what_it_was_and_gains_the_put() {
+    let medium = Medium::new();
+    let (engine, _, space) = medium.device().await;
+    engine
+        .keep_peer_hints(&space, &["https://peer.example".to_owned()])
+        .await
+        .unwrap();
+    let stream = engine.new_stream(frasil_adapter_blobs::TYPE).unwrap();
+    let peer = Acknowledger::Peer([9; 32]);
+    let member = Acknowledger::Member([8; 32]);
+
+    // Kept for want of a record, as a store written before the table
+    // holds it.
+    let (old, old_parts) = object(&engine, space, b'o', SIZE).await;
+    engine
+        .store_parts(space, &old_parts.iter().collect::<Vec<_>>(), false)
+        .await
+        .unwrap();
+    assert_eq!(record_of(&engine, space, &old).await, None);
+    // Kept by its record.
+    let (kept, kept_parts) = object(&engine, space, b'k', SIZE).await;
+    fetch(&engine, space, &kept, &kept_parts, true).await;
+    // Cached.
+    let (cached, cached_parts) = object(&engine, space, b'c', SIZE).await;
+    fetch(&engine, space, &cached, &cached_parts, false).await;
+
+    let mut units = Vec::new();
+    for fill in [b'o', b'k', b'c'] {
+        let (unit, _) = engine
+            .put_blob(space, &stream, None, &vec![fill; SIZE])
+            .await
+            .unwrap();
+        units.push(unit);
+    }
+    assert_eq!(
+        record_of(&engine, space, &old).await,
+        Some(Retention::Put { keep: true })
+    );
+    assert_eq!(
+        record_of(&engine, space, &kept).await,
+        Some(Retention::Put { keep: true })
+    );
+    assert_eq!(
+        record_of(&engine, space, &cached).await,
+        Some(Retention::Put { keep: false })
+    );
+    // An object the device held nothing of is put and no more, whether
+    // its parts go in the unit's commit or before it.
+    let (small_unit, small) = engine
+        .put_blob(space, &stream, None, &vec![b's'; SIZE])
+        .await
+        .unwrap();
+    let (large_unit, large) = engine
+        .put_blob(
+            space,
+            &stream,
+            None,
+            &vec![b'l'; crate::objects::OWN_COMMIT_BYTES],
+        )
+        .await
+        .unwrap();
+    units.extend([small_unit, large_unit]);
+    for locator in [&small, &large] {
+        assert_eq!(
+            record_of(&engine, space, locator).await,
+            Some(Retention::Put { keep: false })
+        );
+    }
+
+    // A member's acknowledgement makes the units durable: nothing goes.
+    engine.acknowledge(space, member, &units).await.unwrap();
+    engine.set_blob_cache(0);
+    engine.evict().await.unwrap();
+    for locator in [&old, &kept, &cached, &small, &large] {
+        assert!(holds(&engine, space, locator).await);
+        assert!(matches!(
+            engine.drop_local_object(space, locator).await,
+            Err(Error::NotAllowed(_))
+        ));
+    }
+
+    // The peer holds each, and has acknowledged the units.
+    engine.acknowledge(space, peer, &units).await.unwrap();
+    for locator in [&old, &kept, &cached, &small, &large] {
+        engine.object_at_peer(space, peer, locator).await.unwrap();
+    }
+    assert_eq!(record_of(&engine, space, &old).await, Some(Retention::Kept));
+    assert_eq!(
+        record_of(&engine, space, &kept).await,
+        Some(Retention::Kept)
+    );
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &old).await);
+    assert!(holds(&engine, space, &kept).await);
+    for locator in [&cached, &small, &large] {
+        assert!(!holds(&engine, space, locator).await);
+    }
+}

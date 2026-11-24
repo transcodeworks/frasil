@@ -321,6 +321,7 @@ impl Engine {
                     parts
                 } else {
                     // A log kept in memory alone: its parts are kept there.
+                    self.mark_sealed(space, [&locator]).await;
                     self.store_parts(space, &parts.iter().collect::<Vec<_>>(), true)
                         .await?;
                     Vec::new()
@@ -405,6 +406,7 @@ impl Engine {
                 chunk: Vec::new(),
             })
             .collect();
+        Self::note_sealed(&mut state, space, [&locator]);
         Self::note_parts(&mut state, space, &parts.iter().collect::<Vec<_>>(), true).await
     }
 

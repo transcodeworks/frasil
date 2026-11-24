@@ -114,6 +114,11 @@ pub(crate) struct Retained {
     /// Objects an always-on peer took before the unit that names them was
     /// written, which have no record yet.
     taken: BTreeSet<Key>,
+    /// Objects this device sealed and stored while it held nothing of
+    /// them and they had no record: the put that names one is its first.
+    /// An object with parts and no record that is not here was kept
+    /// before the device put it.
+    sealed: BTreeSet<Key>,
     /// What must stay in each space, as its log and its outbox say.
     staying: BTreeMap<EventId, Staying>,
     /// How many events of logs were read to find what must stay.
@@ -226,6 +231,7 @@ impl Retained {
     /// holds its plaintext now.
     pub(crate) fn forget_object(&mut self, space: &EventId, id: &[u8; 32]) {
         self.remove(&(*space, *id));
+        self.sealed.remove(&(*space, *id));
     }
 
     /// Forgets a space the device no longer holds.
@@ -239,6 +245,8 @@ impl Retained {
         for key in keys {
             self.remove(&key);
         }
+        self.sealed.retain(|(of, _)| of != space);
+        self.taken.retain(|(of, _)| of != space);
         self.staying.remove(space);
     }
 
@@ -856,10 +864,45 @@ impl Engine {
         self.record(&mut state, space, id, retention).await
     }
 
+    /// Notes, before the device stores parts of objects it sealed itself,
+    /// which of them it holds nothing of and has no record for: the put
+    /// that names such an object is its first
+    /// ([`retain_put`](Self::retain_put)).
+    pub(crate) fn note_sealed<'a>(
+        state: &mut State,
+        space: EventId,
+        locators: impl IntoIterator<Item = &'a Locator>,
+    ) {
+        let Some(replica) = state.replicas.get(&space) else {
+            return;
+        };
+        for locator in locators {
+            let key = (space, object_id(locator));
+            if state.retained.get(&key).is_none() && replica.object_bytes_stored(&key.1) == 0 {
+                state.retained.sealed.insert(key);
+            }
+        }
+    }
+
+    /// [`note_sealed`](Self::note_sealed), for parts stored without the
+    /// device's lock.
+    pub(crate) async fn mark_sealed<'a>(
+        &self,
+        space: EventId,
+        locators: impl IntoIterator<Item = &'a Locator>,
+    ) {
+        let mut state = self.lock().await;
+        Self::note_sealed(&mut state, space, locators);
+    }
+
     /// Records that this device put an object, which `unit`, just written
     /// here, names: it stays until an always-on peer holds it (at-rest.md,
     /// "Retention", what is never dropped), whatever makes the unit
-    /// durable. An object that has a record of another state keeps it.
+    /// durable. An object that was kept before, by a record of state 1 or
+    /// by parts with no record, stays kept once a peer holds it: its
+    /// record of state 3 says so (at-rest.md, "Retention", recording). A
+    /// cached one is no longer the cache's until then. A record of state
+    /// 3 stays as it is.
     pub(crate) async fn retain_put(
         &self,
         state: &mut State,
@@ -870,27 +913,30 @@ impl Engine {
         let key = (space, object_id(locator));
         // Whether a peer took it before its unit was written.
         let taken = state.retained.taken.remove(&key);
+        // Whether the device held nothing of it before it sealed it.
+        let first = state.retained.sealed.remove(&key);
         if self.is_held_space(state, &space) {
             return Ok(());
         }
-        let first = match state.retained.get(&key) {
-            Some(Retention::Put { .. }) => false,
-            Some(_) => return Ok(()),
-            None => {
-                let stored = state.replicas.get(&space).is_some_and(|replica| {
-                    replica.holds_chunks(locator) && !replica.is_held(locator)
-                });
-                if !stored {
-                    return Ok(());
-                }
-                self.record(state, space, key.1, Retention::Put { keep: false })
-                    .await?;
-                true
-            }
+        let stored = state
+            .replicas
+            .get(&space)
+            .is_some_and(|replica| replica.holds_chunks(locator) && !replica.is_held(locator));
+        let put = match state.retained.get(&key) {
+            Some(Retention::Put { .. }) => None,
+            _ if !stored => return Ok(()),
+            Some(Retention::Kept) => Some(Retention::Put { keep: true }),
+            Some(Retention::Cached { .. }) => Some(Retention::Put { keep: false }),
+            // Parts with no record are kept, unless this put stored them.
+            None => Some(Retention::Put { keep: !first }),
         };
+        if let Some(put) = put {
+            self.record(state, space, key.1, put).await?;
+        }
         let facts = state.retained.puts.entry(key).or_default();
         facts.at_peer |= taken;
-        if first {
+        if put.is_some() {
+            // Only the unit just written is known to wait for a peer.
             facts.units = Some(vec![unit]);
         } else if let Some(units) = &mut facts.units {
             // The units of an earlier run are looked for when needed.
@@ -1125,6 +1171,7 @@ impl Engine {
         }
         if record {
             state.retained.remove(&(space, *id));
+            state.retained.sealed.remove(&(space, *id));
         } else {
             state.retained.resize(&(space, *id), 0);
         }
