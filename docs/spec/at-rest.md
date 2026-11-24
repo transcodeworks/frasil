@@ -904,7 +904,10 @@ an object whose `retention` record has state 2, and never:
 - an object with no record, or with a record of state 1 or 3, with or
   without key 3;
 - one of Frasil's own objects, or a checkpoint's record object (section
-  2.9), whatever record it has;
+  2.9), whatever record it has. Of the objects a snapshot unit of a Blobs
+  stream lists, its stream snapshot object is Frasil's own; the objects of
+  the current entries, which it lists beside
+  ([adapter-blobs.md](adapter-blobs.md), "Compaction"), are blobs;
 - an object that a unit names which a signer of this device signed and
   which is not yet durable ([units.md](units.md), section 3.13): the
   device may hold its only copy. A durable unit says nothing of its

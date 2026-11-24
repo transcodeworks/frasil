@@ -514,21 +514,44 @@ fn any_own_beside_log(replica: &Replica, mut found: impl FnMut(&Locator) -> bool
             .any(|part| found(&part.locator))
 }
 
-/// The objects an event of a log makes Frasil's own: those that a snapshot
-/// unit or a unit of the system stream names (units.md, "Frasil's own
-/// units").
+/// The objects an event of a log makes Frasil's own: those that a unit of
+/// the system stream names, and those that a snapshot unit names (units.md,
+/// "Frasil's own units"). Of a snapshot unit of one of the streams `blobs`
+/// it is the stream snapshot object alone: such a unit also lists the
+/// object of every current entry (adapter-blobs.md, "Compaction"), and
+/// those are blobs, which the device fetches when they are read and may
+/// drop.
 fn own_of_event(
     event: &frasil_events::Event,
     system: Option<&frasil_units::StreamId>,
+    blobs: &BTreeSet<frasil_units::StreamId>,
 ) -> Vec<Locator> {
     if event.kind() != frasil_events::kind::UNIT {
         return Vec::new();
     }
-    match frasil_units::Unit::from_event(event.clone()) {
-        Ok(unit) if unit.body.compacts.is_some() || Some(&unit.body.stream) == system => {
-            unit.body.objects.to_vec()
-        }
-        _ => Vec::new(),
+    let Ok(unit) = frasil_units::Unit::from_event(event.clone()) else {
+        return Vec::new();
+    };
+    match unit.body.compacts {
+        _ if Some(&unit.body.stream) == system => unit.body.objects,
+        Some(compacts) if blobs.contains(&unit.body.stream) => vec![compacts.object],
+        Some(_) => unit.body.objects,
+        None => Vec::new(),
+    }
+}
+
+/// The streams of a replica whose entries name blobs.
+fn blob_streams(replica: &Replica) -> BTreeSet<frasil_units::StreamId> {
+    #[cfg(feature = "adapter-blobs")]
+    return replica
+        .streams()
+        .filter(|(_, adapter)| *adapter == frasil_adapter_blobs::TYPE)
+        .map(|(id, _)| *id)
+        .collect();
+    #[cfg(not(feature = "adapter-blobs"))]
+    {
+        let _ = replica;
+        BTreeSet::new()
     }
 }
 
@@ -541,9 +564,10 @@ pub(crate) fn frasils_own(replica: &Replica, id: &[u8; 32]) -> bool {
         return true;
     }
     let system = replica.system_stream();
+    let blobs = blob_streams(replica);
     replica.log().is_some_and(|log| {
         log.events().any(|event| {
-            own_of_event(event, system.as_ref())
+            own_of_event(event, system.as_ref(), &blobs)
                 .iter()
                 .any(|locator| locator[..32] == id[..])
         })
@@ -556,11 +580,13 @@ pub(crate) fn frasils_own(replica: &Replica, id: &[u8; 32]) -> bool {
 #[derive(Debug, Default)]
 struct Staying {
     /// How many events the log had placed when it was last read, the last
-    /// of them, the log's revision then, and the system stream.
+    /// of them, the log's revision then, the system stream, and the
+    /// streams whose entries name blobs.
     placed: usize,
     last: Option<EventId>,
     revision: u64,
     system: Option<frasil_units::StreamId>,
+    blobs: BTreeSet<frasil_units::StreamId>,
     /// The objects the log's units make Frasil's own.
     own: BTreeSet<[u8; 32]>,
     /// The events this device signed that are not durable yet, and the
@@ -594,9 +620,11 @@ impl Retained {
         };
         let staying = self.staying.entry(*space).or_default();
         let system = replica.and_then(Replica::system_stream);
+        let blobs = replica.map(blob_streams).unwrap_or_default();
         let placed = log.placed_since(0);
         let grown = staying.revision == log.revision()
             && staying.system == system
+            && staying.blobs == blobs
             && staying.placed <= placed.len()
             && staying
                 .placed
@@ -613,15 +641,18 @@ impl Retained {
             .fetch_add(new.len() as u64, Ordering::Relaxed);
         for id in new {
             if let Some(event) = log.event(*id) {
-                staying
-                    .own
-                    .extend(own_of_event(event, system.as_ref()).iter().map(object_id));
+                staying.own.extend(
+                    own_of_event(event, system.as_ref(), &blobs)
+                        .iter()
+                        .map(object_id),
+                );
             }
         }
         staying.placed = placed.len();
         staying.last = placed.last().copied();
         staying.revision = log.revision();
         staying.system = system;
+        staying.blobs = blobs;
         // An event leaves the outbox when it becomes durable (units.md,
         // 3.13 "Durable").
         let outbox: Vec<EventId> = outbox

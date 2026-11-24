@@ -1987,3 +1987,87 @@ async fn a_blob_released_into_a_full_cache_makes_the_oldest_go() {
     assert!(!holds(&engine, space, &locator).await);
     assert!(records(&engine, space).await.is_empty());
 }
+
+/// A blob stream's snapshot unit lists the object of every current entry
+/// beside its snapshot object (adapter-blobs.md, "Compaction"). The
+/// snapshot object is Frasil's own and stays; the entries' objects are
+/// blobs still, which the cache drops and the application may drop.
+#[tokio::test]
+async fn the_blobs_of_a_compacted_blob_stream_are_blobs_still() {
+    let medium = Medium::new();
+    let (engine, sealed, space) = medium.device().await;
+    let stream = engine.new_stream(frasil_adapter_blobs::TYPE).unwrap();
+    let (first, kept) = engine
+        .put_blob(space, &stream, Some("a"), &vec![1; SIZE])
+        .await
+        .unwrap();
+    let (second, cached) = engine
+        .put_blob(space, &stream, Some("b"), &vec![2; SIZE])
+        .await
+        .unwrap();
+    let snapshot = engine.compact(space, stream.stream()).await.unwrap();
+    engine
+        .acknowledge(
+            space,
+            Acknowledger::Member([8; 32]),
+            &[first, second, snapshot],
+        )
+        .await
+        .unwrap();
+    let (objects, own) = engine
+        .read(&space, |replica| {
+            let event = replica.log().unwrap().event(snapshot).unwrap().clone();
+            let unit = frasil_units::Unit::from_event(event).unwrap();
+            (
+                unit.body.objects.clone(),
+                unit.body.compacts.unwrap().object,
+            )
+        })
+        .await
+        .unwrap();
+    assert!(objects.contains(&kept) && objects.contains(&cached) && objects.contains(&own));
+    assert_eq!(
+        engine.must_stay(&mut *engine.lock().await, &space, &own),
+        Some(Stays::Own)
+    );
+    assert_eq!(
+        engine.must_stay(&mut *engine.lock().await, &space, &kept),
+        Some(Stays::Kept)
+    );
+    assert!(engine.blob_cache_usage().await.kept > 0);
+    // The space has no peer: the application's to drop.
+    let parts = stored_parts(&engine, space, &cached).await;
+    engine.drop_local_object(space, &cached).await.unwrap();
+    assert!(!holds(&engine, space, &cached).await);
+    // Fetched again for a read, it is the cache's, and goes for the
+    // budget.
+    fetch(&engine, space, &cached, &parts, false).await;
+    assert_eq!(
+        engine.retention_of(&space, &cached).await.0,
+        BlobState::Cached
+    );
+    engine.set_blob_cache(0);
+    engine.evict().await.unwrap();
+    assert!(!holds(&engine, space, &cached).await);
+    assert!(holds(&engine, space, &kept).await);
+    // The snapshot object stays, whatever is asked, and after a reopen
+    // the stream is read from it.
+    assert!(holds(&engine, space, &own).await);
+    assert!(matches!(
+        engine.drop_local_object(space, &own).await,
+        Err(Error::NotAllowed(_))
+    ));
+    medium.clock.advance(8 * 86_400);
+    engine.collect(space).await.unwrap();
+    engine.evict().await.unwrap();
+    let engine = medium.reopen(engine, &sealed).await;
+    engine.set_blob_cache(0);
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &own).await);
+    assert!(holds(&engine, space, &kept).await);
+    assert_eq!(
+        engine.must_stay(&mut *engine.lock().await, &space, &own),
+        Some(Stays::Own)
+    );
+    assert!(!engine.missing_objects(&space).await.contains(&cached));
+}
