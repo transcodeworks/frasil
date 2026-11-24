@@ -1428,3 +1428,104 @@ async fn an_object_put_again_keeps_what_it_was_and_gains_the_put() {
         assert!(!holds(&engine, space, locator).await);
     }
 }
+
+/// A space with one always-on peer, and a blob this device put there.
+async fn put_with_peer(medium: &Medium) -> (Engine, EventId, EventId, Locator) {
+    let (engine, _, space) = medium.device().await;
+    engine
+        .keep_peer_hints(&space, &["https://peer.example".to_owned()])
+        .await
+        .unwrap();
+    let stream = engine.new_stream(frasil_adapter_blobs::TYPE).unwrap();
+    let (unit, locator) = engine
+        .put_blob(space, &stream, Some("a file"), &vec![7; SIZE])
+        .await
+        .unwrap();
+    engine.set_blob_cache(0);
+    (engine, space, unit, locator)
+}
+
+/// A blob this device put is released by the peer that holds it, and by
+/// no other: a peer that was sent the unit without the object acknowledges
+/// it, and holds nothing of the blob.
+#[tokio::test]
+async fn another_peers_acknowledgement_does_not_release_a_blob_this_device_put() {
+    let medium = Medium::new();
+    let (engine, space, unit, locator) = put_with_peer(&medium).await;
+    let holder = Acknowledger::Peer([9; 32]);
+    let other = Acknowledger::Peer([10; 32]);
+    // The holder took the object, and the connection went before the
+    // unit: a member relays the unit to another peer.
+    engine
+        .object_at_peer(space, holder, &locator)
+        .await
+        .unwrap();
+    engine.acknowledge(space, other, &[unit]).await.unwrap();
+    assert!(!engine.outbox(&space).await.contains(&unit));
+    assert_eq!(
+        record_of(&engine, space, &locator).await,
+        Some(Retention::Put { keep: false }),
+        "the peer that holds it has no unit that names it"
+    );
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &locator).await);
+    assert!(matches!(
+        engine.drop_local_object(space, &locator).await,
+        Err(Error::NotAllowed(_))
+    ));
+    // Nor the other way round: the other peer's answer, with the holder's
+    // acknowledgement of other events.
+    engine.acknowledge(space, holder, &[]).await.unwrap();
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &locator).await);
+
+    // The holder acknowledges the unit.
+    engine.acknowledge(space, holder, &[unit]).await.unwrap();
+    assert!(matches!(
+        record_of(&engine, space, &locator).await,
+        Some(Retention::Cached { .. })
+    ));
+    engine.evict().await.unwrap();
+    assert!(!holds(&engine, space, &locator).await);
+}
+
+/// A peer's answer that it holds an object counts for half an hour: a
+/// peer collects an object no unit names after its orphan grace, so an
+/// acknowledgement that comes later says nothing of the object. An
+/// acknowledgement taken before the answer counts whatever its age.
+#[tokio::test]
+async fn an_old_answer_does_not_release_a_blob_this_device_put() {
+    let medium = Medium::new();
+    let (engine, space, unit, locator) = put_with_peer(&medium).await;
+    let peer = Acknowledger::Peer([9; 32]);
+    engine.object_at_peer(space, peer, &locator).await.unwrap();
+    medium.clock.advance(super::PUT_ANSWER + 1);
+    engine.acknowledge(space, peer, &[unit]).await.unwrap();
+    assert_eq!(
+        record_of(&engine, space, &locator).await,
+        Some(Retention::Put { keep: false }),
+        "the peer may have collected the object since"
+    );
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &locator).await);
+
+    // The peer answers again, a day after it acknowledged the unit: the
+    // unit was there when the object arrived.
+    medium.clock.advance(86_400);
+    engine.object_at_peer(space, peer, &locator).await.unwrap();
+    assert!(matches!(
+        record_of(&engine, space, &locator).await,
+        Some(Retention::Cached { .. })
+    ));
+
+    // Within the time, the answer and then the acknowledgement release.
+    let medium = Medium::new();
+    let (engine, space, unit, locator) = put_with_peer(&medium).await;
+    engine.object_at_peer(space, peer, &locator).await.unwrap();
+    medium.clock.advance(super::PUT_ANSWER - 1);
+    engine.acknowledge(space, peer, &[unit]).await.unwrap();
+    assert!(matches!(
+        record_of(&engine, space, &locator).await,
+        Some(Retention::Cached { .. })
+    ));
+}

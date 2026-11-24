@@ -3049,7 +3049,7 @@ impl Engine {
         // A peer that holds an object this device put, and now a unit
         // that names it (at-rest.md, "Retention").
         if matches!(by, Acknowledger::Peer(_)) {
-            self.settle_puts(&mut state, space, heads).await?;
+            self.settle_puts(&mut state, space, by).await?;
         }
         Ok(())
     }
