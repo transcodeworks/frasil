@@ -220,7 +220,12 @@ evicts the blob read longest ago when the budget is full, and a read fetches
 an evicted blob again. A `BlobId` names immutable bytes, so it is a safe
 permanent key for a cache of opened bytes or object URLs; `blobs.onChange`
 says when a blob was removed, evicted or withdrawn. `getStream` opens a blob
-chunk by chunk, and `getRange` opens only the chunks a range needs. The guide
+chunk by chunk, and gives the chunks of one the device does not hold as they
+arrive, the last once the whole blob passed its checks. `getRange` opens
+only the chunks a range needs, and of a blob the device does not hold whole
+fetches only those: each is checked by itself, and the checks that need the
+whole blob have not run on it, so read with `get` what must not be acted on
+unchecked. The guide
 [Reading, following and caching synced data](../../docs/reading-and-caching.md)
 covers each part, with a cache of object URLs.
 
