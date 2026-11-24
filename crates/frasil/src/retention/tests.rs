@@ -236,7 +236,7 @@ async fn a_kept_object_survives_a_full_cache_and_a_reopen() {
     let usage = engine.blob_cache_usage().await;
     assert_eq!(usage.cached, usage.kept);
     assert_eq!(
-        engine.must_stay(&*engine.lock().await, &space, &kept),
+        engine.must_stay(&mut *engine.lock().await, &space, &kept),
         Some(Stays::Kept)
     );
 
@@ -339,7 +339,7 @@ async fn a_blob_this_device_put_stays_until_a_peer_holds_it() {
     engine.evict().await.unwrap();
     assert!(holds(&engine, space, &locator).await, "not durable yet");
     assert_eq!(
-        engine.must_stay(&*engine.lock().await, &space, &locator),
+        engine.must_stay(&mut *engine.lock().await, &space, &locator),
         Some(Stays::Pending)
     );
     assert!(matches!(
@@ -426,7 +426,7 @@ async fn frasils_own_objects_survive_a_full_cache_and_a_drop() {
         state
             .retained
             .load(space, object_id(&own), Retention::Cached { read: 0 }, 1);
-        assert_eq!(engine.must_stay(&state, &space, &own), Some(Stays::Own));
+        assert_eq!(engine.must_stay(&mut state, &space, &own), Some(Stays::Own));
     }
     engine.set_blob_cache(0);
     engine.evict().await.unwrap();
@@ -456,7 +456,7 @@ async fn an_object_a_read_or_a_fetch_is_using_is_not_dropped() {
     engine.evict().await.unwrap();
     assert!(holds(&engine, space, &a).await);
     assert_eq!(
-        engine.must_stay(&*engine.lock().await, &space, &a),
+        engine.must_stay(&mut *engine.lock().await, &space, &a),
         Some(Stays::InUse)
     );
     assert!(matches!(
@@ -470,7 +470,10 @@ async fn an_object_a_read_or_a_fetch_is_using_is_not_dropped() {
     assert!(holds(&engine, space, &a).await);
 
     drop(fetching);
-    assert_eq!(engine.must_stay(&*engine.lock().await, &space, &a), None);
+    assert_eq!(
+        engine.must_stay(&mut *engine.lock().await, &space, &a),
+        None
+    );
     engine.evict().await.unwrap();
     assert!(!holds(&engine, space, &a).await);
 }
@@ -698,4 +701,85 @@ async fn a_blob_put_before_the_space_had_a_peer_stays_until_one_holds_it() {
     );
     assert!(holds(&engine, space, &other).await, "the application's");
     assert_eq!(engine.retention_of(&space, &other).await.0, BlobState::Kept);
+}
+
+/// What must stay in a space is read from its log once, and then only the
+/// events the log gained: an eviction pass that cannot make room, and a
+/// look at the cache's usage, read no log again.
+#[tokio::test]
+async fn what_must_stay_is_read_from_the_log_once_and_then_only_what_is_new() {
+    let medium = Medium::new();
+    let (engine, _, space) = medium.device().await;
+    let doc = engine.new_document().unwrap();
+    for _ in 0..20 {
+        engine
+            .edit_document(space, &doc, |d| {
+                d.get_text("body").insert(0, "text").unwrap();
+            })
+            .await
+            .unwrap();
+    }
+    // A cached object over a budget of zero that a read is using: no pass
+    // can make room.
+    let (a, a_parts) = object(&engine, space, b'a', SIZE).await;
+    fetch(&engine, space, &a, &a_parts, false).await;
+    let _reading = engine.use_object(space, &a);
+    engine.set_blob_cache(0);
+    engine.evict().await.unwrap();
+    engine.blob_cache_usage().await;
+    let first = engine.lock().await.retained.log_reads();
+    assert!(first >= 20, "{first}");
+    for _ in 0..50 {
+        engine.evict().await.unwrap();
+        engine.blob_cache_usage().await;
+        let mut state = engine.lock().await;
+        assert_eq!(engine.must_stay(&mut state, &space, &a), Some(Stays::InUse));
+    }
+    assert_eq!(engine.lock().await.retained.log_reads(), first);
+
+    // A snapshot unit placed since names one of Frasil's own objects: the
+    // pass after it reads the new events alone, and the object stays.
+    let snapshot = engine.compact(space, doc.stream()).await.unwrap();
+    let own = engine
+        .read(&space, |replica| {
+            let event = replica.log().unwrap().event(snapshot).unwrap().clone();
+            frasil_units::Unit::from_event(event).unwrap().body.objects[0]
+        })
+        .await
+        .unwrap();
+    {
+        let mut state = engine.lock().await;
+        state
+            .retained
+            .load(space, object_id(&own), Retention::Cached { read: 0 }, 1);
+        assert_eq!(engine.must_stay(&mut state, &space, &own), Some(Stays::Own));
+        let read = state.retained.log_reads() - first;
+        assert!((1..=4).contains(&read), "{read}");
+    }
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &own).await);
+
+    // A unit this device signed that is not durable yet holds its objects,
+    // and no longer once it is acknowledged.
+    let stream = engine.new_stream(frasil_adapter_blobs::TYPE).unwrap();
+    let (unit, put) = engine
+        .put_blob(space, &stream, None, &vec![7; SIZE])
+        .await
+        .unwrap();
+    {
+        let mut state = engine.lock().await;
+        assert_eq!(
+            engine.must_stay(&mut state, &space, &put),
+            Some(Stays::Pending)
+        );
+    }
+    engine
+        .acknowledge(space, Acknowledger::Member([8; 32]), &[unit])
+        .await
+        .unwrap();
+    let mut state = engine.lock().await;
+    assert_eq!(
+        engine.must_stay(&mut state, &space, &put),
+        Some(Stays::Kept)
+    );
 }

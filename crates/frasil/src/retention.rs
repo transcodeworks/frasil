@@ -19,6 +19,8 @@
 //! signed that is not durable yet, an object a read or a fetch is using,
 //! and a kept object. Eviction asks it for every candidate. A drop the
 //! application asks for asks it too, and may take a kept object alone.
+//! What a space's log and outbox say of it is kept from one pass to the
+//! next, and only the events placed since are read.
 //!
 //! An object goes whole or not at all: its `retention` record and every
 //! part are deleted in one commit, and the device then forgets what it
@@ -83,6 +85,10 @@ pub(crate) struct Retained {
     /// Objects an always-on peer took before the unit that names them was
     /// written, which have no record yet.
     taken: BTreeSet<Key>,
+    /// What must stay in each space, as its log and its outbox say.
+    staying: BTreeMap<EventId, Staying>,
+    /// How many events of logs were read to find what must stay.
+    log_reads: std::sync::atomic::AtomicU64,
 }
 
 impl Retained {
@@ -158,6 +164,13 @@ impl Retained {
         for key in keys {
             self.remove(&key);
         }
+        self.staying.remove(space);
+    }
+
+    /// How many events of logs were read to find what must stay.
+    #[cfg(test)]
+    pub(crate) fn log_reads(&self) -> u64 {
+        self.log_reads.load(Ordering::Relaxed)
     }
 
     /// The cached objects, the one read longest ago first.
@@ -249,15 +262,13 @@ pub struct BlobCacheUsage {
     pub kept: u64,
 }
 
-/// Calls `found` with each of Frasil's own objects a replica names, until
-/// it answers `true`: the space snapshot a newcomer awaits and the one it
-/// adopted and stores, the stream snapshot objects not yet loaded, the
-/// objects that a snapshot unit or a unit of the system stream names
-/// (units.md, "Frasil's own units"), and the record objects of the
-/// checkpoints it opened (roster.md, "The record object"). Whether one
-/// answered `true`.
-fn any_own(replica: &Replica, mut found: impl FnMut(&Locator) -> bool) -> bool {
-    if replica.awaited_snapshot().is_some_and(&mut found)
+/// Calls `found` with each of Frasil's own objects that a replica names
+/// outside its log, until it answers `true`: the space snapshot a newcomer
+/// awaits and the one it adopted and stores, the stream snapshot objects
+/// not yet loaded, and the record objects of the checkpoints it opened
+/// (roster.md, "The record object"). Whether one answered `true`.
+fn any_own_beside_log(replica: &Replica, mut found: impl FnMut(&Locator) -> bool) -> bool {
+    replica.awaited_snapshot().is_some_and(&mut found)
         || replica.adopted_snapshot().is_some_and(&mut found)
         || replica.pending_stream_objects().any(&mut found)
         || replica
@@ -265,60 +276,128 @@ fn any_own(replica: &Replica, mut found: impl FnMut(&Locator) -> bool) -> bool {
             .parts
             .values()
             .any(|part| found(&part.locator))
-    {
-        return true;
+}
+
+/// The objects an event of a log makes Frasil's own: those that a snapshot
+/// unit or a unit of the system stream names (units.md, "Frasil's own
+/// units").
+fn own_of_event(
+    event: &frasil_events::Event,
+    system: Option<&frasil_units::StreamId>,
+) -> Vec<Locator> {
+    if event.kind() != frasil_events::kind::UNIT {
+        return Vec::new();
     }
-    let Some(log) = replica.log() else {
-        return false;
-    };
-    let system = replica.system_stream();
-    log.events()
-        .filter(|event| event.kind() == frasil_events::kind::UNIT)
-        .filter_map(|event| frasil_units::Unit::from_event(event.clone()).ok())
-        .filter(|unit| unit.body.compacts.is_some() || Some(unit.body.stream) == system)
-        .any(|unit| unit.body.objects.iter().any(&mut found))
+    match frasil_units::Unit::from_event(event.clone()) {
+        Ok(unit) if unit.body.compacts.is_some() || Some(&unit.body.stream) == system => {
+            unit.body.objects.to_vec()
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Whether an object is Frasil's own, by its ID: read by Frasil and never
 /// by the application, stored sealed under every policy, and never
-/// dropped.
+/// dropped. It reads the whole log: eviction asks [`Engine::must_stay`],
+/// which keeps what the log says.
 pub(crate) fn frasils_own(replica: &Replica, id: &[u8; 32]) -> bool {
-    any_own(replica, |locator| locator[..32] == id[..])
+    if any_own_beside_log(replica, |locator| locator[..32] == id[..]) {
+        return true;
+    }
+    let system = replica.system_stream();
+    replica.log().is_some_and(|log| {
+        log.events().any(|event| {
+            own_of_event(event, system.as_ref())
+                .iter()
+                .any(|locator| locator[..32] == id[..])
+        })
+    })
 }
 
-/// What must stay in a space besides what its records keep, gathered once
-/// for a pass over its objects.
+/// What must stay in a space besides what its records keep, as its log and
+/// its outbox say: kept from one eviction pass to the next, and brought up
+/// to date before each from what changed ([`Retained::refresh`]).
+#[derive(Debug, Default)]
 struct Staying {
-    /// Frasil's own objects.
+    /// How many events the log had placed when it was last read, the last
+    /// of them, the log's revision then, and the system stream.
+    placed: usize,
+    last: Option<EventId>,
+    revision: u64,
+    system: Option<frasil_units::StreamId>,
+    /// The objects the log's units make Frasil's own.
     own: BTreeSet<[u8; 32]>,
-    /// The objects of units this device signed that are not durable yet.
+    /// The events this device signed that are not durable yet, and the
+    /// objects their units name.
+    outbox: Vec<EventId>,
     pending: BTreeSet<[u8; 32]>,
 }
 
-impl Staying {
-    fn of(state: &State, space: &EventId) -> Self {
-        let mut own = BTreeSet::new();
-        let mut pending = BTreeSet::new();
-        if let Some(replica) = state.replicas.get(space) {
-            any_own(replica, |locator| {
-                own.insert(object_id(locator));
-                false
-            });
-            // An event leaves the outbox when it becomes durable (units.md,
-            // 3.13 "Durable").
-            if let (Some(log), Some(outbox)) = (replica.log(), state.outboxes.get(space)) {
-                pending.extend(
-                    outbox
-                        .pending()
-                        .filter_map(|(_, id)| log.event(*id))
-                        .filter(|event| event.kind() == frasil_events::kind::UNIT)
-                        .filter_map(|event| frasil_units::Unit::from_event(event.clone()).ok())
-                        .flat_map(|unit| unit.body.objects.to_vec())
-                        .map(|locator| object_id(&locator)),
-                );
+impl Retained {
+    /// Brings what must stay in a space up to date. The log is read whole
+    /// the first time, and when it changed other than by placing events,
+    /// or lost some: otherwise only the events placed since are read. The
+    /// units of the outbox are read again when the outbox changed. An
+    /// object once found stays in the set until the log is read whole
+    /// again, so that a doubt keeps an object.
+    fn refresh(
+        &mut self,
+        space: &EventId,
+        replica: Option<&Replica>,
+        outbox: Option<&crate::outbox::Outbox>,
+    ) {
+        let Some(log) = replica.and_then(Replica::log) else {
+            self.staying.remove(space);
+            return;
+        };
+        let staying = self.staying.entry(*space).or_default();
+        let system = replica.and_then(Replica::system_stream);
+        let placed = log.placed_since(0);
+        let grown = staying.revision == log.revision()
+            && staying.system == system
+            && staying.placed <= placed.len()
+            && staying
+                .placed
+                .checked_sub(1)
+                .map_or(staying.last.is_none(), |at| {
+                    placed.get(at) == staying.last.as_ref()
+                });
+        if !grown {
+            staying.own.clear();
+            staying.placed = 0;
+        }
+        let new = &placed[staying.placed..];
+        self.log_reads
+            .fetch_add(new.len() as u64, Ordering::Relaxed);
+        for id in new {
+            if let Some(event) = log.event(*id) {
+                staying
+                    .own
+                    .extend(own_of_event(event, system.as_ref()).iter().map(object_id));
             }
         }
-        Self { own, pending }
+        staying.placed = placed.len();
+        staying.last = placed.last().copied();
+        staying.revision = log.revision();
+        staying.system = system;
+        // An event leaves the outbox when it becomes durable (units.md,
+        // 3.13 "Durable").
+        let outbox: Vec<EventId> = outbox
+            .into_iter()
+            .flat_map(crate::outbox::Outbox::pending)
+            .map(|(_, id)| *id)
+            .collect();
+        if !grown || outbox != staying.outbox {
+            staying.pending = outbox
+                .iter()
+                .filter_map(|id| log.event(*id))
+                .filter(|event| event.kind() == frasil_events::kind::UNIT)
+                .filter_map(|event| frasil_units::Unit::from_event(event.clone()).ok())
+                .flat_map(|unit| unit.body.objects.to_vec())
+                .map(|locator| object_id(&locator))
+                .collect();
+            staying.outbox = outbox;
+        }
     }
 }
 
@@ -380,26 +459,34 @@ impl Engine {
     /// these holds for, which is the only kind eviction takes.
     pub(crate) fn must_stay(
         &self,
-        state: &State,
+        state: &mut State,
         space: &EventId,
         locator: &Locator,
     ) -> Option<Stays> {
-        self.stays(
-            state,
-            &Staying::of(state, space),
-            space,
-            &object_id(locator),
-        )
+        Self::refresh_staying(state, space);
+        self.stays(state, space, &object_id(locator))
     }
 
-    fn stays(
-        &self,
-        state: &State,
-        staying: &Staying,
-        space: &EventId,
-        id: &[u8; 32],
-    ) -> Option<Stays> {
-        if staying.own.contains(id) {
+    /// Brings what must stay in a space up to date with its log and its
+    /// outbox: once before any number of [`stays`](Self::stays).
+    fn refresh_staying(state: &mut State, space: &EventId) {
+        state
+            .retained
+            .refresh(space, state.replicas.get(space), state.outboxes.get(space));
+    }
+
+    /// [`must_stay`](Self::must_stay), by what the space's log and outbox
+    /// said when [`refresh_staying`](Self::refresh_staying) last read
+    /// them. A space never read keeps everything.
+    fn stays(&self, state: &State, space: &EventId, id: &[u8; 32]) -> Option<Stays> {
+        let Some(staying) = state.retained.staying.get(space) else {
+            return Some(Stays::Own);
+        };
+        let beside = state
+            .replicas
+            .get(space)
+            .is_some_and(|replica| any_own_beside_log(replica, |locator| locator[..32] == id[..]));
+        if beside || staying.own.contains(id) {
             return Some(Stays::Own);
         }
         if staying.pending.contains(id) {
@@ -806,7 +893,9 @@ impl Engine {
         if self.keeps_all_blobs() || !over(state) {
             return Ok(());
         }
-        let mut staying: BTreeMap<EventId, Staying> = BTreeMap::new();
+        // What must stay is brought up to date once for each space in a
+        // pass; a drop changes neither a log nor an outbox.
+        let mut read: BTreeSet<EventId> = BTreeSet::new();
         for (space, id) in state.retained.oldest_first() {
             if !over(state) {
                 break;
@@ -814,10 +903,10 @@ impl Engine {
             if writing.contains(&id) {
                 continue;
             }
-            let staying = staying
-                .entry(space)
-                .or_insert_with(|| Staying::of(state, &space));
-            if self.stays(state, staying, &space, &id).is_some() {
+            if read.insert(space) {
+                Self::refresh_staying(state, &space);
+            }
+            if self.stays(state, &space, &id).is_some() {
                 continue;
             }
             self.drop_stored(state, space, &id, true).await?;
@@ -862,7 +951,7 @@ impl Engine {
                 "this device keeps every blob, and would fetch it again",
             ));
         }
-        match self.must_stay(&state, &space, locator) {
+        match self.must_stay(&mut state, &space, locator) {
             Some(Stays::Own) => {
                 return Err(Error::NotAllowed(
                     "the object is Frasil's own, and the device cannot run without it",
@@ -905,7 +994,7 @@ impl Engine {
     /// The store's.
     pub(crate) async fn drop_if_cached(&self, space: EventId, locator: &Locator) -> Result<()> {
         let mut state = self.lock().await;
-        if self.must_stay(&state, &space, locator).is_some() {
+        if self.must_stay(&mut state, &space, locator).is_some() {
             return Ok(());
         }
         self.drop_stored(&mut state, space, &object_id(locator), true)
@@ -926,7 +1015,7 @@ impl Engine {
             .replicas
             .get(&space)
             .is_none_or(|replica| replica.object_bytes_stored(&id) == 0);
-        if !empty || self.must_stay(&state, &space, locator).is_some() {
+        if !empty || self.must_stay(&mut state, &space, locator).is_some() {
             return Ok(());
         }
         self.drop_stored(&mut state, space, &id, true)
@@ -992,16 +1081,21 @@ impl Engine {
     /// device caches and keeps. Frasil's own objects count in neither, nor
     /// do blobs the application holds as files.
     pub async fn blob_cache_usage(&self) -> BlobCacheUsage {
-        let state = self.lock().await;
+        let mut state = self.lock().await;
+        let spaces: Vec<EventId> = state.replicas.keys().copied().collect();
         let mut kept = 0u64;
-        for (space, replica) in &state.replicas {
-            let staying = Staying::of(&state, space);
+        for space in &spaces {
+            // Only what the space's log gained since it was last read.
+            Self::refresh_staying(&mut state, space);
+            let Some(replica) = state.replicas.get(space) else {
+                continue;
+            };
             for (id, bytes) in replica.stored_object_bytes() {
                 let cached = matches!(
                     state.retained.get(&(*space, id)),
                     Some(Retention::Cached { .. })
                 ) && !self.keeps_all_blobs();
-                if !cached && !staying.own.contains(&id) {
+                if !cached && self.stays(&state, space, &id) != Some(Stays::Own) {
                     kept = kept.saturating_add(bytes);
                 }
             }
