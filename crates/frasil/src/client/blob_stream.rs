@@ -159,9 +159,11 @@ impl Blobs {
     /// [`Error::Invalid`] when the stream holds no blob of this ID;
     /// `Missing` while the device does not hold it and the read is
     /// [`local`](Read::local), or neither a peer nor a member of the space
-    /// is connected; [`Error::Timeout`] when the fetch stops moving;
-    /// [`Error::Connection`] when the writer fails; a class when the bytes
-    /// do not open; as [`Blobs::get`] for what `read` asks.
+    /// is connected, or the connected parties do not serve it for now;
+    /// [`Error::Timeout`] when the fetch stops moving; `ObjectMismatch` or
+    /// `Malformed` as [`Blobs::get`] says; [`Error::Connection`] when the
+    /// writer fails; a class when the bytes do not open; as [`Blobs::get`]
+    /// for what `read` asks.
     pub async fn get_stream(
         &self,
         id: BlobId,
@@ -339,7 +341,24 @@ impl Blobs {
 
     /// Waits until the device holds a blob's object whole, as the
     /// connected peers' chunk streams bring it, or members' answers to the
-    /// device's `ObjectWant` over member connections.
+    /// device's `ObjectWant` over member connections. A connection made
+    /// while it waits serves the request too: the peers are looked at
+    /// again at each turn, and one not seen before is asked.
+    ///
+    /// # Errors
+    ///
+    /// `Missing` when nothing is connected that could send the object, or
+    /// when the space's connections ask for it no further for want of an
+    /// answer ([`FetchEnd::Unserved`]); `ObjectMismatch` when what they
+    /// were sent failed its checks ([`FetchEnd::Refused`]) and `Malformed`
+    /// when it did not read as the object ([`FetchEnd::Malformed`]), each
+    /// as soon as every connection of the space gave the request up;
+    /// [`Error::Timeout`] when nothing arrives for [`STALL`], or the last
+    /// connection goes.
+    ///
+    /// [`FetchEnd::Unserved`]: crate::fetch::FetchEnd::Unserved
+    /// [`FetchEnd::Refused`]: crate::fetch::FetchEnd::Refused
+    /// [`FetchEnd::Malformed`]: crate::fetch::FetchEnd::Malformed
     #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
     pub(super) async fn fetched<F: FnMut(u64, Option<u64>)>(
         &self,
@@ -349,23 +368,29 @@ impl Blobs {
         priority: crate::fetch::FetchPriority,
         progress: &mut Reporter<F>,
     ) -> Result<()> {
+        use crate::fetch::FetchEnd;
         let device = &self.space().device;
         let engine = device.engine().clone();
-        let peers: Vec<_> = device
-            .peers_of(&space)
-            .into_iter()
-            .filter(|peer| !peer.handle().is_closed())
-            .collect();
-        if peers.is_empty() && !engine.member_attached(&space) {
+        let connected = || {
+            let peers: Vec<_> = device
+                .peers_of(&space)
+                .into_iter()
+                .filter(|peer| !peer.handle().is_closed())
+                .collect();
+            // A connection that takes the space's requests could send it.
+            let any = !peers.is_empty()
+                || engine.member_attached(&space)
+                || engine.fetches().taken(&space);
+            (peers, any)
+        };
+        if !connected().1 {
             return Err(Error::Class("Missing"));
         }
         // Every chunk is wanted while this read waits: each connection of
         // the space fetches those the device lacks, and nothing of the
         // object is dropped meanwhile.
-        let _fetch = engine.fetch_chunks(space, locator, 0..u64::MAX, priority);
-        for peer in &peers {
-            peer.handle().fetch(space);
-        }
+        let fetch = engine.fetch_chunks(space, locator, 0..u64::MAX, priority);
+        let mut asked = Vec::new();
         let mut idle = std::time::Duration::ZERO;
         loop {
             if engine
@@ -374,6 +399,14 @@ impl Blobs {
                 .unwrap_or(false)
             {
                 return Ok(());
+            }
+            let (peers, any) = connected();
+            for peer in &peers {
+                let by = peer.handle().acknowledger();
+                if !asked.contains(&by) {
+                    asked.push(by);
+                    peer.handle().fetch(space);
+                }
             }
             let members = engine.object_progress(&space, &locator).await;
             let fetched = peers
@@ -393,12 +426,20 @@ impl Blobs {
                 }
                 _ => idle += POLL,
             }
-            let connected = peers.iter().any(|peer| !peer.handle().is_closed())
-                || engine.member_attached(&space);
-            if idle >= STALL || !connected {
+            if idle >= STALL || !any {
                 return Err(Error::Timeout);
             }
-            device.sleep(POLL).await;
+            // The request's end is heard as it is told, between two looks.
+            tokio::select! {
+                end = fetch.ended() => {
+                    return Err(Error::Class(match end {
+                        FetchEnd::Refused => "ObjectMismatch",
+                        FetchEnd::Malformed => "Malformed",
+                        FetchEnd::Unserved => "Missing",
+                    }));
+                }
+                () = device.sleep(POLL) => {}
+            }
         }
     }
 
@@ -578,5 +619,71 @@ mod tests {
             progress.report(10, Some(10));
         }
         assert_eq!(seen, vec![(5, Some(10)), (10, Some(10))]);
+    }
+
+    /// A read hears how the request for its blob ended as soon as the
+    /// space's connections give it up, and fails with what fits: it does
+    /// not wait until the fetch is found not to move.
+    #[cfg(all(
+        feature = "adapter-blobs",
+        any(feature = "server", feature = "iroh", feature = "server-socket")
+    ))]
+    #[tokio::test]
+    async fn a_read_ends_as_the_request_for_its_blob_ends() {
+        use crate::fetch::FetchEnd;
+        use crate::{Device, Error, Read, Storage};
+        use std::time::Duration;
+
+        let device = Device::open(Storage::Memory, &[1; 32]).await.unwrap();
+        let space = device.create_space().await.unwrap();
+        let blobs = space.create_blobs().unwrap();
+        let id = blobs.put(None, &[7; 1000]).await.unwrap();
+        let locator = blobs.entry(id).await.unwrap().object;
+        // Absent here, by the application's choice.
+        blobs.drop_local(id).await.unwrap();
+        let engine = device.engine().clone();
+        let of = space.id().event();
+
+        for end in [FetchEnd::Refused, FetchEnd::Malformed, FetchEnd::Unserved] {
+            // A connection that takes the space's requests, and gives
+            // this one up once the read has made it.
+            let taker = engine.fetches().attach(of);
+            let reading = {
+                let blobs = blobs.clone();
+                tokio::spawn(async move { blobs.get(id, &Read::new()).await })
+            };
+            let gives_up = async {
+                while engine.fetches().of(&of).is_empty() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                match end {
+                    FetchEnd::Unserved => taker.unserved(&locator),
+                    end => taker.give_up(&locator, end),
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(5), gives_up)
+                .await
+                .expect("the read asks for the blob");
+            let read = tokio::time::timeout(Duration::from_secs(5), reading)
+                .await
+                .expect("the read ends with its request")
+                .unwrap();
+            match end {
+                FetchEnd::Refused => {
+                    assert!(
+                        matches!(read, Err(Error::Class("ObjectMismatch"))),
+                        "{read:?}"
+                    );
+                }
+                FetchEnd::Malformed => {
+                    assert!(matches!(read, Err(Error::Class("Malformed"))), "{read:?}");
+                }
+                // Not served for now: not here, and a later read asks
+                // again.
+                FetchEnd::Unserved => assert!(matches!(read, Ok(None)), "{read:?}"),
+            }
+            drop(taker);
+            assert!(engine.fetches().of(&of).is_empty());
+        }
     }
 }

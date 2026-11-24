@@ -293,6 +293,21 @@ impl Requests {
         }
     }
 
+    /// Whether a connection takes the space's requests now.
+    #[cfg_attr(
+        not(all(
+            feature = "adapter-blobs",
+            any(feature = "server", feature = "iroh", feature = "server-socket")
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) fn taken(&self, space: &EventId) -> bool {
+        self.live()
+            .takers
+            .values()
+            .any(|taking| taking.space == *space)
+    }
+
     /// The requests of a space still wanted, oldest first.
     pub(crate) fn of(&self, space: &EventId) -> Vec<Request> {
         self.live()

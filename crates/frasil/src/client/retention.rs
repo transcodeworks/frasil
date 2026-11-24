@@ -169,10 +169,11 @@ impl Blobs {
     ///
     /// # Errors
     ///
-    /// `Missing` while nothing is connected that could send it;
-    /// [`Error::Timeout`] when the fetch stops moving;
-    /// [`Error::NotAllowed`] and [`Error::Unsupported`] as [`Blobs::get`]
-    /// says; the store's.
+    /// `Missing` while nothing is connected that could send it, or what
+    /// is connected does not serve it for now; [`Error::Timeout`] when the
+    /// fetch stops moving; `ObjectMismatch` or `Malformed` once every
+    /// connection of the space gave the blob up; [`Error::NotAllowed`] and
+    /// [`Error::Unsupported`] as [`Blobs::get`] says; the store's.
     pub(super) async fn ready<F: FnMut(u64, Option<u64>)>(
         &self,
         entry: &Entry,
@@ -260,7 +261,9 @@ impl Blobs {
     /// [`Error::NotAllowed`] in a space this device keeps in memory alone
     /// ([`Space::is_memory_only`](crate::Space::is_memory_only)); `Missing`
     /// while neither a peer nor a member that holds it is connected;
-    /// [`Error::Timeout`] when the fetch stops moving; the store's.
+    /// [`Error::Timeout`] when the fetch stops moving; `ObjectMismatch` or
+    /// `Malformed` once every connection of the space gave the blob up
+    /// because what it was sent failed its checks; the store's.
     pub async fn keep(&self, id: BlobId, on_progress: impl FnMut(u64, Option<u64>)) -> Result<()> {
         let entry = self.entry(id).await?;
         let engine = self.space().device.engine();

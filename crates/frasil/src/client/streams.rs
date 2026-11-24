@@ -874,8 +874,10 @@ mod blobs {
         /// # Errors
         ///
         /// [`Error::Invalid`] when the stream holds no blob of this ID;
-        /// [`Error::Timeout`] when the fetch stops moving; a class when
-        /// the bytes do not open; [`Error::NotAllowed`] for a read that
+        /// [`Error::Timeout`] when the fetch stops moving;
+        /// `ObjectMismatch` or `Malformed` as soon as every connection of
+        /// the space gave the blob up because what it was sent failed its
+        /// checks; a class when the bytes do not open; [`Error::NotAllowed`] for a read that
         /// [`keep`](Read::keep)s in a space this device keeps in memory
         /// alone; [`Error::Unsupported`] for an
         /// [`uncached`](Read::uncached) read that would fetch in a space

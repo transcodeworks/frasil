@@ -247,8 +247,13 @@ let bytes = blobs.get(id, &Read::new().local()).await?;    // fetch nothing
 
 `get`, `get_stream`, `get_range` and `content_hash` take it alike. `get`
 returns `None` when the blob is not here and is not fetched: the read is
-`local`, or neither a peer nor a member of the space is connected. A read
-that must not wait on the network is `local`.
+`local`, or neither a peer nor a member of the space is connected, or what
+is connected does not serve the blob for now. A read that must not wait on
+the network is `local`. A read fails with `Timeout` when nothing arrives for
+half a minute, and at once, with `ObjectMismatch` or `Malformed`, when every
+connection of the space gave the blob up because the bytes it was sent
+failed their checks. A peer or a member that connects while a read waits
+serves it.
 
 A read fetches the blob whole before it gives any of it, into the device's
 store, so every check of the object format runs as for any stored blob. An
