@@ -262,13 +262,18 @@ a member that holds it is connected. `blobs.drop_local(id)` drops what the
 device stores of a blob, kept or cached, and the blob is absent. Nothing
 changes for anyone else, and the stream still lists it.
 
-**What is never evicted.** Kept blobs; a blob this device put, until a peer
-holds it (`blobs.is_durable(id)`); what Frasil stores for itself, such as
+**What is never evicted.** Kept blobs; a blob this device put, until an
+always-on peer holds its bytes; what Frasil stores for itself, such as
 snapshots; and a blob that a read or a fetch is using. A blob this device
-put becomes cached once a peer holds it. In a space with no always-on peer
-no other party is known to hold the bytes, so a blob put there is kept until
+put is kept, and `blobs.local(id)` says so, until a peer of the space has
+answered that it holds the bytes and has acknowledged the change that put
+the blob: the blob is cached from then on, unless the application asked to
+keep it. Nothing else releases it: not another member's acknowledgement,
+not a reopen, not a paused space. In a space with no always-on peer no
+other party is known to hold the bytes, so a blob put there is kept until
 the application drops it. `drop_local` refuses, with `NotAllowed`, a blob in
-use and a blob this device put that no peer holds yet.
+use and, in a space with an always-on peer, a blob this device put that no
+peer holds yet.
 
 **An evicted blob stays away.** The device does not fetch it again by
 itself: the next read does. An older version of a file that no peer keeps

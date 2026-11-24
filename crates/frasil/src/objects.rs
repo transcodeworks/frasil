@@ -2536,10 +2536,10 @@ impl Engine {
                 },
             )
             .await?;
-        // An object this device put is cached or kept from now on; until
-        // its unit is durable it stays in either case.
+        // An object this device put stays until an always-on peer holds
+        // it.
         for locator in &named {
-            self.retain_put(&mut state, space, locator).await?;
+            self.retain_put(&mut state, space, locator, id).await?;
         }
         Ok(id)
     }

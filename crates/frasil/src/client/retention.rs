@@ -294,7 +294,7 @@ impl Blobs {
     /// [`Error::Invalid`] when the stream holds no blob of this ID;
     /// [`Error::NotAllowed`] while the blob must stay: a read or a fetch
     /// is using it, this device put it in a space with an always-on peer
-    /// and no peer holds it yet ([`Blobs::is_durable`]), its object is one
+    /// and no peer is known to hold its bytes yet, its object is one
     /// Frasil stores for itself, or the device keeps every blob
     /// ([`Options::keep_all_blobs`](crate::Options::keep_all_blobs)) and
     /// would fetch it again at once; the store's and the provider's.

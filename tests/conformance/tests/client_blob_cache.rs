@@ -378,3 +378,29 @@ async fn a_device_that_keeps_every_blob_fetches_them_by_itself() {
     ));
     assert_eq!(state(&bobs_files, ids[0]).await, BlobState::Kept);
 }
+
+/// A blob this device put is kept until the peer holds its bytes and the
+/// unit that names it, and the cache's from then on. One put with no peer
+/// reached stays kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blob_this_device_put_is_cached_once_the_peer_holds_it() {
+    let peer = spawn_loopback().await.unwrap();
+    let (_alice, _space, files) = alice(&peer).await;
+    let id = files.put(Some("a file"), &vec![3; SIZE]).await.unwrap();
+    within(async {
+        while state(&files, id).await != BlobState::Cached {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+
+    let alone = open(3, Storage::Memory, Options::new().blob_cache(0)).await;
+    let space = alone.create_space().await.unwrap();
+    let files = space.create_blobs().unwrap();
+    let id = files.put(Some("a file"), &vec![4; SIZE]).await.unwrap();
+    assert_eq!(state(&files, id).await, BlobState::Kept);
+    assert_eq!(
+        files.get(id, &Read::new().local()).await.unwrap(),
+        Some(vec![4; SIZE])
+    );
+}

@@ -1095,6 +1095,10 @@ pub enum Retention {
         /// object, rounded down to a multiple of [`RETENTION_READ_STEP`].
         read: u64,
     },
+    /// State 3: this device sealed the object, and knows of no always-on
+    /// peer that holds it. The object stays as a kept one does, and
+    /// becomes cached once such a peer holds it.
+    Put,
 }
 
 /// What a cached object's last read is rounded down to, in seconds of the
@@ -1667,6 +1671,7 @@ impl TableValue {
                 match (map[&1].as_unsigned()?, read) {
                     (1, None) => Self::Retention(Retention::Kept),
                     (2, Some(read)) => Self::Retention(Retention::Cached { read }),
+                    (3, None) => Self::Retention(Retention::Put),
                     _ => return Err(malformed),
                 }
             }
@@ -1809,6 +1814,9 @@ impl TableValue {
                     Retention::Cached { read } => {
                         map.insert(1, 2u64.into());
                         map.insert(2, (*read).into());
+                    }
+                    Retention::Put => {
+                        map.insert(1, 3u64.into());
                     }
                 }
                 Value::Map(map).encode()
@@ -2211,7 +2219,13 @@ mod tests {
     fn a_retention_record_names_one_state() {
         let read =
             |value: &[u8]| TableValue::read(Table::Retention, &[3; 32], value, Some(&[4; 32]));
-        for retention in [Retention::Kept, Retention::Cached { read: 7_200 }] {
+        for retention in [
+            Retention::Kept,
+            Retention::Cached { read: 7_200 },
+            // A last read that is no multiple of the step is read as it is.
+            Retention::Cached { read: 7_201 },
+            Retention::Put,
+        ] {
             let value = TableValue::Retention(retention).encode();
             assert_eq!(read(&value), Ok(TableValue::Retention(retention)));
         }
@@ -2223,9 +2237,12 @@ mod tests {
             Value::Map(map).encode()
         };
         // An unknown state; a kept object with a last read; a cached one
-        // without; no state; a key the record does not have.
+        // without; a put one with a last read; no state; a key the record
+        // does not have.
         for value in [
             map(&[(1, 0)]),
+            map(&[(1, 4)]),
+            map(&[(1, 4), (2, 0)]),
             map(&[(1, 3), (2, 0)]),
             map(&[(1, 1), (2, 0)]),
             map(&[(1, 2)]),

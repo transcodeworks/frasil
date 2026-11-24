@@ -211,9 +211,10 @@ K_ROTATION, K_STATE, K_BODY, K_GAP, K_RECORD = 1, 2, 3, 4, 5
 # dropped: an event the device held and dropped, or a parent a peer answered
 # Missing for (roster.md, "Forgetting, and starting from a checkpoint").
 D_HELD, D_MISSING = 1, 2
-# retention: an object the device keeps until the application drops it, or
-# one it caches within its budget (at-rest.md, "Retention").
-R_KEPT, R_CACHED = 1, 2
+# retention: an object the device keeps until the application drops it, one
+# it caches within its budget, or one it put that no always-on peer is known
+# to hold (at-rest.md, "Retention").
+R_KEPT, R_CACHED, R_PUT = 1, 2, 3
 # The last read of a cached object is the timeline's T rounded down to this.
 READ_STEP = 3600
 BODY_DERIVED, BODY_HANDED = 1, 2
@@ -576,7 +577,7 @@ def read_value(table: int, item: bytes, value: bytes, log_id: bytes | None):
     if table == T_RETENTION:
         m = _map(value, {1, 2}, {1})
         # Key 2, the last read, exactly with state 2.
-        if not (m[1] in (R_KEPT, R_CACHED) and (2 in m) == (m[1] == R_CACHED)
+        if not (m[1] in (R_KEPT, R_CACHED, R_PUT) and (2 in m) == (m[1] == R_CACHED)
                 and (2 not in m or is_uint(m[2]))):
             raise SpecError("Malformed")
         return m
@@ -1309,6 +1310,11 @@ def at_rest_vectors(persons: dict | None = None) -> dict:
         space, label="retention/cached",
         note="state 2: the timeline's T of the last read, 90,400, rounded down to a "
              "multiple of 3,600")
+    add("an object this device put, which no peer is known to hold", T_RETENTION,
+        example("at-rest/space/put-object"), retention_value(R_PUT), space,
+        label="retention/put",
+        note="state 3: kept until an always-on peer holds the object and has "
+             "acknowledged a unit that names it, then cached")
     add("a checkpoint's record object key, handed by a snapshot", T_KEY,
         bytes([K_RECORD]) + kept, bytes([BODY_HANDED]) + example("at-rest/space/record-key"),
         space, label="key/record",
@@ -1418,8 +1424,11 @@ def at_rest_vectors(persons: dict | None = None) -> dict:
              "key 3 is a dropped parent's height, from 1, and only with origin 1"),
             ("a dropped record with height 0", T_DROPPED, cbor({1: D_HELD, 2: 1, 3: 0}),
              "height-0", "key 3 is a dropped parent's height, from 1, and only with origin 1"),
-            ("a retention record of an unknown state", T_RETENTION, cbor({1: 3, 2: 86400}),
-             "retention-state", "state 1 is kept and state 2 cached"),
+            ("a retention record of an unknown state", T_RETENTION, cbor({1: 4, 2: 86400}),
+             "retention-state", "state 1 is kept, state 2 cached and state 3 put"),
+            ("a put object's retention record with a last read", T_RETENTION,
+             cbor({1: R_PUT, 2: 86400}), "retention-put-read",
+             "key 2 is present exactly with state 2"),
             ("a kept object's retention record with a last read", T_RETENTION,
              cbor({1: R_KEPT, 2: 86400}), "retention-kept-read",
              "key 2 is present exactly with state 2"),
@@ -1831,6 +1840,7 @@ def self_test() -> None:
         "a dropped record with height 0": "Malformed",
         "a retention record of an unknown state": "Malformed",
         "a kept object's retention record with a last read": "Malformed",
+        "a put object's retention record with a last read": "Malformed",
         "a cached object's retention record without a last read": "Malformed",
         "a retention record with no state": "Malformed",
         "a claim naming another space": "Malformed",
@@ -1859,12 +1869,15 @@ def self_test() -> None:
     # longest ago first; no record means kept.
     retained = {r["name"]: r["opened"] for r in a["records"] if r["table"] == T_RETENTION}
     assert retained == {"an object the application keeps": {"1": R_KEPT},
-                        "a cached object, with its last read": {"1": R_CACHED, "2": 90000}}
-    old, new, kept, legacy, own, put, used = (bytes([i]) * 32 for i in range(7))
+                        "a cached object, with its last read": {"1": R_CACHED, "2": 90000},
+                        "an object this device put, which no peer is known to hold":
+                            {"1": R_PUT}}
+    old, new, kept, legacy, own, put, used, sole = (bytes([i]) * 32 for i in range(8))
     cached = lambda t: read_value(T_RETENTION, old, retention_value(R_CACHED, t), bytes(32))
     records = {new: cached(90400), old: cached(7300), legacy: None, own: cached(0),
                kept: read_value(T_RETENTION, kept, retention_value(R_KEPT), bytes(32)),
-               put: cached(1), used: cached(2)}
+               put: cached(1), used: cached(2),
+               sole: read_value(T_RETENTION, sole, retention_value(R_PUT), bytes(32))}
     assert evictable(records, {own}, {put}, {used}) == [old, new]
     assert not item_ok(T_PSEUDONYM, slot_reference(bytes(32), MAX_SLOT_INDEX, bytes(32)))
     assert item_ok(T_PSEUDONYM, slot_reference(bytes(32), MAX_SLOT_INDEX - 1, bytes(32)))

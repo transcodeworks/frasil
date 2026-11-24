@@ -7,6 +7,13 @@
 //! the device stores with no `retention` record is kept, so a store
 //! written before the table existed loses nothing.
 //!
+//! An object this device sealed is put: it stays as a kept one does while
+//! no always-on peer is known to hold it, since this device may hold its
+//! only copy, and becomes cached once a peer holds it and has acknowledged
+//! a unit that names it. Whether a unit is durable says nothing of that: a
+//! member's acknowledgement makes a unit durable in a space whose peer has
+//! not been heard, and covers events alone.
+//!
 //! [`Engine::must_stay`] is the one place that says what the device never
 //! drops by itself: Frasil's own objects, an object of a unit this device
 //! signed that is not durable yet, an object a read or a fetch is using,
@@ -51,6 +58,16 @@ struct Entry {
     order: u64,
 }
 
+/// What the device knows of an object it put, while its record says so.
+#[derive(Debug, Default)]
+struct PutFacts {
+    /// The units of this device that name it, once known: those written
+    /// since the device opened, or all the log holds once it was read.
+    units: Option<Vec<EventId>>,
+    /// Whether an always-on peer was seen to hold the object whole.
+    at_peer: bool,
+}
+
 /// Which stored objects are kept and which cached, with the bytes each
 /// holds: built from the `retention` records when the device opens, and
 /// kept as parts arrive and go.
@@ -61,6 +78,11 @@ pub(crate) struct Retained {
     cached: u64,
     /// The reads counted since the device opened.
     reads: u64,
+    /// What is known of the objects whose record says the device put them.
+    puts: BTreeMap<Key, PutFacts>,
+    /// Objects an always-on peer took before the unit that names them was
+    /// written, which have no record yet.
+    taken: BTreeSet<Key>,
 }
 
 impl Retained {
@@ -75,7 +97,11 @@ impl Retained {
     }
 
     fn set(&mut self, key: Key, retention: Retention, bytes: u64) {
+        let puts = self.puts.remove(&key);
         self.remove(&key);
+        if retention == Retention::Put {
+            self.puts.insert(key, puts.unwrap_or_default());
+        }
         if matches!(retention, Retention::Cached { .. }) {
             self.cached = self.cached.saturating_add(bytes);
         }
@@ -91,6 +117,7 @@ impl Retained {
     }
 
     fn remove(&mut self, key: &Key) -> bool {
+        self.puts.remove(key);
         let Some(entry) = self.entries.remove(key) else {
             return false;
         };
@@ -140,7 +167,7 @@ impl Retained {
             .iter()
             .filter_map(|(key, entry)| match entry.retention {
                 Retention::Cached { read } => Some((read, entry.order, *key)),
-                Retention::Kept => None,
+                Retention::Kept | Retention::Put => None,
             })
             .collect();
         cached.sort_unstable();
@@ -187,7 +214,8 @@ pub(crate) enum Stays {
     Pending,
     /// A read or a fetch is using it.
     InUse,
-    /// It is kept: by its record, or for want of one.
+    /// It is kept: by its record, or for want of one; or this device put
+    /// it and no always-on peer is known to hold it.
     Kept,
 }
 
@@ -196,7 +224,9 @@ pub(crate) enum Stays {
 #[non_exhaustive]
 pub enum BlobState {
     /// The device keeps it until the application drops it. A kept blob
-    /// that is not whole here yet is fetched by the device itself.
+    /// that is not whole here yet is fetched by the device itself. A blob
+    /// this device put is kept until an always-on peer holds its bytes and
+    /// has acknowledged the change that put it, and cached from then on.
     Kept,
     /// The device holds it within its cache's budget, and may drop it.
     Cached,
@@ -346,8 +376,8 @@ impl Engine {
     /// (at-rest.md, "Retention", what is never dropped): it is Frasil's
     /// own; a unit this device signed names it and is not durable yet; a
     /// read or a fetch is using it; or it is kept, by a record of state 1
-    /// or for want of any record. `None` for a cached object none of these
-    /// holds for, which is the only kind eviction takes.
+    /// or 3 or for want of any record. `None` for a cached object none of
+    /// these holds for, which is the only kind eviction takes.
     pub(crate) fn must_stay(
         &self,
         state: &State,
@@ -387,7 +417,8 @@ impl Engine {
     /// Whether a space has an always-on peer, as far as this device knows:
     /// one acknowledged its events since the device opened, one grants it
     /// the space on a connection now, or the device keeps a peer of the
-    /// space at rest.
+    /// space at rest. It decides only whether the application may drop an
+    /// object no peer holds yet, never whether the device may.
     async fn has_peer(&self, state: &mut State, space: &EventId) -> bool {
         if state.peered.contains(space) {
             return true;
@@ -478,7 +509,8 @@ impl Engine {
         let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
         let holds = replica.knows_object_id(&id);
         let retention = match (state.retained.get(&(space, id)), keep) {
-            (Some(Retention::Kept), _) | (Some(Retention::Cached { .. }), false) => return Ok(()),
+            (Some(Retention::Kept), _)
+            | (Some(Retention::Cached { .. } | Retention::Put), false) => return Ok(()),
             (_, true) => Retention::Kept,
             // Parts with no record: kept.
             (None, false) if holds || self.keeps_all_blobs() => return Ok(()),
@@ -489,37 +521,164 @@ impl Engine {
         self.record(&mut state, space, id, retention).await
     }
 
-    /// Records the retention of an object that a unit this device just
-    /// wrote names, sealed here: cached where the space has an always-on
-    /// peer, which holds the object once the unit is durable, and kept
-    /// where it has none, since no other party is known to hold the bytes
-    /// (at-rest.md, "Retention", what is never dropped). An object that
-    /// has a record keeps it.
+    /// Records that this device put an object, which `unit`, just written
+    /// here, names: it stays until an always-on peer holds it (at-rest.md,
+    /// "Retention", what is never dropped), whatever makes the unit
+    /// durable. An object that has a record of another state keeps it.
     pub(crate) async fn retain_put(
         &self,
         state: &mut State,
         space: EventId,
         locator: &Locator,
+        unit: EventId,
     ) -> Result<()> {
-        let id = object_id(locator);
-        if self.is_held_space(state, &space) || state.retained.get(&(space, id)).is_some() {
+        let key = (space, object_id(locator));
+        // Whether a peer took it before its unit was written.
+        let taken = state.retained.taken.remove(&key);
+        if self.is_held_space(state, &space) {
             return Ok(());
         }
-        let stored = state
-            .replicas
-            .get(&space)
-            .is_some_and(|replica| replica.holds_chunks(locator) && !replica.is_held(locator));
-        if !stored {
-            return Ok(());
-        }
-        let retention = if self.has_peer(state, &space).await {
-            Retention::Cached {
-                read: self.read_now(state),
+        let first = match state.retained.get(&key) {
+            Some(Retention::Put) => false,
+            Some(_) => return Ok(()),
+            None => {
+                let stored = state.replicas.get(&space).is_some_and(|replica| {
+                    replica.holds_chunks(locator) && !replica.is_held(locator)
+                });
+                if !stored {
+                    return Ok(());
+                }
+                self.record(state, space, key.1, Retention::Put).await?;
+                true
             }
-        } else {
-            Retention::Kept
         };
-        self.record(state, space, id, retention).await
+        let facts = state.retained.puts.entry(key).or_default();
+        facts.at_peer |= taken;
+        if first {
+            facts.units = Some(vec![unit]);
+        } else if let Some(units) = &mut facts.units {
+            // The units of an earlier run are looked for when needed.
+            units.push(unit);
+        }
+        Ok(())
+    }
+
+    /// Notes that the always-on peer `by` holds an object whole, by its
+    /// own answer to an upload: an object this device put becomes cached
+    /// once that peer has also acknowledged a unit that names it.
+    ///
+    /// # Errors
+    ///
+    /// The store's.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) async fn object_at_peer(
+        &self,
+        space: EventId,
+        by: crate::outbox::Acknowledger,
+        locator: &Locator,
+    ) -> Result<()> {
+        let mut state = self.lock().await;
+        let key = (space, object_id(locator));
+        match state.retained.get(&key) {
+            Some(Retention::Put) => {
+                state.retained.puts.entry(key).or_default().at_peer = true;
+            }
+            // Taken before its unit is written, by a put that holds it.
+            None if self.in_use(&space, &key.1) => {
+                state.retained.taken.insert(key);
+                return Ok(());
+            }
+            _ => return Ok(()),
+        }
+        let heads = state
+            .outboxes
+            .get(&space)
+            .and_then(|outbox| outbox.acknowledged(&by))
+            .map(<[EventId]>::to_vec)
+            .unwrap_or_default();
+        self.settle_puts(&mut state, space, &heads).await
+    }
+
+    /// Makes cached each object of a space that this device put, that an
+    /// always-on peer was seen to hold, and that a unit in the past of
+    /// `heads` names, which a peer acknowledged: the peer holds the bytes
+    /// and a unit that refers to them, so the device no longer holds the
+    /// only copy.
+    ///
+    /// # Errors
+    ///
+    /// The store's.
+    pub(crate) async fn settle_puts(
+        &self,
+        state: &mut State,
+        space: EventId,
+        heads: &[EventId],
+    ) -> Result<()> {
+        let waiting: Vec<[u8; 32]> = state
+            .retained
+            .puts
+            .range((space, [0; 32])..)
+            .take_while(|((of, _), _)| *of == space)
+            .filter(|(_, facts)| facts.at_peer)
+            .map(|((_, id), _)| *id)
+            .collect();
+        if waiting.is_empty() {
+            return Ok(());
+        }
+        let Some(log) = state.replicas.get(&space).and_then(Replica::log) else {
+            return Ok(());
+        };
+        let covered = crate::outbox::past_of(log, heads);
+        // The units that name an object put in an earlier run.
+        let unknown: BTreeSet<[u8; 32]> = waiting
+            .iter()
+            .filter(|id| {
+                state
+                    .retained
+                    .puts
+                    .get(&(space, **id))
+                    .is_some_and(|facts| facts.units.is_none())
+            })
+            .copied()
+            .collect();
+        let mut found: BTreeMap<[u8; 32], Vec<EventId>> = BTreeMap::new();
+        if !unknown.is_empty() {
+            for event in log.events() {
+                if event.kind() != frasil_events::kind::UNIT {
+                    continue;
+                }
+                let Ok(unit) = frasil_units::Unit::from_event(event.clone()) else {
+                    continue;
+                };
+                for locator in unit.body.objects.iter() {
+                    let id = object_id(locator);
+                    if unknown.contains(&id) {
+                        found.entry(id).or_default().push(event.id());
+                    }
+                }
+            }
+        }
+        let mut settled = Vec::new();
+        for id in waiting {
+            let Some(facts) = state.retained.puts.get_mut(&(space, id)) else {
+                continue;
+            };
+            let units = facts
+                .units
+                .get_or_insert_with(|| found.remove(&id).unwrap_or_default());
+            if units.iter().any(|unit| covered.contains(unit)) {
+                settled.push(id);
+            }
+        }
+        for id in settled {
+            let read = self.read_now(state);
+            self.record(state, space, id, Retention::Cached { read })
+                .await?;
+        }
+        Ok(())
     }
 
     /// Notes that a cached object was read: it is the last the device
@@ -687,7 +846,7 @@ impl Engine {
     ///
     /// [`Error::NotAllowed`] while the object must stay: it is Frasil's
     /// own, a read or a fetch is using it, this device put it in a space
-    /// with an always-on peer and the put is not durable yet, or the
+    /// with an always-on peer and no peer is known to hold it yet, or the
     /// device keeps every blob ([`Engine::keep_all_blobs`]) and would
     /// fetch it again at once; the store's and the provider's.
     pub async fn drop_local_object(&self, space: EventId, locator: &Locator) -> Result<()> {
@@ -722,6 +881,16 @@ impl Engine {
                 }
             }
             Some(Stays::Kept) | None => {}
+        }
+        // An object this device put that no peer is known to hold: the
+        // peer of the space is about to take it. With no always-on peer
+        // no party is bound to, and the application decides.
+        if state.retained.get(&(space, object_id(locator))) == Some(Retention::Put)
+            && self.has_peer(&mut state, &space).await
+        {
+            return Err(Error::NotAllowed(
+                "this device put the blob, and no peer holds it yet",
+            ));
         }
         self.drop_stored(&mut state, space, &object_id(locator), true)
             .await
@@ -805,12 +974,12 @@ impl Engine {
     }
 
     /// Whether the device means to hold an object of a blob stream whole
-    /// without being asked again: it has a record of state 1, or the
+    /// without being asked again: it has a record of state 1 or 3, or the
     /// device holds chunks of it with no record, which are kept. Such an
     /// object is fetched by the device itself while it is not whole.
     pub(crate) fn keeps_object(state: &State, space: &EventId, locator: &Locator) -> bool {
         match state.retained.get(&(*space, object_id(locator))) {
-            Some(Retention::Kept) => true,
+            Some(Retention::Kept | Retention::Put) => true,
             Some(Retention::Cached { .. }) => false,
             None => state
                 .replicas

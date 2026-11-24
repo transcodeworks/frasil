@@ -1029,6 +1029,23 @@
       "note": "state 2: the timeline's T of the last read, 90,400, rounded down to a multiple of 3,600"
     },
     {
+      "name": "an object this device put, which no peer is known to hold",
+      "table": 34,
+      "table_name": "retention",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "item": "7f90b09b22bc495e0d7c0392a1cb7374c3796c001393209d9a7a933b9709b3b8",
+      "value": "a10103",
+      "opened": {
+        "1": 3
+      },
+      "address": "64679c30bfabf30f9ae6377aa7b8306e22515a1886bcbeb4e8fda5929c52a8a36d",
+      "plaintext": "000000207f90b09b22bc495e0d7c0392a1cb7374c3796c001393209d9a7a933b9709b3b8a10103",
+      "aad": "66726173696c2f61742d726573742f7265636f72642f76310164679c30bfabf30f9ae6377aa7b8306e22515a1886bcbeb4e8fda5929c52a8a36d",
+      "nonce": "5aba0c1dad7f8718dde3f5107c9038088d5a1078cbd96176",
+      "record": "015aba0c1dad7f8718dde3f5107c9038088d5a1078cbd961768bc7c0f103aa3b2487f4473931f5ca162d6f683c26ea099e0b89043db77d1bdb87a953d8ea3fccf1edb585b80d41f9f71341ae3435741a",
+      "note": "state 3: kept until an always-on peer holds the object and has acknowledged a unit that names it, then cached"
+    },
+    {
       "name": "a checkpoint's record object key, handed by a snapshot",
       "table": 18,
       "table_name": "key",
@@ -1372,11 +1389,20 @@
     {
       "name": "a retention record of an unknown state",
       "address": "64679c30bfabf30f9ae6377aa7b8306e22597272a993eaa1bbc03bb7f66307162b",
-      "record": "017ccade597c063905057f17f651813cd9917024563506aced4b7a4b933c6eb19bef3842fa79a013e9c4ae6b5c6438e807bd16a0d289657073368086679532a30f9d84478a4e18d2414b439eb48a0063280480c839e9",
+      "record": "017ccade597c063905057f17f651813cd9917024563506aced4b7a4b933c6eb19bef3842fa79a013e9c4ae6b5c6438e807bd16a0d289657073368086679532a40f9d84478a4eb5078f7ea3b777c0bab1a0332250263e",
       "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
       "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
       "error": "Malformed",
-      "reason": "state 1 is kept and state 2 cached"
+      "reason": "state 1 is kept, state 2 cached and state 3 put"
+    },
+    {
+      "name": "a put object's retention record with a last read",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e221e624c767c01384dcc93d733917b8b06",
+      "record": "0178438f4a28c5f4de4b3686eb7405e702a5ace905dca3fc123e62b9a26e1b2eeb0e6ca178040b4ee01eb8908ad15285d50ac2a4d3283409014ce2f5e0ed9f01d30361d2e27f46461af500dfda202c063bf4b9e9ec1b",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "key 2 is present exactly with state 2"
     },
     {
       "name": "a kept object's retention record with a last read",

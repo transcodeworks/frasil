@@ -330,8 +330,9 @@ async fn a_blob_this_device_put_stays_until_a_peer_holds_it() {
         .unwrap();
     assert_eq!(
         engine.retention_of(&space, &locator).await.0,
-        BlobState::Cached
+        BlobState::Kept
     );
+    assert_eq!(records(&engine, space).await[0].1, Retention::Put);
     assert!(engine.outbox(&space).await.contains(&unit));
 
     engine.set_blob_cache(0);
@@ -347,17 +348,23 @@ async fn a_blob_this_device_put_stays_until_a_peer_holds_it() {
     ));
     assert!(holds(&engine, space, &locator).await);
 
-    // The peer acknowledges the unit: it took the object before it.
-    engine
-        .acknowledge(space, Acknowledger::Peer([9; 32]), &[unit])
-        .await
-        .unwrap();
-    assert!(!engine.outbox(&space).await.contains(&unit));
+    // The peer answers that it holds the object, then acknowledges the
+    // unit that names it.
+    let peer = Acknowledger::Peer([9; 32]);
+    engine.object_at_peer(space, peer, &locator).await.unwrap();
     engine.evict().await.unwrap();
     assert!(
-        !holds(&engine, space, &locator).await,
-        "cached once durable"
+        holds(&engine, space, &locator).await,
+        "no unit at the peer names it yet"
     );
+    engine.acknowledge(space, peer, &[unit]).await.unwrap();
+    assert!(!engine.outbox(&space).await.contains(&unit));
+    assert!(
+        matches!(records(&engine, space).await[0].1, Retention::Cached { .. }),
+        "cached once a peer holds it"
+    );
+    engine.evict().await.unwrap();
+    assert!(!holds(&engine, space, &locator).await);
 }
 
 #[tokio::test]
@@ -583,4 +590,112 @@ async fn the_budget_bounds_what_a_space_kept_in_memory_holds() {
         engine.retain(space, &b, true).await,
         Err(Error::NotAllowed(_))
     ));
+}
+
+/// A member's acknowledgement makes a unit durable in a space whose peer
+/// has not acknowledged since the device opened, and says nothing of who
+/// holds the unit's objects: a blob this device put stays, across a
+/// reopen too, until a peer holds it.
+#[tokio::test]
+async fn a_members_acknowledgement_never_releases_a_blob_this_device_put() {
+    let medium = Medium::new();
+    let (engine, sealed, space) = medium.device().await;
+    // The space has an always-on peer, which is not reached.
+    engine
+        .keep_peer_hints(&space, &["https://peer.example".to_owned()])
+        .await
+        .unwrap();
+    let stream = engine.new_stream(frasil_adapter_blobs::TYPE).unwrap();
+    let (unit, locator) = engine
+        .put_blob(space, &stream, Some("a file"), &vec![7; SIZE])
+        .await
+        .unwrap();
+    // A member connected directly acknowledges the unit, which leaves the
+    // outbox. It holds nothing of the blob.
+    engine
+        .acknowledge(space, Acknowledger::Member([8; 32]), &[unit])
+        .await
+        .unwrap();
+    assert!(!engine.outbox(&space).await.contains(&unit));
+    engine.set_blob_cache(0);
+    engine.evict().await.unwrap();
+    assert!(
+        holds(&engine, space, &locator).await,
+        "no party that stores objects holds it"
+    );
+    assert!(matches!(
+        engine.drop_local_object(space, &locator).await,
+        Err(Error::NotAllowed(_))
+    ));
+
+    // Nor after a reopen, when the peer acknowledges the unit, which
+    // another member may have sent it without the object.
+    let engine = medium.reopen(engine, &sealed).await;
+    engine.set_blob_cache(0);
+    let peer = Acknowledger::Peer([9; 32]);
+    engine.acknowledge(space, peer, &[unit]).await.unwrap();
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &locator).await);
+    assert_eq!(records(&engine, space).await[0].1, Retention::Put);
+    assert_eq!(
+        engine.retention_of(&space, &locator).await.0,
+        BlobState::Kept
+    );
+
+    // The peer holds the object, by its answer to an upload: the device
+    // no longer holds the only copy, and the object is the cache's.
+    engine.object_at_peer(space, peer, &locator).await.unwrap();
+    assert_eq!(
+        engine.retention_of(&space, &locator).await.0,
+        BlobState::Cached
+    );
+    engine.evict().await.unwrap();
+    assert!(!holds(&engine, space, &locator).await);
+}
+
+/// A space that gains its peer after the put, and loses it again: the
+/// blob stays until a peer holds it and a unit that names it.
+#[tokio::test]
+async fn a_blob_put_before_the_space_had_a_peer_stays_until_one_holds_it() {
+    let medium = Medium::new();
+    let (engine, _, space) = medium.device().await;
+    let stream = engine.new_stream(frasil_adapter_blobs::TYPE).unwrap();
+    let (unit, locator) = engine
+        .put_blob(space, &stream, None, &vec![7; SIZE])
+        .await
+        .unwrap();
+    engine
+        .acknowledge(space, Acknowledger::Member([8; 32]), &[unit])
+        .await
+        .unwrap();
+    engine.set_blob_cache(0);
+    engine
+        .keep_peer_hints(&space, &["https://peer.example".to_owned()])
+        .await
+        .unwrap();
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &locator).await);
+    // A peer that acknowledged other events holds nothing of this one.
+    let peer = Acknowledger::Peer([9; 32]);
+    engine.object_at_peer(space, peer, &locator).await.unwrap();
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &locator).await);
+    // Kept by the application meanwhile, it is not made cached.
+    let (other_unit, other) = engine
+        .put_blob(space, &stream, None, &vec![8; SIZE])
+        .await
+        .unwrap();
+    engine.retain(space, &other, true).await.unwrap();
+    engine.object_at_peer(space, peer, &other).await.unwrap();
+    engine
+        .acknowledge(space, peer, &[other_unit])
+        .await
+        .unwrap();
+    engine.evict().await.unwrap();
+    assert!(
+        !holds(&engine, space, &locator).await,
+        "its unit is covered"
+    );
+    assert!(holds(&engine, space, &other).await, "the application's");
+    assert_eq!(engine.retention_of(&space, &other).await.0, BlobState::Kept);
 }

@@ -159,7 +159,7 @@ aad       = "frasil/at-rest/record/v1" || u8(1) || address
 | `0x1f` | `announced` | log | a member's device ID (32) | 32 bytes: the next member endpoint key that member announced in the space ([ext-next-endpoints.md](ext-next-endpoints.md)); kept only beside an `endpoint` record of the same member |
 | `0x20` | `host` | log | 1 to 256 bytes | what a device that hosts the space as an always-on peer keeps ([peers.md](peers.md)) |
 | `0x21` | `dropped` | log | event ID (32) | `{1: origin, 2: kind, 3: height}`, key 2 present exactly with origin 1, key 3 only with origin 1: an event of the log that is in the past of its kept checkpoint and that this device does not hold (section 3.4, "Forgetting before a checkpoint"): origin 1, the device held it and dropped it, with its envelope's kind and, in a space's log, when it is a parent of an event the log keeps of that past, its height, from 1 ([events.md](events.md), "Placement and order"); origin 2, a peer answered `Missing` for it when the device fetched it as a parent, at a device that started from a checkpoint ([roster.md](roster.md), section 3.15.6) |
-| `0x22` | `retention` | log | object ID (32) | `{1: state, 2: read}`, key 1 present, key 2 present exactly with state 2: how long this device keeps an object it stores as sealed chunks (section 2.9): state 1, kept until the application drops it; state 2, cached within the device's budget, with the timeline's `T` ([overview.md](overview.md), section 6.3) at which the device last read the object, rounded down to a multiple of 3,600 |
+| `0x22` | `retention` | log | object ID (32) | `{1: state, 2: read}`, key 1 present, key 2 present exactly with state 2: how long this device keeps an object it stores as sealed chunks (section 2.9): state 1, kept until the application drops it; state 2, cached within the device's budget, with the timeline's `T` ([overview.md](overview.md), section 6.3) at which the device last read the object, rounded down to a multiple of 3,600; state 3, put by this device, and kept until an always-on peer holds it |
 
 - Every other code is `Malformed`. Device-wide tables appear only under 16
   zero bytes, and log tables only under a log's scope tag. An
@@ -347,13 +347,14 @@ objects of a space's Blobs streams ([adapter-blobs.md](adapter-blobs.md))
 as a cache: it fetches an object when the application reads it, and drops
 whole objects again to stay within a **budget**, a number of stored bytes
 that the application sets for the device. A `retention` record (section
-2.4) says, for one object the device stores as sealed chunks, which of two
-states it is in:
+2.4) says, for one object the device stores as sealed chunks, which of
+three states it is in:
 
 | State | Name | Meaning |
 |---|---|---|
 | 1 | kept | the object stays until the application drops it; the device never drops it by itself |
 | 2 | cached | the object counts against the budget, and the device drops it when the budget is full (section 3.10) |
+| 3 | put | this device sealed the object, and knows of no always-on peer that holds it: the object stays as a kept one does, and the device makes it cached once a peer holds it (section 3.10, "An object the device put") |
 
 - **No record means kept.** An object that has parts and no `retention`
   record is kept. A store that a client without this table wrote holds no
@@ -363,10 +364,10 @@ states it is in:
   read longest ago. It is the timeline's `T`, which survives a restart,
   rounded down to a multiple of 3,600, so that reading an object writes
   its record at most once an hour.
-- **A record of state 1 with no part** says that the device means to keep
-  an object it does not hold whole yet: it fetches the object by itself, as
-  it fetches Frasil's own. A record of state 2 with no part says nothing,
-  and the device deletes it.
+- **A record of state 1 or 3 with no part** says that the device means to
+  keep an object it does not hold whole yet: it fetches the object by
+  itself, as it fetches Frasil's own. A record of state 2 with no part says
+  nothing, and the device deletes it.
 - Retention is this device's choice about its own disk, like the policy of
   section 2.8. It is never synced, nothing on the wire shows it, and
   another device of the same person may choose otherwise.
@@ -775,24 +776,46 @@ it is a member. Re-keying after an erasure (section 3.4) seals
 **Recording.** A device that fetches an object into its cache commits the
 object's `retention` record of state 2 before, or in the commit of, the
 first part it stores of it, so that a crash between the two leaves no part
-that counts as kept. A device that seals an object itself MAY commit the
-record after the parts: until it does, the object is kept. When the
-application asks to keep an object, the device commits a record of state
-1, replacing one of state 2. A read of a cached object puts its record
-again when key 2 changes.
+that counts as kept. A device that seals an object itself commits a record
+of state 3 for it, and MAY commit the record after the parts: until it
+does, the object is kept. An object that has a record when the device
+seals it again keeps that record. When the application asks to keep an
+object, the device commits a record of state 1, replacing one of state 2
+or 3. A read of a cached object puts its record again when key 2 changes.
+
+**An object the device put.** A record of state 3 stands while this device
+may hold the only copy of the object. Whether a unit that names the object
+is durable does not say otherwise: an acknowledgement is about events
+alone ([units.md](units.md), section 3.13), a peer stores a unit ahead of
+its object ([peers.md](peers.md), "A unit ahead of its object"), and in a
+space whose peer the device has not heard since it opened a member's
+acknowledgement makes the unit durable. The device replaces the record by
+one of state 2 only once both hold:
+
+1. an always-on peer of the space answered that it holds the object
+   whole, to this device's upload of it ([units.md](units.md), section
+   3.4, item 7); and
+2. that peer acknowledged heads with a unit that names the object in
+   their past, so that the object is referenced at the peer and is not
+   collected there as an orphan.
+
+Until then the object is never dropped for the budget, whether the space
+has an always-on peer, is paused, or gains or loses its peer meanwhile. A
+device that does not know which of its units name the object, after a
+restart, reads them from its log. In a space with no always-on peer the
+record stays of state 3, and the object stays until the application drops
+it.
 
 **What is never dropped.** To stay within its budget a device drops only
 an object whose `retention` record has state 2, and never:
 
-- an object with no record, or with a record of state 1;
+- an object with no record, or with a record of state 1 or 3;
 - one of Frasil's own objects, or a checkpoint's record object (section
   2.9), whatever record it has;
 - an object that a unit names which a signer of this device signed and
   which is not yet durable ([units.md](units.md), section 3.13): the
-  device may hold its only copy. In a space with no always-on peer a
-  member's acknowledgement makes the unit durable while that member may
-  not hold the object yet, so a device records an object it puts there as
-  kept;
+  device may hold its only copy. A durable unit says nothing of its
+  objects, which is why an object the device put has a record of state 3;
 - an object that a read or a transfer on the device is using.
 
 **Dropping** an object, for the budget or because the application asks,
@@ -804,9 +827,10 @@ locator ([units.md](units.md), section 3.3, step 0): it never wrote any of
 that (section 3.8), and what it later holds of the object is checked
 again from the start. The application may drop a kept object. It may not
 drop one of Frasil's own objects or one in use, nor, in a space with an
-always-on peer, an object of a unit that is not yet durable, which the
-peer is about to take. In a space with no always-on peer the application
-decides: no party there is bound to take the object.
+always-on peer, an object of a unit that is not yet durable or an object
+whose record has state 3, which the peer is about to take. In a space
+with no always-on peer the application decides: no party there is bound
+to take the object.
 
 **After a drop** the device holds nothing of the object and treats it as
 absent by its own choice: it does not fetch the object again by itself,
@@ -876,7 +900,7 @@ finds it held or not held; neither fails.
   | `timeline` | The device starts from the older reading. With a wall clock known at that reading and now, the time since counts as time off and the timeline is about where it was. Without one, the timeline goes back by the time between the two readings: a rule that waits on the lower estimate waits longer by that much. The run number repeats one already used, so the upper estimate between a reading of that earlier run and now, with no wall clock on either side, is taken as within one run ([overview.md](overview.md), section 6.4) and can come out short: a rule that stops after a time stops later, by at most the time rolled back. | Nothing |
   | `state` | The log's older base: events that rest on the newer base lack their parents until sync or a snapshot brings them again. An older last completed sync: under [ext-guests.md](ext-guests.md)'s online-only policy the device stops writing sooner, until it syncs. A leave request no longer recorded: a guest writes again under its own write rule, until an administrator ends its grant. The personal space no longer marked: the device finds it again from the space's recovery entries. A claim marked again with its `claim` record present changes nothing; with it gone, the device forgets the log as a claim that never finished. | Nothing |
   | `ack` | The device remembers less of what that peer or member acknowledged: a party that then serves less than it last acknowledged, but no less than the record put back says, is not reported `RolledBack` ([units.md](units.md), section 3.13). Which events are durable comes from the `outbox` records, not from `ack`. | Nothing |
-  | `retention` | The object's older state. A record of state 2 put back over one of state 1 lets the device drop an object the application asked to keep; the object was cached before, so another party served it or took it. A record put back for an object dropped since has no part: state 1 fetches the object again, state 2 is deleted. A record deleted alone leaves its object kept. | Nothing |
+  | `retention` | The object's older state. A record of state 2 put back over one of state 1 lets the device drop an object the application asked to keep; the object was cached before, so another party served it or took it. A record of state 3 put back over one of state 2 keeps an object that a peer holds until the device uploads it again. No record of state 2 is older than one of state 3 for the same put, so none is put back over it. A record put back for an object dropped since has no part: state 1 or 3 fetches the object again, state 2 is deleted. A record deleted alone leaves its object kept. | Nothing |
 
   Other rolled-back or deleted records lose data in the same way, never
   forge it.
@@ -948,7 +972,7 @@ finds it held or not held; neither fails.
   with its administering devices (key 9); `dropped` records
   of origin 1,
   with and without a height, and of origin 2; a `retention` record of each
-  state. `record_refusals`: twenty-four
+  state. `record_refusals`: twenty-five
   records refused by section 3.2, each with the log key it is opened
   under, among them a moved record, another log's key or scope, an item
   that is not the address's, a claim naming another space, `dropped`
@@ -957,7 +981,7 @@ finds it held or not held; neither fails.
   both keys 7 and 8, an attribution out of order, and an empty label,
   a `state` record whose key 9 is not alone, and `retention` records of
   an unknown state, of state 1 with a last read, of state 2 without one,
-  and with no state.
+  of state 3 with a last read, and with no state.
 - `mark`: a mark, and four refusals, each with the mark and the device ID
   it is opened with.
 - `continuity`: section 3.5's nine outcomes, from agreeing head and mark to

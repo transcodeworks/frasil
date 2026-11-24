@@ -4011,6 +4011,8 @@ impl Driver {
         };
         attached.uploading.remove(&locator);
         attached.uploaded.insert(locator);
+        // An object this device put has another holder now.
+        self.device.object_at_peer(space, self.by, &locator).await?;
         for reply in attached.upload_answers.remove(&locator).unwrap_or_default() {
             let _ = reply.send(true);
         }
