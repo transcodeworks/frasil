@@ -539,3 +539,34 @@ async fn a_cancelled_read_that_stores_nothing_leaves_nothing_stored() {
     });
     drop(reader);
 }
+
+/// A blob put again after the application dropped it, on a connection
+/// that uploaded its bytes before: the unit goes with no upload, since the
+/// peer answered for the object already, so no answer comes with it. The
+/// device offers the object to the peer again, and the blob is released
+/// on that answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blob_put_again_on_the_same_connection_is_released_once_the_peer_answers_again() {
+    let peer = spawn_loopback().await.unwrap();
+    let (_alice, space, files) = alice(&peer).await;
+    let bytes = vec![6; SIZE];
+    let id = files.put(Some("a file"), &bytes).await.unwrap();
+    within(async {
+        while state(&files, id).await != BlobState::Cached {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    files.drop_local(id).await.unwrap();
+    assert_eq!(state(&files, id).await, BlobState::Absent);
+
+    let again = files.put(Some("the same file"), &bytes).await.unwrap();
+    assert_eq!(state(&files, again).await, BlobState::Kept);
+    within(space.flush()).await.unwrap();
+    within(async {
+        while state(&files, again).await != BlobState::Cached {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+}

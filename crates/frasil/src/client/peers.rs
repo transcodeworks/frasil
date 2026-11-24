@@ -458,6 +458,21 @@ impl Peer {
         }
     }
 
+    /// Offers again, in each space the connection may store in, the blobs
+    /// this device put that no peer is known to hold (at-rest.md,
+    /// "Retention", an object the device put).
+    pub(super) fn offer_puts(&self) {
+        let status = self.link.handle.status();
+        if status.closed.is_some() {
+            return;
+        }
+        for (space, rights) in &status.granted {
+            if rights.contains(&frasil_transport::codes::Right::Store) {
+                self.link.handle.offer_puts(*space);
+            }
+        }
+    }
+
     /// Presents a space on the connection, once.
     pub(super) fn present(&self, space: EventId) {
         let fresh = self

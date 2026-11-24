@@ -218,6 +218,14 @@ impl PeerHandle {
         let _ = self.commands.send(Command::Fetch(space));
     }
 
+    /// Uploads again the objects this device put in a space that no peer
+    /// is known to hold and no unit waiting to be sent names, so that the
+    /// peer answers whether it holds each (at-rest.md, "Retention", an
+    /// object the device put). A device calls it at its upkeep.
+    pub fn offer_puts(&self, space: EventId) {
+        let _ = self.commands.send(Command::OfferPuts(space));
+    }
+
     /// Asks the peer for a stream's units from its latest snapshot
     /// (units.md, "Sync", by stream): the peer answers `StreamHeads`, then
     /// the snapshot unit and the units after its cover.
@@ -408,6 +416,9 @@ enum Command {
     Resume(EventId),
     Seek(EventId),
     Fetch(EventId),
+    /// Uploads again the objects this device put that no peer is known to
+    /// hold.
+    OfferPuts(EventId),
     Upload(EventId, Locator, tokio::sync::oneshot::Sender<bool>),
     WantStream(EventId, StreamId),
     Mailbox(MailboxAsk, MailboxReply),
@@ -595,6 +606,9 @@ struct Attached {
     streams: Option<BTreeSet<StreamId>>,
     /// Whether the outbox was offered under the store right.
     offered_outbox: bool,
+    /// Whether the objects this device put that no peer is known to hold
+    /// were offered on this transport (at-rest.md, "Retention").
+    offered_puts: bool,
     /// Whether this connection is creating the space at the peer.
     creating: bool,
     /// Merged states a merge statement was sent for.
@@ -2233,6 +2247,7 @@ impl Driver {
                 self.attach(space).await
             }
             Command::Fetch(space) => self.fetch_missing(space).await,
+            Command::OfferPuts(space) => self.offer_puts(space, false).await,
             Command::Upload(space, locator, reply) => {
                 self.upload_answering(space, locator, reply).await
             }
@@ -2487,6 +2502,7 @@ impl Driver {
                 subscribed: false,
                 streams: None,
                 offered_outbox: false,
+                offered_puts: false,
                 creating: false,
                 merged: BTreeSet::new(),
                 inputs: BTreeSet::new(),
@@ -3183,7 +3199,44 @@ impl Driver {
                     .await?,
             );
         }
-        self.send_sync(space, messages).await
+        self.send_sync(space, messages).await?;
+        let offers = self
+            .spaces
+            .get_mut(&space)
+            .is_some_and(|attached| stores && !std::mem::replace(&mut attached.offered_puts, true));
+        if offers {
+            self.offer_puts(space, true).await?;
+        }
+        Ok(())
+    }
+
+    /// Uploads again the objects this device put in a space whose record
+    /// still says that no peer is known to hold them, and that no unit of
+    /// the outbox names: the peer answers whether it holds each, and the
+    /// device releases those it holds and has acknowledged a unit of
+    /// (at-rest.md, "Retention", an object the device put). It is the
+    /// upload a writer makes before a unit, and no other message.
+    async fn offer_puts(&mut self, space: EventId, connected: bool) -> Result<()> {
+        let stores = self
+            .spaces
+            .get(&space)
+            .is_some_and(|attached| attached.rights.contains(&Right::Store));
+        if !stores || self.paused(&space) || self.transport_ended() {
+            return Ok(());
+        }
+        for locator in self.device.puts_to_offer(space, self.by, connected).await {
+            let Some(attached) = self.spaces.get_mut(&space) else {
+                return Ok(());
+            };
+            if attached.uploading.contains(&locator) {
+                continue;
+            }
+            // What an earlier upload on this connection left is asked
+            // again: the peer may have collected the object since.
+            attached.uploaded.remove(&locator);
+            self.upload(space, locator).await?;
+        }
+        Ok(())
     }
 
     async fn on_refused(&mut self, request: Request, code: String) -> Result<()> {

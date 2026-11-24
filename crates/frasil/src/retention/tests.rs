@@ -1529,3 +1529,65 @@ async fn an_old_answer_does_not_release_a_blob_this_device_put() {
         Some(Retention::Cached { .. })
     ));
 }
+
+/// A blob whose record still says that no peer is known to hold it, with
+/// no unit of it left in the outbox, is offered to the peer again: at each
+/// connection, and at upkeep once in the time an answer counts. So is one
+/// whose release a crash cut short, after the reopen, and the peer's
+/// answer then releases it on the acknowledgement the device kept.
+#[tokio::test]
+async fn a_blob_still_put_with_no_unit_to_send_is_offered_to_the_peer_again() {
+    let medium = Medium::new();
+    let (engine, sealed, space) = medium.device().await;
+    engine
+        .keep_peer_hints(&space, &["https://peer.example".to_owned()])
+        .await
+        .unwrap();
+    let stream = engine.new_stream(frasil_adapter_blobs::TYPE).unwrap();
+    let (unit, locator) = engine
+        .put_blob(space, &stream, Some("a file"), &vec![7; SIZE])
+        .await
+        .unwrap();
+    let peer = Acknowledger::Peer([9; 32]);
+    // Its unit waits in the outbox, and is sent behind its upload.
+    assert!(engine.puts_to_offer(space, peer, true).await.is_empty());
+
+    // The peer acknowledges the unit, which reached it without an answer
+    // for the object that this device heard.
+    engine.acknowledge(space, peer, &[unit]).await.unwrap();
+    assert!(!engine.outbox(&space).await.contains(&unit));
+    assert_eq!(
+        record_of(&engine, space, &locator).await,
+        Some(Retention::Put { keep: false })
+    );
+    assert_eq!(
+        engine.puts_to_offer(space, peer, false).await,
+        vec![locator]
+    );
+    assert!(
+        engine.puts_to_offer(space, peer, false).await.is_empty(),
+        "upkeep asks once in the time an answer counts"
+    );
+    assert_eq!(
+        engine.puts_to_offer(space, peer, true).await,
+        vec![locator],
+        "a connection asks"
+    );
+    medium.clock.advance(super::PUT_ANSWER + 1);
+    assert_eq!(
+        engine.puts_to_offer(space, peer, false).await,
+        vec![locator]
+    );
+
+    let engine = medium.reopen(engine, &sealed).await;
+    assert_eq!(
+        engine.puts_to_offer(space, peer, false).await,
+        vec![locator]
+    );
+    engine.object_at_peer(space, peer, &locator).await.unwrap();
+    assert!(matches!(
+        record_of(&engine, space, &locator).await,
+        Some(Retention::Cached { .. })
+    ));
+    assert!(engine.puts_to_offer(space, peer, true).await.is_empty());
+}

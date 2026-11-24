@@ -299,8 +299,11 @@ snapshots; and a blob that a read or a fetch is using. A blob this device
 put is kept, and `blobs.local(id)` says so, until a peer of the space has
 answered that it holds the bytes and has acknowledged the change that put
 the blob: the blob is cached from then on, unless the application asked to
-keep it. Nothing else releases it: not another member's acknowledgement,
-not a reopen, not a paused space. In a space with no always-on peer no
+keep it. Nothing else releases it: not another member's or another peer's
+acknowledgement, not a reopen, not a paused space. A blob that is still
+kept so once its change is durable, as when the change reached the peer
+through another device, is offered to the peer again when the device
+connects and from time to time, until the peer answers that it holds it. In a space with no always-on peer no
 other party is known to hold the bytes, so a blob put there is kept until
 the application drops it. `drop_local` refuses, with `NotAllowed`, a blob in
 use and, in a space with an always-on peer, a blob this device put that no

@@ -852,8 +852,10 @@ peer each object of state 3 that no unit waiting for that peer's
 acknowledgement names, when it is granted the right to store in the space
 on a connection, and at upkeep while no answer of that peer counts under
 item 1. The upload is the one a writer makes before a unit
-([units.md](units.md), section 3.4, item 7): a peer that holds the object
-answers so with nothing sent again, and one that does not takes it.
+([units.md](units.md), section 3.4, item 7), and no other message: a peer
+that holds the object answers so, and one that does not takes it. The
+device makes it once for each connection, and at upkeep no more often
+than an answer counts.
 
 **What is never dropped.** To stay within its budget a device drops only
 an object whose `retention` record has state 2, and never:

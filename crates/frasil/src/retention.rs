@@ -98,9 +98,14 @@ struct PutFacts {
     /// The units of this device that name it, once known: those written
     /// since the device opened, or all the log holds once it was read.
     units: Option<Vec<EventId>>,
+    /// The locators those units name it by.
+    locators: BTreeSet<Locator>,
     /// The always-on peers that answered that they hold the object whole,
     /// each with the timeline's reading at its latest answer.
     at_peer: Answers,
+    /// The always-on peers the device offered the object to again, each
+    /// with the timeline's reading at the latest offer.
+    offered: Answers,
 }
 
 /// The peers that answered that they hold an object, and when.
@@ -948,6 +953,7 @@ impl Engine {
             self.record(state, space, key.1, put).await?;
         }
         let facts = state.retained.puts.entry(key).or_default();
+        facts.locators.insert(*locator);
         for (by, at) in taken {
             let known = facts.at_peer.entry(by).or_insert(at);
             *known = (*known).max(at);
@@ -1003,6 +1009,122 @@ impl Engine {
         self.settle_puts(&mut state, space, by).await
     }
 
+    /// Finds, for each object of a space that this device put in an
+    /// earlier run, the units that name it and the locators they name it
+    /// by, from the space's log: read once, when first needed.
+    fn learn_puts(state: &mut State, space: EventId) {
+        let State {
+            retained, replicas, ..
+        } = state;
+        let unknown: BTreeSet<[u8; 32]> = retained
+            .puts
+            .range((space, [0; 32])..)
+            .take_while(|((of, _), _)| *of == space)
+            .filter(|(_, facts)| facts.units.is_none())
+            .map(|((_, id), _)| *id)
+            .collect();
+        if unknown.is_empty() {
+            return;
+        }
+        let Some(log) = replicas.get(&space).and_then(Replica::log) else {
+            return;
+        };
+        for id in &unknown {
+            if let Some(facts) = retained.puts.get_mut(&(space, *id)) {
+                facts.units = Some(Vec::new());
+            }
+        }
+        for event in log.events() {
+            if event.kind() != frasil_events::kind::UNIT {
+                continue;
+            }
+            let Ok(unit) = frasil_units::Unit::from_event(event.clone()) else {
+                continue;
+            };
+            for locator in unit.body.objects.iter() {
+                let id = object_id(locator);
+                if unknown.contains(&id)
+                    && let Some(facts) = retained.puts.get_mut(&(space, id))
+                {
+                    facts.units.get_or_insert_default().push(event.id());
+                    facts.locators.insert(*locator);
+                }
+            }
+        }
+    }
+
+    /// The objects of a space to upload to the always-on peer `by` again
+    /// (at-rest.md, "Retention", an object the device put): those this
+    /// device put and holds whole, whose record still says so, that no
+    /// unit of the outbox names, and for which no answer of `by` counts.
+    /// A unit of the outbox is sent behind the upload of its objects, so
+    /// its objects need no other. Such a record stands after a crash
+    /// between the peer's acknowledgement and the release, when the unit
+    /// reached the peer through another device, and when the device put
+    /// again bytes the connection had uploaded before. `connected` says
+    /// the connection was just granted the space: otherwise an object
+    /// offered to `by` within [`PUT_ANSWER`] is left, so that upkeep asks
+    /// a peer that gives no answer once in that long.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) async fn puts_to_offer(
+        &self,
+        space: EventId,
+        by: crate::outbox::Acknowledger,
+        connected: bool,
+    ) -> Vec<Locator> {
+        let mut state = self.lock().await;
+        let none = state
+            .retained
+            .puts
+            .range((space, [0; 32])..)
+            .next()
+            .is_none_or(|((of, _), _)| *of != space);
+        if none {
+            return Vec::new();
+        }
+        let now = self.timeline_now(&mut state);
+        Self::refresh_staying(&mut state, &space);
+        Self::learn_puts(&mut state, space);
+        let State {
+            retained, replicas, ..
+        } = &mut *state;
+        let Some(replica) = replicas.get(&space) else {
+            return Vec::new();
+        };
+        let pending = retained
+            .staying
+            .get(&space)
+            .map(|staying| staying.pending.clone())
+            .unwrap_or_default();
+        let counts = |at: Option<&u64>| at.is_some_and(|at| now.saturating_sub(*at) <= PUT_ANSWER);
+        let mut offer = Vec::new();
+        for ((_, id), facts) in retained
+            .puts
+            .range_mut((space, [0; 32])..)
+            .take_while(|((of, _), _)| *of == space)
+        {
+            if pending.contains(id)
+                || counts(facts.at_peer.get(&by))
+                || (!connected && counts(facts.offered.get(&by)))
+            {
+                continue;
+            }
+            let whole = facts
+                .locators
+                .iter()
+                .find(|locator| replica.holds_object(locator) && !replica.is_held(locator))
+                .copied();
+            if let Some(locator) = whole {
+                facts.offered.insert(by, now);
+                offer.push(locator);
+            }
+        }
+        offer
+    }
+
     /// Releases each object of a space that this device put, that the
     /// always-on peer `by` answered that it holds no longer ago than
     /// [`PUT_ANSWER`], and that a unit names which is in the past of the
@@ -1051,44 +1173,17 @@ impl Engine {
         if covered.is_empty() {
             return Ok(());
         }
-        // The units that name an object put in an earlier run.
-        let unknown: BTreeSet<[u8; 32]> = waiting
-            .iter()
-            .filter(|id| {
-                state
-                    .retained
-                    .puts
-                    .get(&(space, **id))
-                    .is_some_and(|facts| facts.units.is_none())
-            })
-            .copied()
-            .collect();
-        let mut found: BTreeMap<[u8; 32], Vec<EventId>> = BTreeMap::new();
-        if !unknown.is_empty() {
-            for event in log.events() {
-                if event.kind() != frasil_events::kind::UNIT {
-                    continue;
-                }
-                let Ok(unit) = frasil_units::Unit::from_event(event.clone()) else {
-                    continue;
-                };
-                for locator in unit.body.objects.iter() {
-                    let id = object_id(locator);
-                    if unknown.contains(&id) {
-                        found.entry(id).or_default().push(event.id());
-                    }
-                }
-            }
-        }
+        Self::learn_puts(state, space);
         let mut settled = Vec::new();
         for id in waiting {
-            let Some(facts) = state.retained.puts.get_mut(&(space, id)) else {
+            let Some(facts) = state.retained.puts.get(&(space, id)) else {
                 continue;
             };
-            let units = facts
+            let names = facts
                 .units
-                .get_or_insert_with(|| found.remove(&id).unwrap_or_default());
-            if units.iter().any(|unit| covered.contains(unit)) {
+                .as_ref()
+                .is_some_and(|units| units.iter().any(|unit| covered.contains(unit)));
+            if names {
                 settled.push(id);
             }
         }

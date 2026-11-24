@@ -1548,6 +1548,11 @@ fn start_upkeep(inner: &Arc<Inner>) {
                         peer.present(*space);
                     }
                 }
+                // The blobs this device put that no peer is known to hold
+                // yet, and that no change waiting to be sent names.
+                for peer in peers.iter().chain(&inner.moves.all_scoped()) {
+                    peer.offer_puts();
+                }
                 // This device's own skeleton events that a failed
                 // administration connection left, once more.
                 let device = Device {
