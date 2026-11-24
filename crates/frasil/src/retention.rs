@@ -9,10 +9,16 @@
 //!
 //! An object this device sealed is put: it stays as a kept one does while
 //! no always-on peer is known to hold it, since this device may hold its
-//! only copy, and becomes cached once a peer holds it and has acknowledged
-//! a unit that names it. Whether a unit is durable says nothing of that: a
-//! member's acknowledgement makes a unit durable in a space whose peer has
-//! not been heard, and covers events alone.
+//! only copy. It is released once one peer has answered that it holds the
+//! object and that same peer has acknowledged a unit that names it, while
+//! the answer still counts ([`PUT_ANSWER`]): cached from then on, or kept
+//! if the application asked to keep it or it was kept before the put.
+//! That the application asked to keep it never takes away that it is put:
+//! the record carries both. Whether a unit is durable says nothing of
+//! who holds its objects: a member's acknowledgement makes a unit durable
+//! in a space whose peer has not been heard, and covers events alone. An
+//! object still put with no unit left to send is offered to a peer again
+//! ([`Engine::puts_to_offer`]).
 //!
 //! [`Engine::must_stay`] is the one place that says what the device never
 //! drops by itself: Frasil's own objects, an object of a unit this device
