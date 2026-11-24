@@ -1051,3 +1051,125 @@ async fn a_stored_header_gives_no_size_before_a_chunk_opens_under_it() {
     let end = read_again(&absent, &mut reader, absent.bytes.len() as u64, 5).await;
     assert!(end.is_empty());
 }
+
+/// Chunk `index` of the blob sealed again by a holder of its key, under
+/// the same header, with other plaintext of the same length.
+async fn substituted(absent: &Absent, index: u64) -> ObjectPart {
+    use frasil_units::objects::{ObjectKeys, seal_chunk};
+    let key = {
+        let state = absent.engine.lock().await;
+        absent.engine.sealing(&state, &absent.of).unwrap().1
+    };
+    let keys = ObjectKeys::of(&key);
+    let id: [u8; 32] = absent.locator[..32].try_into().unwrap();
+    let object_key = keys.object_key(&id);
+    let from = (index * CHUNK) as usize;
+    let plain: Vec<u8> = absent.bytes[from..(from + CHUNK_BYTES).min(absent.bytes.len())]
+        .iter()
+        .map(|byte| byte ^ 0x55)
+        .collect();
+    let size = absent.bytes.len() as u64;
+    ObjectPart {
+        index,
+        chunk: seal_chunk(&absent.of, &keys, &object_key, &id, size, index, &plain).sealed,
+        ..absent.parts[index as usize].clone()
+    }
+}
+
+/// Reads at `offset` while `part` is sent for the chunk asked for.
+async fn read_with(
+    absent: &Absent,
+    reader: &mut BlobReader,
+    offset: u64,
+    part: &ObjectPart,
+) -> crate::Result<Vec<u8>> {
+    let mut buf = vec![0u8; 10];
+    let read = {
+        let reading = reader.read_at(offset, &mut buf);
+        tokio::pin!(reading);
+        loop {
+            tokio::select! {
+                read = &mut reading => break read,
+                () = tokio::time::sleep(Duration::from_millis(5)) => {
+                    if absent.asked().iter().any(|(at, _)| *at == part.index) {
+                        absent.engine.receive_part(absent.of, part.clone()).await.unwrap();
+                    }
+                }
+            }
+        }
+    };
+    read.map(|read| buf[..read].to_vec())
+}
+
+/// A reader that stores nothing reads the blob in order and is whole. It
+/// then reads a chunk again, which its window let go, and a holder of the
+/// key serves another validly sealed chunk at that place: the reader
+/// gives none of it, fails, is whole no longer, and the application is
+/// told.
+#[tokio::test]
+async fn a_chunk_read_again_after_whole_must_be_the_one_given() {
+    let absent = absent().await;
+    let mut events = absent.device.events();
+    let mut reader = absent
+        .blobs
+        .open_reader(absent.id, &Read::new().uncached())
+        .await
+        .unwrap();
+    reader.set_read_ahead(0);
+    let mut at = 0;
+    while at < absent.bytes.len() {
+        at += absent.read(&mut reader, at as u64, 400_000).await.len();
+    }
+    assert_eq!(reader.verified(), Verified::Whole);
+    // The same chunk again is the one given: the reader stays whole.
+    let again = absent.read(&mut reader, CHUNK + 5, 10).await;
+    assert_eq!(again, absent.bytes[CHUNK as usize + 5..CHUNK as usize + 15]);
+    assert_eq!(reader.verified(), Verified::Whole);
+    absent.read(&mut reader, 3 * CHUNK, 10).await;
+    let other = substituted(&absent, 1).await;
+    let failed = read_with(&absent, &mut reader, CHUNK + 5, &other).await;
+    assert_eq!(
+        failed.unwrap_err().class_name(),
+        Some("ObjectMismatch"),
+        "bytes the whole-object checks never saw"
+    );
+    assert_eq!(reader.verified(), Verified::Chunks);
+    let failed = reader.read_at(0, &mut [0u8; 10]).await.unwrap_err();
+    assert_eq!(failed.class_name(), Some("ObjectMismatch"));
+    let told = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Some(Event::ObjectRefused { blob, .. }) = events.next().await {
+                break blob;
+            }
+        }
+    })
+    .await
+    .expect("the application is told");
+    assert_eq!(told, absent.id);
+}
+
+/// A chunk read out of order from a holder of the key that serves other
+/// bytes, let go by a seek, and fetched again right for the pass in
+/// order: the pass does not make whole a reader that gave the other
+/// bytes.
+#[tokio::test]
+async fn the_pass_in_order_must_read_the_chunks_given() {
+    let absent = absent().await;
+    let mut reader = absent
+        .blobs
+        .open_reader(absent.id, &Read::new().uncached())
+        .await
+        .unwrap();
+    reader.set_read_ahead(0);
+    let other = substituted(&absent, 1).await;
+    let given = read_with(&absent, &mut reader, CHUNK, &other)
+        .await
+        .unwrap();
+    assert_ne!(given, absent.bytes[CHUNK as usize..CHUNK as usize + 10]);
+    let first = absent.read(&mut reader, 0, 10).await;
+    assert_eq!(first, absent.bytes[..10]);
+    let right = absent.parts[1].clone();
+    let failed = read_with(&absent, &mut reader, CHUNK, &right).await;
+    assert_eq!(failed.unwrap_err().class_name(), Some("ObjectMismatch"));
+    assert_eq!(reader.verified(), Verified::Chunks);
+}

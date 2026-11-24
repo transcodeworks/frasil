@@ -114,9 +114,11 @@ pub enum Event {
     /// A blob failed a whole-object check while a
     /// [`BlobReader`](super::BlobReader) of it was open (units.md, 3.3
     /// Reading an object, steps 0 and 7; adapter-blobs.md, 4 Security
-    /// considerations): bytes the reader gave may not be the blob's. Every
-    /// open reader of the blob fails with `ObjectMismatch`, and what the
-    /// device cached of it is dropped. Reported once for each refusal.
+    /// considerations), or a chunk a reader gave came again as other
+    /// bytes, so that step 0 cannot pass on what was given: bytes the
+    /// reader gave may not be the blob's. Every open reader of the blob
+    /// fails with `ObjectMismatch`, and what the device cached of it is
+    /// dropped. Reported once for each refusal.
     #[cfg(feature = "adapter-blobs")]
     ObjectRefused {
         /// The space.

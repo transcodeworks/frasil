@@ -27,6 +27,16 @@
 //! [`Event::ObjectRefused`] tells the application (adapter-blobs.md, 4
 //! Security considerations).
 //!
+//! [`Verified::Whole`] is about the bytes the reader gave. A reader that
+//! holds its chunks in memory lets go of those it leaves, and fetches a
+//! chunk again when it is read again, from whichever party serves it. It
+//! keeps the SHA-256 of each chunk it gave from memory, 32 bytes a chunk,
+//! and takes at that place only the same bytes again: other bytes are not
+//! given, the reader fails with `ObjectMismatch`, and the application is
+//! told. So a reader that seeks back after it became whole stays whole,
+//! and the pass in order counts the chunks that were given. A reader that
+//! reads from the device's store reads the same stored chunk each time.
+//!
 //! **Where fetched chunks go.** As the [`Read`] says. By default into the
 //! device's cache, as parts of a cached blob, and with
 //! [`keep`](Read::keep) as parts of a kept one. With
@@ -443,7 +453,11 @@ impl BlobReader {
     /// Which steps have passed on what the reader gave ([`Verified`]).
     /// [`Verified::Whole`] once the reader has read the blob in order from
     /// its first byte to its last, or once the device holds the blob whole
-    /// in its store and every step ran on it there.
+    /// in its store and every step ran on it there. A reader stays whole
+    /// across seeks: a chunk it reads again from its own memory must be
+    /// the bytes it gave at that place before, or the reader fails with
+    /// `ObjectMismatch` and is whole no longer. One that reads from the
+    /// store reads the same stored chunk each time.
     pub fn verified(&self) -> Verified {
         if self.failed.is_some() {
             return Verified::Chunks;
@@ -467,6 +481,8 @@ impl BlobReader {
 
     /// How many sealed bytes the reader holds in memory, of chunks it
     /// fetched to store nothing: at most `(read_ahead + 1) × 1,048,576`.
+    /// Beside them it keeps 32 bytes for each chunk it gave from memory,
+    /// to know it again.
     pub fn window_bytes(&self) -> usize {
         self.window.holds().0
     }
@@ -834,8 +850,9 @@ impl BlobReader {
                     .refuse_read(&self.space, &self.holders, &locator, class, true)
                     .await;
             }
-            // The bytes read are not the object's: it is not received.
-            Some(WholeFault::Bytes) => {
+            // The bytes read are not the object's, or a chunk given came
+            // again as other bytes: it is not received.
+            Some(WholeFault::Bytes | WholeFault::Given) => {
                 let _ = engine
                     .refuse_read(
                         &self.space,

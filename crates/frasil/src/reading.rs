@@ -507,6 +507,10 @@ pub(crate) enum WholeFault {
     Bytes,
     /// Step 7, once step 0 passed: the object is not what its ID names.
     Object,
+    /// A chunk the reader gave from memory came again as other bytes: at
+    /// most one of the two is the object's, so step 0 cannot pass on what
+    /// was given. Nothing is concluded about the object.
+    Given,
 }
 
 /// An object's plaintext by chunk, any chunk first (units.md, 3.3 Reading
@@ -516,6 +520,13 @@ pub(crate) enum WholeFault {
 /// in order from the first also count for the whole object: their stored
 /// bytes are hashed for step 0 and their plaintext for step 7, and both
 /// run before the last chunk is returned.
+///
+/// A chunk that was not read from what the device stores may be let go
+/// and come again, from any party. The reader keeps the SHA-256 of each
+/// such chunk's sealed bytes, 32 bytes a chunk, and a chunk opened again
+/// at that place must be the same bytes: so the bytes the pass in order
+/// hashed are the bytes returned, whatever was read before, between or
+/// after ([`WholeFault::Given`]).
 pub(crate) struct PartReader {
     locator: Locator,
     /// Opens any chunk.
@@ -534,6 +545,9 @@ pub(crate) struct PartReader {
     /// object's key sealed a chunk under, and its size, which every
     /// chunk's associated data binds, is that holder's.
     opened: bool,
+    /// The digest of the sealed bytes of each chunk returned that was not
+    /// read from what the device stores.
+    given: BTreeMap<u64, [u8; 32]>,
 }
 
 impl core::fmt::Debug for PartReader {
@@ -578,6 +592,7 @@ impl PartReader {
             whole: false,
             fault: None,
             opened: false,
+            given: BTreeMap::new(),
         })
     }
 
@@ -626,8 +641,30 @@ impl PartReader {
     ///
     /// `Malformed` for an index past the last chunk or a chunk of the
     /// wrong length; `Decrypt`; `ObjectMismatch` when the pass in order
-    /// ends with a fault ([`fault`](Self::fault)).
+    /// ends with a fault, or the chunk is not the one returned at that
+    /// place before ([`fault`](Self::fault)).
     pub(crate) fn open(&mut self, index: u64, sealed: &[u8], stored: bool) -> Result<Vec<u8>> {
+        // The chunk returned at this place before, from memory, is the
+        // one that counts: other bytes are not returned, and not hashed.
+        let digest = (!stored || self.given.contains_key(&index))
+            .then(|| frasil_crypto::primitives::sha256(&[sealed]));
+        if let Some(digest) = &digest
+            && self.given.get(&index).is_some_and(|given| given != digest)
+        {
+            self.fault = Some(WholeFault::Given);
+            self.whole = false;
+            return Err(Error::Class("ObjectMismatch"));
+        }
+        let plain = self.open_checked(index, sealed, stored)?;
+        if let Some(digest) = digest.filter(|_| !stored) {
+            self.given.insert(index, digest);
+        }
+        Ok(plain)
+    }
+
+    /// [`open`](Self::open), once the chunk is known to be the one
+    /// returned at its place before, if any was.
+    fn open_checked(&mut self, index: u64, sealed: &[u8], stored: bool) -> Result<Vec<u8>> {
         let Some((pass, hasher, next)) = self.pass.as_mut().filter(|(_, _, next)| *next == index)
         else {
             let plain = self.any.open(index, sealed).map_err(Error::class)?;
