@@ -1954,3 +1954,36 @@ async fn a_put_blob_that_no_unit_names_any_more_is_put_no_longer() {
     engine.drop_local_object(space, &locator).await.unwrap();
     assert!(!holds(&engine, space, &locator).await);
 }
+
+/// A released blob is the cache's from then on, and the cache stays
+/// within its budget: the device drops what it read longest ago.
+#[tokio::test]
+async fn a_blob_released_into_a_full_cache_makes_the_oldest_go() {
+    let medium = Medium::new();
+    let (engine, space, unit, locator) = put_with_peer(&medium).await;
+    let (a, a_parts) = object(&engine, space, b'a', SIZE).await;
+    engine.set_blob_cache(1 << 30);
+    fetch(&engine, space, &a, &a_parts, false).await;
+    let one = engine.blob_cache_usage().await.cached;
+    engine.set_blob_cache(one);
+    medium.clock.advance(7_200);
+    let peer = Acknowledger::Peer([9; 32]);
+    engine.acknowledge(space, peer, &[unit]).await.unwrap();
+    answer(&engine, space, peer, &locator).await;
+    let usage = engine.blob_cache_usage().await;
+    assert!(usage.cached <= usage.budget, "{usage:?}");
+    assert!(!holds(&engine, space, &a).await, "read longest ago");
+    assert!(holds(&engine, space, &locator).await);
+    assert!(matches!(
+        record_of(&engine, space, &locator).await,
+        Some(Retention::Cached { .. })
+    ));
+
+    // One that cannot fit goes itself.
+    let medium = Medium::new();
+    let (engine, space, unit, locator) = put_with_peer(&medium).await;
+    engine.acknowledge(space, peer, &[unit]).await.unwrap();
+    answer(&engine, space, peer, &locator).await;
+    assert!(!holds(&engine, space, &locator).await);
+    assert!(records(&engine, space).await.is_empty());
+}

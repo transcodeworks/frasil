@@ -1221,7 +1221,9 @@ impl Engine {
     }
 
     /// Makes an object this device put kept, where the application asked
-    /// to keep it, and cached otherwise.
+    /// to keep it, and cached otherwise; a cached one is then counted
+    /// against the budget, and the device drops what no longer fits
+    /// (at-rest.md, "Retention", when).
     async fn release_put(&self, state: &mut State, space: EventId, id: [u8; 32]) -> Result<()> {
         let retention = match state.retained.get(&(space, id)) {
             Some(Retention::Put { keep: true }) => Retention::Kept,
@@ -1230,7 +1232,11 @@ impl Engine {
             },
             _ => return Ok(()),
         };
-        self.record(state, space, id, retention).await
+        self.record(state, space, id, retention).await?;
+        if retention == Retention::Kept {
+            return Ok(());
+        }
+        self.evict_in(state, 0, &BTreeSet::new()).await
     }
 
     /// Makes each object of a space put no longer that no unit of the
