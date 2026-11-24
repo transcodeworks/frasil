@@ -142,6 +142,9 @@ pub struct BlobReader {
     /// Whether the entry was compared with the header a chunk opened
     /// under.
     compared: bool,
+    /// Whether what the reader fetches is meant for the cache, by the
+    /// size its entry shows.
+    caches: bool,
     /// The window's count of headers let go when `parts` was made
     /// ([`Window::epoch`]).
     epoch: u64,
@@ -263,6 +266,7 @@ impl Blobs {
         }
         let held_space = engine.object_policy(&space).await == crate::held::ObjectPolicy::Held;
         let mut local = false;
+        let mut caches = false;
         let passing = if file {
             false
         } else if let Some(holder) = whole {
@@ -284,6 +288,7 @@ impl Blobs {
         } else {
             // Recorded as cached when its first part arrives.
             uses.push(engine.want_object(space, &locator, Want::Cache));
+            caches = true;
             false
         };
         let opening = reference.as_ref().map(|(source, key)| ObjectOpening {
@@ -313,6 +318,7 @@ impl Blobs {
             failed: None,
             gave_up: false,
             compared: false,
+            caches,
             epoch: 0,
             _alive,
             entry,
@@ -651,6 +657,11 @@ impl BlobReader {
                         blob: self.id,
                     });
                 }
+                // The entry showed a blob that fits the cache, and the
+                // header one that cannot.
+                if self.caches && streams_through(size, self.engine().blob_cache()) {
+                    self.fall_back().await?;
+                }
                 return Ok(size);
             }
             let standing = self.position / CHUNK_BYTES as u64;
@@ -682,6 +693,34 @@ impl BlobReader {
         } else {
             error
         }
+    }
+
+    /// Reads the rest of the blob through the reader's memory, as a
+    /// reader that stores nothing does: for a blob that cannot fit the
+    /// cache by its header, though its entry showed one that could. What
+    /// the device stored of it for this reader, beside the cache, goes,
+    /// unless another read means it for the cache; the chunk that was
+    /// given from there is known again by its sealed bytes.
+    async fn fall_back(&mut self) -> Result<()> {
+        self.caches = false;
+        let engine = self.engine();
+        let locator = self.entry.object;
+        if let Some((index, _)) = &self.opened
+            && let Some((sealed, true)) = self.sealed(*index).await?
+            && let Some(parts) = self.parts.as_mut()
+        {
+            parts.remember(*index, &sealed);
+        }
+        self.window.pass();
+        // The uses that hold the object, without the one that meant its
+        // parts for the cache: taken before the old ones go.
+        let uses = self
+            .holders
+            .iter()
+            .map(|holder| engine.use_object(*holder, &locator))
+            .collect();
+        self.reading = Some(Reading::holding(self.blobs.clone(), uses));
+        engine.let_go_beside(self.space, &locator).await
     }
 
     /// Fails if the reader failed for good, or its blob was refused.

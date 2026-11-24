@@ -1684,8 +1684,14 @@ async fn a_chunk_sent_again_does_not_hold_a_read_open() {
 /// A blob of this device's space, absent here, whose entry shows `size`
 /// and not the size of its object.
 async fn mislabelled(size: u64) -> Absent {
+    mislabelled_with(Options::new(), size).await
+}
+
+async fn mislabelled_with(options: Options, size: u64) -> Absent {
     use frasil_adapter_blobs::Entry;
-    let device = Device::open(Storage::Memory, &[1; 32]).await.unwrap();
+    let device = Device::open_with(Storage::Memory, &[1; 32], options)
+        .await
+        .unwrap();
     let engine = device.engine().clone();
     let space = device.create_space().await.unwrap();
     let of = space.id().event();
@@ -1836,4 +1842,33 @@ async fn a_second_copy_of_a_chunk_taken_is_no_failure() {
     assert_eq!(absent.send(1).await, Received::Kept);
     assert_eq!(absent.send(1).await, Received::Unwanted);
     assert_eq!(reading.await.unwrap(), 10);
+}
+
+/// An entry that shows less than its object holds, of a blob that cannot
+/// fit the cache: a reader that caches finds the size once a chunk has
+/// opened under the header, and reads the rest through its own memory,
+/// so that the device does not store the blob beside the cache without
+/// bound while the reader is open.
+#[tokio::test]
+async fn a_blob_its_entry_understates_is_not_stored_past_the_budget() {
+    let absent = mislabelled_with(Options::new().blob_cache(2 * CHUNK), 1000).await;
+    let mut reader = absent
+        .blobs
+        .open_reader(absent.id, &Read::new())
+        .await
+        .unwrap();
+    reader.set_read_ahead(1);
+    let mut at = 0;
+    while at < absent.bytes.len() {
+        let piece = absent.read(&mut reader, at as u64, 500_000).await;
+        assert_eq!(piece, absent.bytes[at..at + piece.len()]);
+        at += piece.len();
+        let stored = absent.blobs.local(absent.id).await.unwrap().bytes;
+        assert_eq!(stored, 0, "at {at}");
+        assert!(reader.window_bytes() <= 2 * SEALED_CHUNK_BYTES);
+    }
+    assert_eq!(reader.verified(), Verified::Whole);
+    assert_eq!(absent.state().await, BlobState::Absent);
+    reader.close().await.unwrap();
+    assert_eq!(absent.device.blob_cache_usage().await.cached, 0);
 }

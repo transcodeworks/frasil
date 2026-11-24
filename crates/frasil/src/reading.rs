@@ -471,6 +471,16 @@ impl Window {
             .map_or(0, |held| held.arrived)
     }
 
+    /// Makes the window one of a reader that stores nothing: chunks the
+    /// device does not store are taken into its memory from now on, and
+    /// the requests it makes are not the store's.
+    pub(crate) fn pass(&mut self) {
+        self.passing = true;
+        if let Some(held) = lock(&self.watched.inner).windows.get_mut(&self.number) {
+            held.passing = true;
+        }
+    }
+
     /// Cancels every request the window made: what it holds stays.
     pub(crate) fn cancel(&self) {
         if let Some(held) = lock(&self.watched.inner).windows.get_mut(&self.number) {
@@ -755,6 +765,15 @@ impl PartReader {
             opened: false,
             given: BTreeMap::new(),
         })
+    }
+
+    /// Notes a chunk returned from what the device stored, which is about
+    /// to go from the store: it is known again by its sealed bytes, as a
+    /// chunk returned from memory is.
+    pub(crate) fn remember(&mut self, index: u64, sealed: &[u8]) {
+        self.given
+            .entry(index)
+            .or_insert_with(|| frasil_crypto::primitives::sha256(&[sealed]));
     }
 
     /// Whether a chunk has opened under the header. Until one has, the

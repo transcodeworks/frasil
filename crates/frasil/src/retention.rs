@@ -946,6 +946,36 @@ impl Engine {
         Ok(requested)
     }
 
+    /// Drops what the device stores of a cached object it holds beside
+    /// the cache, with its record, for a reader that found the object
+    /// larger than the whole budget and reads the rest of it through its
+    /// own memory: unless a read still means its parts for the cache, or
+    /// the object is one the device does not drop by itself for another
+    /// reason than its use.
+    ///
+    /// # Errors
+    ///
+    /// The store's.
+    pub(crate) async fn let_go_beside(&self, space: EventId, locator: &Locator) -> Result<()> {
+        let mut state = self.lock().await;
+        let key = (space, object_id(locator));
+        let beside = state.retained.entries.get(&key).is_some_and(|entry| {
+            entry.passing && matches!(entry.retention, Retention::Cached { .. })
+        });
+        if !beside || self.keeps_all_blobs() || self.wanted(&key) == Some(Want::Cache) {
+            return Ok(());
+        }
+        if matches!(
+            self.must_stay(&mut state, &space, locator),
+            Some(Stays::Own | Stays::Pending | Stays::Kept)
+        ) {
+            return Ok(());
+        }
+        self.drop_stored(&mut state, space, &key.1, true)
+            .await
+            .map(drop)
+    }
+
     /// Whether the space's objects have no retention on this device: the
     /// application holds them as files (at-rest.md, "Held objects").
     fn is_held_space(&self, state: &State, space: &EventId) -> bool {
