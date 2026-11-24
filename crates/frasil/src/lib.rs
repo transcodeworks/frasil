@@ -123,7 +123,7 @@
 //! - **Change feeds** say what changed and where ([`Origin`]):
 //!   [`Space::changes`] for one space, [`Records::changes`] for the rows a
 //!   write touched ([`RecordChange`]), [`Blobs::changes`] for blobs added,
-//!   removed, arrived or withdrawn ([`BlobChange`]), and
+//!   removed, arrived, evicted or withdrawn ([`BlobChange`]), and
 //!   [`Drive::changes`](crate::Drive::changes) for a drive's entries.
 //! - **Observed reads** ([`Observed`]) run a read again after a change,
 //!   take changes that arrive together in one read, and tell observers
@@ -134,6 +134,17 @@
 //! - **Waits** return data once it arrives: [`Space::document_when_available`]
 //!   and its records and blobs equivalents, [`Blobs::get_when_available`];
 //!   [`Blobs::status`] says where a blob's bytes stand.
+//! - **Blobs are fetched when read.** A device knows every blob of the
+//!   streams it holds and fetches one when it is read. A blob on a device
+//!   is kept, cached or absent ([`BlobState`], from [`Blobs::local`]): a
+//!   read leaves what it fetched in a cache whose budget
+//!   [`Options::blob_cache`] sets, 256 MiB by default, and the device
+//!   evicts the blob read longest ago when the budget is full. Each read
+//!   takes a [`Read`], which keeps the blob, stores nothing of it once the
+//!   read ends, or fetches nothing. [`Blobs::keep`] fetches and keeps a
+//!   blob without reading it, [`Blobs::drop_local`] makes one absent, and
+//!   [`Options::keep_all_blobs`] makes a device hold every blob, for use
+//!   with no connection.
 //! - **Blobs for a cache.** A [`BlobId`] names immutable bytes, a new
 //!   version being a new blob, so it is a safe permanent key for an
 //!   application's cache of opened bytes. [`Blobs::get_stream`] opens a blob
@@ -184,9 +195,11 @@
 //! When no other holds it, as for a file saved over before any peer took
 //! it, its bytes are lost: the unit that names it still reaches peers, and
 //! nothing after it waits.
-//! The policy is this device's alone, never synced and never stored. With
-//! [`Options::objects_on_demand`] a device fetches only the files it asks
-//! for, and shows the rest as it likes.
+//! The policy is this device's alone, never synced and never stored. A
+//! device fetches only the files it asks for, with [`Blobs::materialise`] or
+//! a read, and shows the rest as it likes; with [`Options::keep_all_blobs`]
+//! it fetches each as a file. Such a space has no cache: [`Blobs::keep`] is
+//! `materialise` there and [`Blobs::drop_local`] is `release`.
 //!
 //! # Errors
 //!
@@ -309,6 +322,7 @@ mod residue_tests;
 mod resolution_cost;
 #[cfg(feature = "ext-restricted-spaces")]
 mod restricted;
+mod retention;
 #[cfg(test)]
 mod roster_cost;
 mod skeleton;
@@ -377,6 +391,8 @@ pub use client::{
 };
 #[cfg(feature = "adapter-blobs")]
 pub use client::{Blob, Blobs, PutVersion};
+#[cfg(feature = "adapter-blobs")]
+pub use client::{BlobCacheUsage, BlobLocal, BlobState, Read};
 #[cfg(feature = "adapter-blobs")]
 pub use client::{BlobChange, BlobChanges};
 #[cfg(feature = "adapter-loro")]

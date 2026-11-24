@@ -139,7 +139,7 @@ pub(crate) struct State {
     pub(crate) pseudonyms: BTreeMap<EventId, Vec<(SlotId, Signer)>>,
     /// Spaces in which an always-on peer has acknowledged events: there a
     /// member's acknowledgement no longer makes an event durable.
-    peered: BTreeSet<EventId>,
+    pub(crate) peered: BTreeSet<EventId>,
     /// Persons' device lists, by person ID: every list a space this device
     /// holds carries copies of.
     pub(crate) lists: BTreeMap<[u8; 32], crate::lists::PersonList>,
@@ -205,6 +205,9 @@ pub(crate) struct State {
     /// The objects the application holds through its providers
     /// (at-rest.md, "Held objects").
     pub(crate) held: crate::held::HeldObjects,
+    /// Which stored objects are kept and which cached, with the bytes each
+    /// holds (at-rest.md, "Retention").
+    pub(crate) retained: crate::retention::Retained,
 }
 
 /// Every key the device holds, by its hash: its ring, then each list's
@@ -284,8 +287,14 @@ struct Shared {
     /// time the state is taken.
     #[cfg(feature = "partial-replicas")]
     partial_unapplied: std::sync::atomic::AtomicBool,
-    /// Whether blobs are fetched only when the application asks for them.
-    objects_on_demand: std::sync::atomic::AtomicBool,
+    /// Whether the device fetches and keeps every blob its spaces name,
+    /// rather than fetching a blob when it is read.
+    keep_all_blobs: std::sync::atomic::AtomicBool,
+    /// The budget of the blob cache, in stored bytes (at-rest.md,
+    /// "Retention").
+    blob_cache: std::sync::atomic::AtomicU64,
+    /// The objects that reads are using, which are not dropped meanwhile.
+    uses: Arc<crate::retention::Uses>,
     /// Whether this device signs roster events without checking ranks,
     /// as a client that does not would: for tests of what replicas and
     /// peers judge.
@@ -318,7 +327,8 @@ struct Shared {
     /// of which class.
     lost: std::sync::Mutex<BTreeSet<(Acknowledger, EventId, LossClass)>>,
     /// Objects that became whole at this device, by space, as their last
-    /// parts arrive: what a blob feed reports as arrived.
+    /// parts arrive, and objects it dropped: what a blob feed reports as
+    /// arrived or evicted.
     arrivals: broadcast::Sender<(EventId, frasil_adapter::Locator)>,
     /// Held objects withdrawn since the device opened, by space and object
     /// ID, until the device holds them again (at-rest.md, "Held objects").
@@ -327,6 +337,9 @@ struct Shared {
     /// 3.3 passed, by the space that stores them: `true` when step 7 was
     /// one of them, the reader holding `k(S)`.
     verified: std::sync::Mutex<BTreeMap<(EventId, frasil_adapter::Locator), bool>>,
+    /// The SHA-256 of the plaintext of objects read whole since the device
+    /// opened, by the space that names them: computed here, never sent.
+    content_hashes: std::sync::Mutex<BTreeMap<(EventId, frasil_adapter::Locator), [u8; 32]>>,
     /// What the device's member connections share.
     links: std::sync::Mutex<crate::links::Links>,
     /// The object providers the application gave (at-rest.md, "Held
@@ -486,7 +499,9 @@ impl Engine {
                 partial: std::sync::atomic::AtomicBool::new(streams_only),
                 #[cfg(feature = "partial-replicas")]
                 partial_unapplied: std::sync::atomic::AtomicBool::new(false),
-                objects_on_demand: std::sync::atomic::AtomicBool::new(false),
+                keep_all_blobs: std::sync::atomic::AtomicBool::new(false),
+                blob_cache: std::sync::atomic::AtomicU64::new(crate::retention::DEFAULT_BLOB_CACHE),
+                uses: Arc::default(),
                 unchecked_ranks: std::sync::atomic::AtomicBool::new(false),
                 peer_holdings: std::sync::Mutex::default(),
                 erased_at_peer: std::sync::Mutex::default(),
@@ -494,6 +509,7 @@ impl Engine {
                 arrivals,
                 withdrawn: std::sync::Mutex::new(BTreeSet::new()),
                 verified: std::sync::Mutex::new(BTreeMap::new()),
+                content_hashes: std::sync::Mutex::new(BTreeMap::new()),
                 providers: std::sync::Mutex::new(crate::held::Providers::default()),
                 #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
                 syncing: std::sync::Mutex::new(Vec::new()),
@@ -533,6 +549,7 @@ impl Engine {
                     #[cfg(feature = "ext-guests")]
                     guests: crate::guests::GuestState::default(),
                     held: crate::held::HeldObjects::default(),
+                    retained: crate::retention::Retained::default(),
                 }),
                 notices,
                 fetches: Arc::default(),
@@ -1122,7 +1139,10 @@ impl Engine {
     ///
     /// Every chunk is checked as it arrives, as for any fetch (units.md,
     /// 3.3 Reading an object), and kept beside what the device holds of
-    /// the object, which becomes whole once every chunk is here.
+    /// the object, which becomes whole once every chunk is here. A request
+    /// does not keep a blob: the chunks it brings of one the device held
+    /// nothing of are the cache's (at-rest.md, "Retention", recording),
+    /// and the device fetches no other chunk of it by itself.
     pub fn fetch_chunks(
         &self,
         space: EventId,
@@ -1178,7 +1198,8 @@ impl Engine {
         let _ = self.shared.losses.send(loss);
     }
 
-    /// Objects as they become whole at this device, by space.
+    /// Objects as they become whole at this device, and as it drops them,
+    /// by space.
     #[cfg_attr(not(feature = "adapter-blobs"), allow(dead_code))]
     pub(crate) fn subscribe_arrivals(
         &self,
@@ -1197,6 +1218,83 @@ impl Engine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&(space, id));
         let _ = self.shared.arrivals.send((space, locator));
+    }
+
+    /// Tells blob feeds and observers that the device dropped an object it
+    /// held.
+    pub(crate) fn dropped(&self, space: EventId, locator: frasil_adapter::Locator) {
+        let _ = self.shared.arrivals.send((space, locator));
+    }
+
+    /// Forgets what the device found out about an object's stored bytes
+    /// since it opened: that every step of units.md, 3.3 passed on them,
+    /// and the hash of their plaintext. What the device holds of the
+    /// object from now on is checked from the start.
+    pub(crate) fn forget_checks(&self, space: &EventId, object_id: &[u8; 32]) {
+        self.shared
+            .verified
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(of, locator), _| of != space || locator[..32] != object_id[..]);
+        self.shared
+            .content_hashes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(_, locator), _| locator[..32] != object_id[..]);
+    }
+
+    /// The hash of an object's plaintext, if a read computed it since the
+    /// device opened and the device dropped nothing of the object since.
+    #[cfg(feature = "adapter-blobs")]
+    pub(crate) fn content_hash(
+        &self,
+        space: &EventId,
+        locator: &frasil_adapter::Locator,
+    ) -> Option<[u8; 32]> {
+        self.shared
+            .content_hashes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&(*space, *locator))
+            .copied()
+    }
+
+    /// Keeps the hash of an object's plaintext that a read computed.
+    #[cfg(feature = "adapter-blobs")]
+    pub(crate) fn keep_content_hash(
+        &self,
+        space: EventId,
+        locator: frasil_adapter::Locator,
+        hash: [u8; 32],
+    ) {
+        self.shared
+            .content_hashes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((space, locator), hash);
+    }
+
+    /// The objects that reads are using.
+    pub(crate) fn uses(&self) -> &Arc<crate::retention::Uses> {
+        &self.shared.uses
+    }
+
+    /// The budget of the blob cache, as the device was told.
+    pub(crate) fn blob_cache_cell(&self) -> &std::sync::atomic::AtomicU64 {
+        &self.shared.blob_cache
+    }
+
+    /// Whether the device keeps every blob, as it was told.
+    pub(crate) fn keep_all_blobs_cell(&self) -> &std::sync::atomic::AtomicBool {
+        &self.shared.keep_all_blobs
+    }
+
+    /// `T` on the device's timeline now (overview.md, "The local
+    /// timeline").
+    pub(crate) fn timeline_now(&self, state: &mut State) -> u64 {
+        let mono = self.shared.platform.clock.monotonic();
+        let wall = self.shared.platform.clock.wall();
+        state.timeline.read(mono, wall).timeline
     }
 
     /// Notes that an object was read whole, every step passing; with
@@ -1635,6 +1733,26 @@ impl Engine {
                 }
                 replica.keep_stored_object(id, header, stored);
             }
+            // Which of them are kept and which cached (at-rest.md,
+            // "Retention"): an object with parts and no record is kept.
+            let mut stale = Batch::default();
+            for (item, value) in state.vault.scan(&log, Table::Retention).await? {
+                let (TableValue::Retention(retention), Ok(id)) =
+                    (value, <[u8; 32]>::try_from(&item[..]))
+                else {
+                    continue;
+                };
+                let bytes = replica.object_bytes_stored(&id);
+                // A cached object with no part left says nothing; a held
+                // object has no retention.
+                let cached = matches!(retention, frasil_store::tables::Retention::Cached { .. });
+                if (cached && bytes == 0) || state.held.entry(&space, &id).is_some() {
+                    state.vault.delete(&mut stale, &log, Table::Retention, &id);
+                    continue;
+                }
+                state.retained.load(space, id, retention, bytes);
+            }
+            state.vault.commit(stale).await?;
             let mut outbox = Outbox::default();
             for (item, value) in state.vault.scan(&log, Table::Outbox).await? {
                 if let TableValue::Outbox(id) = value
@@ -1927,15 +2045,6 @@ impl Engine {
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// Fetches blobs only when the application asks for them, with
-    /// [`Engine::fetch_object`]: a device-local choice of what to fetch,
-    /// which no peer or member can see.
-    pub fn fetch_objects_on_demand(&self) {
-        self.shared
-            .objects_on_demand
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-
     /// Sets the device's checkpoint policy: whether its administrators'
     /// client proposes checkpoints by itself, and whether it forgets what
     /// came before one in effect (roster.md, 3.15.7 Clients).
@@ -1954,13 +2063,6 @@ impl Engine {
             .checkpoint_policy
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Whether this device fetches blobs only when asked.
-    pub(crate) fn objects_on_demand(&self) -> bool {
-        self.shared
-            .objects_on_demand
-            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Whether this device's replicas are partial: never without the
@@ -2640,10 +2742,18 @@ impl Engine {
         for id in replica.take_dropped_pending() {
             vault.delete(&mut batch, &space.0, Table::Event, &id.0);
         }
-        for (locator, stored) in replica.take_forgotten_objects() {
-            crate::objects::delete_object_records(vault, &mut batch, &space, &locator, &stored);
+        let forgotten = replica.take_forgotten_objects();
+        for (locator, stored) in &forgotten {
+            crate::objects::delete_object_records(vault, &mut batch, &space, locator, stored);
         }
         vault.commit(batch).await?;
+        // What was found out about bytes that were not the object's goes
+        // with them; how the device retains the object stays.
+        for (locator, _) in &forgotten {
+            let id = crate::replica::object_id(locator);
+            state.retained.resize(&(space, id), 0);
+            self.forget_checks(&space, &id);
+        }
         self.keep_adopted_snapshot(state, space).await
     }
 
@@ -4058,6 +4168,8 @@ impl Engine {
         for part in &stored {
             crate::objects::put_part(&state.vault, &mut batch, &space, part)?;
         }
+        // Sealed here, and stored with the event that names them.
+        Self::note_sealed(state, space, stored.iter().map(|part| &part.locator));
         state.vault.commit(batch).await?;
         if due {
             state.last_kept = self.shared.platform.clock.monotonic();

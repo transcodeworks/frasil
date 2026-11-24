@@ -125,7 +125,11 @@ async fn a_file_without_objects_admits_a_claimant_who_fetches_them_through_the_p
     assert_eq!(bobs.space.id(), space.id());
     assert_eq!(text(&bobs.note).await, "hello");
     until(|| async { bobs.space.level().await == Some(Level::Write) }).await;
-    assert_eq!(bobs.files.get(blob).await.unwrap(), None, "left out");
+    assert_eq!(
+        bobs.files.get(blob, &frasil::Read::new()).await.unwrap(),
+        None,
+        "left out"
+    );
     bobs.note
         .edit(|doc| doc.get_text("body").insert(5, ", bob"))
         .await
@@ -142,9 +146,20 @@ async fn a_file_without_objects_admits_a_claimant_who_fetches_them_through_the_p
             .any(|m| m.id == bob.id() && m.level == Level::Write),
         "{members:?}"
     );
-    until(|| async { bobs.files.get(blob).await.unwrap().is_some() }).await;
+    until(|| async {
+        bobs.files
+            .get(blob, &frasil::Read::new())
+            .await
+            .unwrap()
+            .is_some()
+    })
+    .await;
     assert_eq!(
-        bobs.files.get(blob).await.unwrap().as_deref(),
+        bobs.files
+            .get(blob, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&PHOTO[..])
     );
 
@@ -213,10 +228,18 @@ async fn a_copy_by_keys_reads_what_it_carries_and_fetches_the_rest_through_the_p
     assert_eq!(text(&dans.note).await, "hello");
     assert_eq!(dans.space.level().await, None);
     assert_eq!(
-        dans.files.get(small).await.unwrap().as_deref(),
+        dans.files
+            .get(small, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&b"a small one"[..])
     );
-    assert_eq!(dans.files.get(large).await.unwrap(), None, "left out");
+    assert_eq!(
+        dans.files.get(large, &frasil::Read::new()).await.unwrap(),
+        None,
+        "left out"
+    );
     assert!(matches!(
         dans.note
             .edit(|doc| doc.get_text("body").insert(0, "x"))
@@ -227,9 +250,20 @@ async fn a_copy_by_keys_reads_what_it_carries_and_fetches_the_rest_through_the_p
     // Connected to the peer, Dan fetches the large blob with the read
     // credential the keys give.
     dan.connect(&peer.origin).await.unwrap();
-    until(|| async { dans.files.get(large).await.unwrap().is_some() }).await;
+    until(|| async {
+        dans.files
+            .get(large, &frasil::Read::new())
+            .await
+            .unwrap()
+            .is_some()
+    })
+    .await;
     assert_eq!(
-        dans.files.get(large).await.unwrap().as_deref(),
+        dans.files
+            .get(large, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&PHOTO[..])
     );
 

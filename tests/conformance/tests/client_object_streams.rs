@@ -96,7 +96,6 @@ async fn setup(peer: &TestPeer) -> (Engine, PeerHandle, Engine, EventId, [u8; 64
         .await
         .unwrap();
     until(|| async { alice.outbox(&space).await.is_empty() }).await;
-    bob.fetch_objects_on_demand();
     (alice, alice_link, bob, space, locator, big)
 }
 

@@ -241,6 +241,11 @@ mod blobs {
             use frasil_adapter_blobs::entry::Entry;
             let engine = self.space().device.engine();
             let space = self.space().id().event();
+            // In use until its unit names it, so that nothing drops it
+            // meanwhile. A peer's answer for it before the unit releases
+            // nothing: the device asks again once the peer acknowledged
+            // the unit (at-rest.md, "An object the device put").
+            let _using = engine.use_object(space, &locator);
             if how.published {
                 debug_assert!(stored.is_empty(), "a published put keeps its object first");
                 self.taken(space, locator).await?;
@@ -295,8 +300,14 @@ mod blobs {
                 .fetch_object(space, entry.object, hint.to_vec())
                 .await;
             let mut progress = super::super::blob_stream::Reporter::silent();
-            self.fetched(space, entry.object, entry.size, &mut progress)
-                .await?;
+            self.fetched(
+                space,
+                entry.object,
+                entry.size,
+                crate::fetch::FetchPriority::Position,
+                &mut progress,
+            )
+            .await?;
             engine.held_token(&space, &entry.object).await
         }
 

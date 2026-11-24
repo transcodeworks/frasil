@@ -72,6 +72,22 @@ impl Engine {
         };
         Ok(parts.into_iter().find(|part| part.index == index))
     }
+
+    /// Whether `chunk` is chunk `index` of an object as this device holds
+    /// it.
+    #[cfg(feature = "iroh")]
+    pub(crate) async fn same_chunk(
+        &self,
+        space: &EventId,
+        locator: &Locator,
+        index: u64,
+        chunk: &[u8],
+    ) -> bool {
+        matches!(
+            self.upload_part(space, locator, index).await,
+            Ok(Some(part)) if part.chunk == chunk
+        )
+    }
 }
 
 impl ObjectUpload {

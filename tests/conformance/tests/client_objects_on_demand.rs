@@ -1,7 +1,7 @@
-//! A device that fetches blobs only when asked, through a peer on loopback
-//! (`Options::objects_on_demand`): it knows every file of a Blobs stream and
-//! holds none, until it asks for one, and then holds that one alone. Every
-//! wait has a deadline.
+//! A device fetches a blob when it is asked for, through a peer on
+//! loopback: it knows every file of a Blobs stream and holds none, until
+//! it reads or materialises one, and then holds that one alone. Every wait
+//! has a deadline.
 
 #[path = "../../../crates/frasil/tests/support/provider.rs"]
 mod provider;
@@ -34,13 +34,7 @@ async fn a_blob_is_fetched_when_asked_for_and_the_others_are_not() {
     let files = space.create_blobs().unwrap();
 
     let provider = DirProvider::new(temp_dir("on-demand"));
-    let bob = open(
-        2,
-        Options::new()
-            .object_provider(provider.clone())
-            .objects_on_demand(),
-    )
-    .await;
+    let bob = open(2, Options::new().object_provider(provider.clone())).await;
     let joining = within(bob.join_via_peer(&peer.origin, "Bob", |_, _| async { true }))
         .await
         .unwrap();
@@ -76,6 +70,114 @@ async fn a_blob_is_fetched_when_asked_for_and_the_others_are_not() {
     assert_eq!(bobs_files.info(other).await.unwrap().token, None);
 }
 
+/// In a space whose blobs the application holds as files there is no
+/// cache: a blob a read fetches becomes a file, keeping one is
+/// materialising it, dropping it releases the file, and a read that is to
+/// store nothing is refused rather than writing a file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_space_held_as_files_keeps_a_blob_as_a_file_and_caches_none() {
+    use frasil::{BlobState, Error, Read};
+    let peer = spawn_loopback().await.unwrap();
+    let open = |key, options: Options| async move {
+        Device::open_with(Storage::Memory, &[key; 32], options.loopback())
+            .await
+            .expect("a device")
+    };
+    let alice = open(1, Options::new()).await;
+    let space = alice.create_space().await.unwrap();
+    alice.connect(&peer.origin).await.unwrap();
+    let files = space.create_blobs().unwrap();
+
+    let provider = DirProvider::new(temp_dir("held-retention"));
+    // A budget of nothing: it does not apply to files.
+    let bob = open(
+        2,
+        Options::new()
+            .object_provider(provider.clone())
+            .blob_cache(0),
+    )
+    .await;
+    let joining = within(bob.join_via_peer(&peer.origin, "Bob", |_, _| async { true }))
+        .await
+        .unwrap();
+    within(space.admit(joining.text(), Level::Write, "Alice", |_, _| async { true }))
+        .await
+        .unwrap();
+    let bobs_space = within(joining.joined()).await.unwrap();
+    bob.connect(&peer.origin).await.unwrap();
+    let kept = files.put(Some("kept"), b"kept as a file").await.unwrap();
+    let read = files.put(Some("read"), b"read into a file").await.unwrap();
+    let bobs_files = within(async {
+        loop {
+            if let Ok(blobs) = bobs_space.blobs(files.id()).await
+                && blobs.list().await.is_ok_and(|list| list.len() == 2)
+            {
+                break blobs;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert_eq!(
+        bobs_files.local(kept).await.unwrap().state,
+        BlobState::Absent
+    );
+    assert_eq!(
+        bobs_files.get(kept, &Read::new().local()).await.unwrap(),
+        None
+    );
+
+    // Nothing is fetched to be stored nowhere: it would be a file.
+    assert!(matches!(
+        bobs_files.get(kept, &Read::new().uncached()).await,
+        Err(Error::Unsupported(_))
+    ));
+    assert_eq!(provider.files(), 0);
+
+    // Keeping it materialises it.
+    within(bobs_files.keep(kept, |_, _| {})).await.unwrap();
+    assert_eq!(provider.files(), 1);
+    let local = bobs_files.local(kept).await.unwrap();
+    assert_eq!(local.state, BlobState::Kept);
+    assert!(local.bytes > 0);
+    let token = bobs_files.info(kept).await.unwrap().token.unwrap();
+    assert_eq!(provider.read(&token), b"kept as a file");
+    // Held, it is read from its file whatever the read says.
+    assert_eq!(
+        bobs_files
+            .get(kept, &Read::new().uncached())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(&b"kept as a file"[..])
+    );
+
+    // A read fetches the other into a file too, and no budget takes it.
+    let bytes = within(bobs_files.get(read, &Read::new())).await.unwrap();
+    assert_eq!(bytes.as_deref(), Some(&b"read into a file"[..]));
+    assert_eq!(provider.files(), 2);
+    assert_eq!(bobs_files.local(read).await.unwrap().state, BlobState::Kept);
+    let usage = bob.blob_cache_usage().await;
+    assert_eq!(
+        (usage.cached, usage.kept),
+        (0, 0),
+        "files are the application's"
+    );
+
+    // Dropping it releases the file, which stays the application's.
+    bobs_files.drop_local(kept).await.unwrap();
+    assert_eq!(provider.forgotten(), vec![token]);
+    assert_eq!(
+        bobs_files.local(kept).await.unwrap().state,
+        BlobState::Absent
+    );
+    assert_eq!(
+        bobs_files.get(kept, &Read::new().local()).await.unwrap(),
+        None
+    );
+    assert_eq!(provider.files(), 2);
+}
+
 /// How long a read may take to fetch a small blob: well under the time a
 /// read waits for a fetch that never starts.
 const FETCH: Duration = Duration::from_secs(15);
@@ -94,7 +196,7 @@ async fn a_read_fetches_a_blob_on_a_device_that_stores_objects_sealed() {
     let files = space.create_blobs().unwrap();
 
     // No provider: the device stores what it fetches sealed.
-    let bob = open(2, Options::new().objects_on_demand()).await;
+    let bob = open(2, Options::new()).await;
     let joining = within(bob.join_via_peer(&peer.origin, "Bob", |_, _| async { true }))
         .await
         .unwrap();
@@ -119,18 +221,22 @@ async fn a_read_fetches_a_blob_on_a_device_that_stores_objects_sealed() {
 
     // Long enough for a device that fetches by itself to have fetched both.
     tokio::time::sleep(Duration::from_secs(2)).await;
-    assert_eq!(bobs_files.get(asked).await.unwrap(), None);
-    assert_eq!(bobs_files.get(other).await.unwrap(), None);
+    let local = frasil::Read::new().local();
+    assert_eq!(bobs_files.get(asked, &local).await.unwrap(), None);
+    assert_eq!(bobs_files.get(other, &local).await.unwrap(), None);
 
     let mut read = Vec::new();
-    tokio::time::timeout(FETCH, bobs_files.get_stream(asked, &mut read, |_, _| {}))
-        .await
-        .expect("the read asks for the blob")
-        .unwrap();
+    tokio::time::timeout(
+        FETCH,
+        bobs_files.get_stream(asked, &mut read, &frasil::Read::new(), |_, _| {}),
+    )
+    .await
+    .expect("the read asks for the blob")
+    .unwrap();
     assert_eq!(read, b"asked for");
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(
-        bobs_files.get(other).await.unwrap(),
+        bobs_files.get(other, &local).await.unwrap(),
         None,
         "the other blob stays where it is"
     );
@@ -154,13 +260,7 @@ async fn a_blob_of_two_chunks_is_materialised_as_a_file() {
     let files = space.create_blobs().unwrap();
 
     let provider = DirProvider::new(temp_dir("on-demand-two-chunks"));
-    let bob = open(
-        2,
-        Options::new()
-            .object_provider(provider.clone())
-            .objects_on_demand(),
-    )
-    .await;
+    let bob = open(2, Options::new().object_provider(provider.clone())).await;
     let joining = within(bob.join_via_peer(&peer.origin, "Bob", |_, _| async { true }))
         .await
         .unwrap();
@@ -209,13 +309,7 @@ async fn a_released_blob_is_not_fetched_again_by_itself() {
     let files = space.create_blobs().unwrap();
 
     let provider = DirProvider::new(temp_dir("on-demand-released"));
-    let bob = open(
-        2,
-        Options::new()
-            .object_provider(provider.clone())
-            .objects_on_demand(),
-    )
-    .await;
+    let bob = open(2, Options::new().object_provider(provider.clone())).await;
     let joining = within(bob.join_via_peer(&peer.origin, "Bob", |_, _| async { true }))
         .await
         .unwrap();

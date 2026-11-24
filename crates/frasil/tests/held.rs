@@ -75,13 +75,7 @@ async fn an_on_demand_member_materialises_from_a_member_without_a_peer() {
     let alices = DirProvider::new(dir.join("alice"));
     let bobs = DirProvider::new(dir.join("bob"));
     let alice = device(25, Options::new().object_provider(alices.clone())).await;
-    let bob = device(
-        26,
-        Options::new()
-            .object_provider(bobs.clone())
-            .objects_on_demand(),
-    )
-    .await;
+    let bob = device(26, Options::new().object_provider(bobs.clone())).await;
     let space = alice.create_space().await.unwrap();
     let invitation = space
         .invite(Level::Write, "Alice's laptop", |_, _| async { true })
@@ -115,13 +109,7 @@ async fn an_on_demand_member_materialises_a_blob_of_several_chunks() {
     let alices = DirProvider::new(dir.join("alice"));
     let bobs = DirProvider::new(dir.join("bob"));
     let alice = device(27, Options::new().object_provider(alices.clone())).await;
-    let bob = device(
-        28,
-        Options::new()
-            .object_provider(bobs.clone())
-            .objects_on_demand(),
-    )
-    .await;
+    let bob = device(28, Options::new().object_provider(bobs.clone())).await;
     let space = alice.create_space().await.unwrap();
     let invitation = space
         .invite(Level::Write, "Alice's laptop", |_, _| async { true })
@@ -172,7 +160,14 @@ async fn a_held_file_is_served_to_a_sealed_member_and_read_as_its_bytes() {
     let info = files.info(blob).await.unwrap();
     assert_eq!(info.size, file.len() as u64);
     assert_eq!(info.token.as_deref(), Some(&token[..]));
-    assert_eq!(files.get(blob).await.unwrap().as_deref(), Some(&file[..]));
+    assert_eq!(
+        files
+            .get(blob, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(&file[..])
+    );
     assert_eq!(files.materialise(blob, b"").await.unwrap(), token);
     assert_eq!(
         std::fs::read_dir(&provider.dir).unwrap().count(),
@@ -185,7 +180,7 @@ async fn a_held_file_is_served_to_a_sealed_member_and_read_as_its_bytes() {
     let bobs_files = until_stream(&bobs_space, files.id()).await;
     let fetched = within(async {
         loop {
-            if let Ok(Some(bytes)) = bobs_files.get(blob).await {
+            if let Ok(Some(bytes)) = bobs_files.get(blob, &frasil::Read::new()).await {
                 break bytes;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -204,7 +199,11 @@ async fn a_held_file_is_served_to_a_sealed_member_and_read_as_its_bytes() {
     let small_token = files.materialise(small, b"").await.unwrap();
     assert_eq!(provider.read(&small_token), b"a small blob");
     assert_eq!(
-        files.get(small).await.unwrap().as_deref(),
+        files
+            .get(small, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&b"a small blob"[..])
     );
 
@@ -212,7 +211,13 @@ async fn a_held_file_is_served_to_a_sealed_member_and_read_as_its_bytes() {
     // here until fetched again.
     files.release(small).await.unwrap();
     assert_eq!(provider.forgotten(), vec![small_token.clone()]);
-    assert!(files.get(small).await.unwrap().is_none());
+    assert!(
+        files
+            .get(small, &frasil::Read::new().local())
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(files.info(small).await.unwrap().token.is_none());
 
     // Forgetting the space tells the provider about every held token.
@@ -239,7 +244,13 @@ async fn a_changed_file_is_withdrawn_and_fetched_again_from_the_other_holder() {
 
     // Bob fetches and seals it.
     let bobs_files = until_stream(&bobs_space, files.id()).await;
-    until(|| async { matches!(bobs_files.get(blob).await, Ok(Some(_))) }).await;
+    until(|| async {
+        matches!(
+            bobs_files.get(blob, &frasil::Read::new()).await,
+            Ok(Some(_))
+        )
+    })
+    .await;
 
     // Alice's file changes under its token: at the next read, Alice finds
     // it not held and withdraws it, and the application hears of it.
@@ -247,7 +258,11 @@ async fn a_changed_file_is_withdrawn_and_fetched_again_from_the_other_holder() {
     let mut changed = file.clone();
     changed[100] ^= 1;
     provider.write("entry-1", &changed);
-    assert_eq!(files.get(blob).await.unwrap(), None, "withdrawn, not read");
+    assert_eq!(
+        files.get(blob, &frasil::Read::new()).await.unwrap(),
+        None,
+        "withdrawn, not read"
+    );
     let withdrawn = within(async {
         loop {
             match events.next().await {
@@ -286,7 +301,14 @@ async fn a_changed_file_is_withdrawn_and_fetched_again_from_the_other_holder() {
     let again = files.materialise(blob, b"entry-1-restored").await.unwrap();
     assert_eq!(again, b"entry-1-restored");
     assert_eq!(provider.read(&again), file);
-    assert_eq!(files.get(blob).await.unwrap().as_deref(), Some(&file[..]));
+    assert_eq!(
+        files
+            .get(blob, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(&file[..])
+    );
     assert_eq!(provider.calls.lock().unwrap().aborted, 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -338,7 +360,11 @@ async fn a_reference_is_held_but_never_served() {
     within(invitation.admitted()).await.unwrap();
     let carols_files = until_stream(&carols_library, library_files.id()).await;
     assert!(
-        carols_files.get(reference).await.unwrap().is_none(),
+        carols_files
+            .get(reference, &frasil::Read::new())
+            .await
+            .unwrap()
+            .is_none(),
         "not fetched yet"
     );
 
@@ -370,7 +396,11 @@ async fn a_reference_is_held_but_never_served() {
         .await
         .unwrap();
     assert_eq!(
-        carols_files.get(reference).await.unwrap().as_deref(),
+        carols_files
+            .get(reference, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&plaintext[..]),
         "held through the object key alone"
     );
@@ -411,7 +441,11 @@ async fn the_policy_changes_locally_in_both_directions() {
     let token = files.materialise(blob, b"").await.unwrap();
     assert_eq!(provider.read(&token), vec![7u8; 150_000]);
     assert_eq!(
-        files.get(blob).await.unwrap().as_deref(),
+        files
+            .get(blob, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&[7u8; 150_000][..])
     );
 
@@ -426,7 +460,11 @@ async fn the_policy_changes_locally_in_both_directions() {
     assert_eq!(space.object_policy().await, ObjectPolicy::Sealed);
     assert_eq!(provider.forgotten(), vec![token]);
     assert_eq!(
-        files.get(blob).await.unwrap().as_deref(),
+        files
+            .get(blob, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&[7u8; 150_000][..])
     );
     assert!(files.info(blob).await.unwrap().token.is_none());
@@ -449,7 +487,7 @@ async fn a_held_blob_streams_and_reads_by_range_from_its_file() {
     let blob = files.put_from("clip", &token).await.unwrap();
     let mut streamed = Vec::new();
     files
-        .get_stream(blob, &mut streamed, |_, _| {})
+        .get_stream(blob, &mut streamed, &frasil::Read::new(), |_, _| {})
         .await
         .unwrap();
     assert_eq!(streamed, file);
@@ -457,21 +495,35 @@ async fn a_held_blob_streams_and_reads_by_range_from_its_file() {
         let start = offset as usize;
         let end = (start + len as usize).min(file.len());
         assert_eq!(
-            files.get_range(blob, offset, len).await.unwrap().unwrap(),
+            files
+                .get_range(blob, offset, len, &frasil::Read::new())
+                .await
+                .unwrap()
+                .unwrap(),
             file[start..end],
             "{offset}+{len}"
         );
     }
-    let hash = files.content_hash(blob).await.unwrap().unwrap();
+    let hash = files
+        .content_hash(blob, &frasil::Read::new())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(&hash[..16], &provider::stamp_of(&file)[..]);
 
     let mut changed = file.clone();
     changed[CHUNK + 5] ^= 1;
     provider.write("clip", &changed);
-    assert_eq!(files.get_range(blob, 0, 10).await.unwrap(), None);
     assert_eq!(
         files
-            .get_stream(blob, Vec::new(), |_, _| {})
+            .get_range(blob, 0, 10, &frasil::Read::new())
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        files
+            .get_stream(blob, Vec::new(), &frasil::Read::new(), |_, _| {})
             .await
             .unwrap_err(),
         Error::Class("Missing")
@@ -539,7 +591,14 @@ async fn held_records_reopen_from_disk_and_need_a_provider() {
             Some(&token[..])
         );
         assert_eq!(files.materialise(blob, b"").await.unwrap(), token);
-        assert_eq!(files.get(blob).await.unwrap().as_deref(), Some(&file[..]));
+        assert_eq!(
+            files
+                .get(blob, &frasil::Read::new())
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(&file[..])
+        );
         assert_eq!(
             std::fs::read_dir(provider.dir.as_path()).unwrap().count(),
             1
@@ -558,7 +617,7 @@ async fn held_records_reopen_from_disk_and_need_a_provider() {
         let files = space.blobs(stream).await.unwrap();
         assert!(files.info(blob).await.unwrap().token.is_none());
         assert_eq!(
-            files.get(blob).await.unwrap(),
+            files.get(blob, &frasil::Read::new()).await.unwrap(),
             None,
             "not held without a provider"
         );
@@ -572,7 +631,14 @@ async fn held_records_reopen_from_disk_and_need_a_provider() {
             files.info(blob).await.unwrap().token.as_deref(),
             Some(&token[..])
         );
-        assert_eq!(files.get(blob).await.unwrap().as_deref(), Some(&file[..]));
+        assert_eq!(
+            files
+                .get(blob, &frasil::Read::new())
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(&file[..])
+        );
         assert!(provider.forgotten().is_empty());
         alice.close().await.unwrap();
     }
@@ -597,7 +663,11 @@ async fn equal_concurrent_puts_keep_one_file() {
     assert_eq!(forgotten.len(), 1, "the file put twice is forgotten once");
     assert_ne!(forgotten[0], token);
     assert_eq!(
-        files.get(second).await.unwrap().as_deref(),
+        files
+            .get(second, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&bytes[..])
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -653,7 +723,13 @@ async fn a_newcomers_snapshot_never_reaches_the_provider() {
     // A blob put after the admission is held as usual.
     let late = files.put(Some("late"), &[8u8; 3000]).await.unwrap();
     let bobs_files = until_stream(&bobs_space, files.id()).await;
-    until(|| async { matches!(bobs_files.get(late).await, Ok(Some(_))) }).await;
+    until(|| async {
+        matches!(
+            bobs_files.get(late, &frasil::Read::new()).await,
+            Ok(Some(_))
+        )
+    })
+    .await;
     assert_eq!(provider.calls.lock().unwrap().created, 1);
     let _ = (alice, bob);
     let _ = std::fs::remove_dir_all(&dir);
@@ -714,7 +790,11 @@ async fn a_blob_whose_chunks_come_first_is_held_once_its_entry_is_current() {
     let bobs_space = bob.space(space.id()).await.unwrap();
     let bobs_files = until_stream(&bobs_space, files.id()).await;
     assert_eq!(
-        bobs_files.get(blob).await.unwrap().as_deref(),
+        bobs_files
+            .get(blob, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&bytes[..])
     );
     assert!(bobs_files.info(blob).await.unwrap().token.is_some());

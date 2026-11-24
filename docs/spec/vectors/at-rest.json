@@ -994,6 +994,94 @@
       "note": "roster.md, \"Starting from a checkpoint\": counted as dropped"
     },
     {
+      "name": "an object the application keeps",
+      "table": 34,
+      "table_name": "retention",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "item": "5a135935f36cf4782cdd074e53246632f959508fa28fc65081b93318d57a4257",
+      "value": "a10101",
+      "opened": {
+        "1": 1
+      },
+      "address": "64679c30bfabf30f9ae6377aa7b8306e2274a088c04f9bd1699b805316d86e460b",
+      "plaintext": "000000205a135935f36cf4782cdd074e53246632f959508fa28fc65081b93318d57a4257a10101",
+      "aad": "66726173696c2f61742d726573742f7265636f72642f76310164679c30bfabf30f9ae6377aa7b8306e2274a088c04f9bd1699b805316d86e460b",
+      "nonce": "c55fdd453bd9575e5fe262f5af4283e9f939976cdccfd72c",
+      "record": "01c55fdd453bd9575e5fe262f5af4283e9f939976cdccfd72cb4b1e857b9520c5c089760d562d3d6d1c79bfce13441c3a84fed8139df6f6bf5f8e111532664cc3d765eaac6b61c8a187e5df0d28e9e7d",
+      "note": "at-rest.md, \"Retention\": state 1, never dropped by the device itself"
+    },
+    {
+      "name": "a cached object, with its last read",
+      "table": 34,
+      "table_name": "retention",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "item": "722a7ce0900c5aa3f607ae4e1d60af14c978b014391f7ff054208e7848c3c8da",
+      "value": "a20102021a00015f90",
+      "opened": {
+        "1": 2,
+        "2": 90000
+      },
+      "address": "64679c30bfabf30f9ae6377aa7b8306e221c2df5884b2e3e65cdafc6ac668cbc8a",
+      "plaintext": "00000020722a7ce0900c5aa3f607ae4e1d60af14c978b014391f7ff054208e7848c3c8daa20102021a00015f90",
+      "aad": "66726173696c2f61742d726573742f7265636f72642f76310164679c30bfabf30f9ae6377aa7b8306e221c2df5884b2e3e65cdafc6ac668cbc8a",
+      "nonce": "b5494d2037277871f0187c509eccba758bdcf309d5c89397",
+      "record": "01b5494d2037277871f0187c509eccba758bdcf309d5c89397b00e33378990817b72d39583f7af0870342a12acd82689da04d8ec60ed859d81689be4dddb3ccc10a4e4f9a4e5e3c38d0db226385548121f4c2e3d7738",
+      "note": "state 2: the timeline's T of the last read, 90,400, rounded down to a multiple of 3,600"
+    },
+    {
+      "name": "a cached object whose last read is no multiple of 3,600",
+      "table": 34,
+      "table_name": "retention",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "item": "5f231c666722d1a1694408179ce075c86acc9d96dc8ced74d2250f4ddd8d27a0",
+      "value": "a20102021a00016121",
+      "opened": {
+        "1": 2,
+        "2": 90401
+      },
+      "address": "64679c30bfabf30f9ae6377aa7b8306e220e5c19feb7138d57dc26aea0a414edc8",
+      "plaintext": "000000205f231c666722d1a1694408179ce075c86acc9d96dc8ced74d2250f4ddd8d27a0a20102021a00016121",
+      "aad": "66726173696c2f61742d726573742f7265636f72642f76310164679c30bfabf30f9ae6377aa7b8306e220e5c19feb7138d57dc26aea0a414edc8",
+      "nonce": "e74260be1807199d7cefb55478eb5c93e1741fa81e854930",
+      "record": "01e74260be1807199d7cefb55478eb5c93e1741fa81e8549301d583ef42a257c2b68284a2039a0d69bbe78456ea9fe78e5c45c0996e86264cc84b66d99246bc715c52604f337b3036ab362a49d59e042012707a89457",
+      "note": "a reader accepts any unsigned integer in key 2: the rounding is the writer's"
+    },
+    {
+      "name": "an object this device put, which no peer is known to hold",
+      "table": 34,
+      "table_name": "retention",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "item": "7f90b09b22bc495e0d7c0392a1cb7374c3796c001393209d9a7a933b9709b3b8",
+      "value": "a10103",
+      "opened": {
+        "1": 3
+      },
+      "address": "64679c30bfabf30f9ae6377aa7b8306e22515a1886bcbeb4e8fda5929c52a8a36d",
+      "plaintext": "000000207f90b09b22bc495e0d7c0392a1cb7374c3796c001393209d9a7a933b9709b3b8a10103",
+      "aad": "66726173696c2f61742d726573742f7265636f72642f76310164679c30bfabf30f9ae6377aa7b8306e22515a1886bcbeb4e8fda5929c52a8a36d",
+      "nonce": "5aba0c1dad7f8718dde3f5107c9038088d5a1078cbd96176",
+      "record": "015aba0c1dad7f8718dde3f5107c9038088d5a1078cbd961768bc7c0f103aa3b2487f4473931f5ca162d6f683c26ea099e0b89043db77d1bdb87a953d8ea3fccf1edb585b80d41f9f71341ae3435741a",
+      "note": "state 3: kept until an always-on peer holds the object and has acknowledged a unit that names it, then cached"
+    },
+    {
+      "name": "an object this device put, which the application asked to keep",
+      "table": 34,
+      "table_name": "retention",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "item": "14054d60bca76faf58826d5e7605206f01006d13af496693636e1826c634ae4f",
+      "value": "a201030301",
+      "opened": {
+        "1": 3,
+        "3": 1
+      },
+      "address": "64679c30bfabf30f9ae6377aa7b8306e22173fec3586732984c0674c6e8e6bf844",
+      "plaintext": "0000002014054d60bca76faf58826d5e7605206f01006d13af496693636e1826c634ae4fa201030301",
+      "aad": "66726173696c2f61742d726573742f7265636f72642f76310164679c30bfabf30f9ae6377aa7b8306e22173fec3586732984c0674c6e8e6bf844",
+      "nonce": "c3487bcd1171b586f31f3dada12377da26b2bf03118a6342",
+      "record": "01c3487bcd1171b586f31f3dada12377da26b2bf03118a6342027bc9153e6d16fbfd7d3f1c786885c0ad9569aadd4bc87875ef980f27a84e089c68eb891bccebfe5176b1e41538e6eaa76be92e824e99f2a4",
+      "note": "state 3 with key 3: kept until an always-on peer holds the object and has acknowledged a unit that names it, and kept by a record of state 1 from then on"
+    },
+    {
       "name": "a checkpoint's record object key, handed by a snapshot",
       "table": 18,
       "table_name": "key",
@@ -1333,6 +1421,96 @@
       "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
       "error": "Malformed",
       "reason": "key 3 is a dropped parent's height, from 1, and only with origin 1"
+    },
+    {
+      "name": "a retention record of an unknown state",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e22597272a993eaa1bbc03bb7f66307162b",
+      "record": "017ccade597c063905057f17f651813cd9917024563506aced4b7a4b933c6eb19bef3842fa79a013e9c4ae6b5c6438e807bd16a0d289657073368086679532a40f9d84478a4eb5078f7ea3b777c0bab1a0332250263e",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "state 1 is kept, state 2 cached and state 3 put"
+    },
+    {
+      "name": "a put object's retention record with a last read",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e221e624c767c01384dcc93d733917b8b06",
+      "record": "0178438f4a28c5f4de4b3686eb7405e702a5ace905dca3fc123e62b9a26e1b2eeb0e6ca178040b4ee01eb8908ad15285d50ac2a4d3283409014ce2f5e0ed9f01d30361d2e27f46461af500dfda202c063bf4b9e9ec1b",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "key 2 is present exactly with state 2"
+    },
+    {
+      "name": "a kept object's retention record with a last read",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e220a48e15f6517510d7c4b4ccc3bb12448",
+      "record": "01735f646a49ef6e873f7e2b2e7f2f6ad4c0e7cad9381205cc57dd596a9779cd0b2a1109541063c34183f27992fcf536ed432f64c11de8ea901498bf6f1dd86c0a1de1db9a9b8c9ae4d9c38cdecbf2a28729770c9f17",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "key 2 is present exactly with state 2"
+    },
+    {
+      "name": "a cached object's retention record without a last read",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e228776a2237a309899690bbf4b09ff505d",
+      "record": "0164faebfecb250a22d327a55192e34136680cef432f044242cf85177742d2c0254dbc0a74a51356f9a39fdf7e21eb15426c72f80d04b3ea28c6092a08fd445ffbe48c39da7df92d468f0366cb179226",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "key 2 is present exactly with state 2"
+    },
+    {
+      "name": "a kept object's retention record with key 3",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e2200248a14eb9ae4632b7503729252da74",
+      "record": "018d975532f37242cdb2840ae8f8820dd5374f1687cff04cef72c2ab8aef3e3cf5445e767be9d6bb80b813c05c088c3cc9b4fb706cedb4cd26acedd5a0782305b5be7b89de0cd972fdb459cef0d154fb304c",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "key 3 is present only with state 3"
+    },
+    {
+      "name": "a cached object's retention record with key 3",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e2219137c2e60635c487ff7f3ae6d74935e",
+      "record": "01272531ec21a5f6ad3e00dd73011b922db7dfcc62dc2a224c916ce100ad2045c443c781d007c4a3f67a8ded896e8200619dd5301e29011387294eb02791b090297cfa28859534ef31f513a283e24459bf017da20aaecd46",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "key 3 is present only with state 3"
+    },
+    {
+      "name": "a put object's retention record with a key 3 of 0",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e22188380ca2ccd3ff2519c0a18e7539574",
+      "record": "01050c372c3895924c93438c43e62c600f4c7fc234c32cef7ae5b4dbc36d8ba5d2e5869c7775753bb9ce67698213e9d61561d2fe88cdee0257ba7530cce9bb5e0381c79ad22457ace960ff4ce1d1046750e2",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "key 3, when present, is the unsigned integer 1"
+    },
+    {
+      "name": "a put object's retention record with a key 3 of 2",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e22e7348a08fb7eb8c978d736bdad845f6e",
+      "record": "016784f0c319ad808198a956cabcd57b246a3fe9f0736d65d5f92fb08dbf7747e34fa38aed83ef452daed453ef774915c1688aa68617192d761dd1ce42910ab1a726c5a6cd676a473ea805de6fc606134248",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "key 3, when present, is the unsigned integer 1"
+    },
+    {
+      "name": "a retention record with no state",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e2216072b44befa9ed5511437ed6e33cf85",
+      "record": "017ae03e5e14197a92d3630a4e5cd1718d0ded0a0351746134851f81f16c428db23ad463719b273a887ba0ff524724466c0d9f6781e295a6ec4ee7596b6989d69ad8a12db6912d492fd1b5b39f105e7bd85a6408",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "key 1 is present"
+    },
+    {
+      "name": "a retention record whose item is not an object ID",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e222e79273effb6446a1da06fc269e43d6e",
+      "record": "01fa7bf85b7d673e984f4b1c896b82a662541f61518bb45d02f54382369a817b1aa7bec15dd08b8969db39533192145a4c015d9abe6af25dff9ae699b7319c7adae882957390d94b57b0650585eaf5",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "the item is an object ID, 32 bytes"
     },
     {
       "name": "a claim naming another space",

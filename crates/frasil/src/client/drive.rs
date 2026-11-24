@@ -504,7 +504,11 @@ impl Drive {
             None => return Err(Error::Invalid("the blob is none of the file's versions")),
         };
         let blobs = self.document.space.blobs(stream).await?;
-        let bytes = blobs.get(blob).await?.ok_or(Error::Class("Missing"))?;
+        // A version this device does not hold is fetched, into its cache.
+        let bytes = blobs
+            .get(blob, &crate::Read::new())
+            .await?
+            .ok_or(Error::Class("Missing"))?;
         // Only the heads in the same stream are superseded
         // (ext-file-versions.md, 3.1 Superseding).
         let same_stream: Vec<BlobId> = file

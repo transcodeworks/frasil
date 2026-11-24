@@ -378,13 +378,23 @@ mod records {
 #[cfg(feature = "adapter-blobs")]
 mod blobs {
     use super::{Duration, Error, Observed, Result, Scope, Space, StreamId, key};
-    use crate::client::{Blob, BlobId, Blobs};
+    use crate::client::{Blob, BlobId, Blobs, Read};
+    use tokio::sync::broadcast::error::RecvError;
+
+    /// How long [`Blobs::get_when_available`] waits before it tries again
+    /// when nothing in the space changed: a connection made meanwhile, or
+    /// bytes that reached a peer after their unit, change nothing this
+    /// device sees.
+    const AVAILABLE_AGAIN: Duration = Duration::from_secs(1);
 
     /// Where a blob's bytes stand on this device, from [`Blobs::status`].
+    /// [`Blobs::local`] tells whether a blob the device holds is kept or
+    /// cached.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     #[non_exhaustive]
     pub enum BlobStatus {
-        /// The device holds the bytes whole: [`Blobs::get`] reads them.
+        /// The device holds the bytes whole, kept or cached: a read gives
+        /// them at once, with no connection.
         Readable,
         /// A peer or member is sending them: `done` of `total` bytes.
         Fetching {
@@ -393,10 +403,13 @@ mod blobs {
             /// The blob's size.
             total: u64,
         },
-        /// The device does not hold them, and nothing is sending them now:
-        /// no peer or member is connected, or they have not been asked for
-        /// under [`Options::objects_on_demand`](crate::Options::objects_on_demand).
-        /// A blob whose key has not arrived is [`BlobStatus::KeysPending`].
+        /// The device does not hold them, and a peer or a member of the
+        /// space is connected: a read fetches them now. The device never
+        /// fetched them, or dropped them since.
+        Absent,
+        /// The device does not hold them, and neither a peer nor a member
+        /// of the space is connected, so a read cannot fetch them now. A
+        /// blob whose key has not arrived is [`BlobStatus::KeysPending`].
         Missing,
         /// The device cannot open the blob yet: the key of the state its
         /// bytes, or the change that adds it, are sealed under has not
@@ -425,7 +438,7 @@ mod blobs {
 
     impl Blobs {
         /// Where a blob's bytes stand on this device: readable, being
-        /// fetched, missing or withdrawn.
+        /// fetched, absent, missing or withdrawn.
         ///
         /// # Errors
         ///
@@ -477,19 +490,38 @@ mod blobs {
                     total: entry.size,
                 },
                 None if awaits_key => BlobStatus::KeysPending,
+                None if self.can_fetch() => BlobStatus::Absent,
                 None => BlobStatus::Missing,
             })
         }
 
         /// Whether the change that put a blob is durable, as
         /// [`Space::is_durable`] counts changes: false while this device
-        /// put it and no always-on peer acknowledged that change. A peer
-        /// takes a put's object before its unit, so once true a peer of the
-        /// space holds the blob; in a space with no always-on peer, a
-        /// member's acknowledgement counts instead, and a member fetches
-        /// the bytes after the unit. A blob another device put is durable
-        /// here. The answer outlives a reopen: the device's record of what
-        /// is not yet acknowledged is kept in its store.
+        /// put it and that change still waits for an acknowledgement. A
+        /// blob another device put is durable here. The answer outlives a
+        /// reopen: the device's record of what is not yet acknowledged is
+        /// kept in its store.
+        ///
+        /// It is about the change, not the bytes. An acknowledgement
+        /// covers events alone. This device uploads a blob's bytes to a
+        /// peer before it sends the peer the change, so a change that a
+        /// peer acknowledged to this device normally has its bytes there;
+        /// but in a space with no always-on peer, or whose peer this
+        /// device has not heard since it opened, a member's
+        /// acknowledgement makes the change durable, and a member fetches
+        /// a blob's bytes only when it reads the blob. There a durable
+        /// put says that another device knows of the blob, and nothing of
+        /// who holds its bytes.
+        ///
+        /// An application must not delete its own copy of a file because
+        /// its put is durable. What tells it that another party holds the
+        /// bytes is [`Blobs::local`]: a blob this device put is
+        /// [`BlobState::Kept`](crate::BlobState::Kept) until an always-on
+        /// peer has answered that it holds the bytes and has acknowledged
+        /// the change, and [`BlobState::Cached`](crate::BlobState::Cached)
+        /// from then on, unless the application asked to keep it. In a
+        /// space with no always-on peer it stays kept, and this device's
+        /// copy may be the only one.
         ///
         /// [`Event::PendingChanges`](crate::Event::PendingChanges) tells
         /// when to ask again.
@@ -510,9 +542,11 @@ mod blobs {
         }
 
         /// The blobs of the stream whose put is not durable yet, as
-        /// [`Blobs::is_durable`] says: those this device put and no peer
-        /// has acknowledged, ascending by ID. After a reopen it lists what
-        /// the device uploads once it connects.
+        /// [`Blobs::is_durable`] says: those this device put whose change
+        /// still waits for an acknowledgement, ascending by ID. After a
+        /// reopen it lists what the device offers once it connects, with
+        /// the bytes it uploads to a peer first. A blob that is not listed
+        /// is not thereby held by anyone else: see [`Blobs::is_durable`].
         ///
         /// # Errors
         ///
@@ -564,22 +598,93 @@ mod blobs {
                 .await
         }
 
-        /// A blob's bytes, once this device holds them whole: at once if it
-        /// does, else as soon as they arrive, for at most `within`. Under
-        /// [`Options::objects_on_demand`](crate::Options::objects_on_demand),
-        /// ask for them first, with [`Blobs::get_stream`] or
-        /// [`Blobs::materialise`].
+        /// A blob's bytes, as [`Blobs::get`] reads them with
+        /// [`Read::new`], within a deadline: at once when this device holds
+        /// them, else fetched into the cache, for at most `within`. It
+        /// waits the whole time for a blob that nothing connected can send
+        /// yet: while no peer or member is connected, and while one is
+        /// that does not hold the blob, so that a fetch gets nowhere, it
+        /// tries again when the space changes and every second, until the
+        /// blob is here or the time is up.
+        /// A read that fetches nothing writes nothing to the store.
+        ///
+        /// A blob whose bytes failed their checks as every connected
+        /// party sent them is waited for too, while another party could
+        /// still send it: a connection being made, a peer the device
+        /// keeps for the space that is not connected, or any other member
+        /// of the space. Only in a space whose one member is this device,
+        /// with every peer it keeps connected, does such a failure end the
+        /// wait at once.
         ///
         /// # Errors
         ///
-        /// [`Error::Timeout`] when they have not arrived in time; as
-        /// [`Blobs::get`].
+        /// [`Error::Timeout`] when the bytes are not here in time; as
+        /// [`Blobs::get`], but for a fetch that stopped moving or that the
+        /// connected parties do not serve, which is tried again;
+        /// `ObjectMismatch` or `Malformed` at once when no other party
+        /// could send the blob, and otherwise when the time is up, if
+        /// that is how the last fetch ended.
         pub async fn get_when_available(&self, id: BlobId, within: Duration) -> Result<Vec<u8>> {
-            self.space()
-                .when_available(within, || async move {
-                    self.get(id).await?.ok_or(Error::Class("Missing"))
-                })
-                .await
+            let engine = self.space().device.engine();
+            let space = self.space().id().event();
+            // Subscribed before the first attempt, so that nothing that
+            // arrives between two attempts is missed.
+            let mut notices = engine.subscribe();
+            let mut arrivals = engine.subscribe_arrivals();
+            let deadline = self.space().device.sleep(within);
+            tokio::pin!(deadline);
+            let read = Read::new();
+            // What the connected parties sent last failed its checks.
+            let mut refused = None;
+            loop {
+                // A fetch under way when the time is up is dropped, and
+                // ends as a cancelled read does.
+                let got = tokio::select! {
+                    () = &mut deadline => return Err(refused.unwrap_or(Error::Timeout)),
+                    got = self.get(id, &read) => got,
+                };
+                match got {
+                    Ok(Some(bytes)) => return Ok(bytes),
+                    // Not here, and not fetched for now.
+                    Ok(None) | Err(Error::Timeout | Error::Class("Missing")) => refused = None,
+                    // Every connection of the space gave the blob up. A
+                    // party that is not connected yet may still hold it
+                    // right: the wait goes on for one.
+                    Err(error @ Error::Class("ObjectMismatch" | "Malformed")) => {
+                        // Within the time too: the look takes the
+                        // device's lock.
+                        let others = tokio::select! {
+                            () = &mut deadline => return Err(error),
+                            others = self.others_may_serve() => others,
+                        };
+                        if !others {
+                            return Err(error);
+                        }
+                        refused = Some(error);
+                    }
+                    Err(error) => return Err(error),
+                }
+                let again = self.space().device.sleep(AVAILABLE_AGAIN);
+                tokio::pin!(again);
+                loop {
+                    tokio::select! {
+                        () = &mut deadline => return Err(refused.unwrap_or(Error::Timeout)),
+                        () = &mut again => break,
+                        notice = notices.recv() => match notice {
+                            Ok(notice) if notice.space == space => break,
+                            Ok(_) => {}
+                            Err(RecvError::Lagged(_)) => break,
+                            Err(RecvError::Closed) => return Err(Error::Timeout),
+                        },
+                        arrival = arrivals.recv() => match arrival {
+                            Ok((from, _)) if from == space => break,
+                            Ok(_) => {}
+                            Err(RecvError::Lagged(_)) => break,
+                            Err(RecvError::Closed) => return Err(Error::Timeout),
+                        },
+                    }
+                }
+            }
         }
 
         /// Observes the blobs the stream holds, as [`Blobs::list`] reads

@@ -185,6 +185,9 @@ struct Live {
     /// The connections that take the device's requests, each for one
     /// space, by the numbers given them.
     takers: BTreeMap<u64, Taking>,
+    /// The connections being made that will take a space's requests, by
+    /// the numbers given them, each with its space.
+    expected: BTreeMap<u64, EventId>,
 }
 
 /// One connection that takes a space's requests.
@@ -193,13 +196,26 @@ struct Taking {
     space: EventId,
     /// The objects it gave up for good, and why.
     given_up: BTreeMap<Locator, FetchEnd>,
+    /// The requests whose chunks it left unserved, by their numbers: it
+    /// asks no further for them, and has not given their object up.
+    unserved: BTreeSet<u64>,
 }
 
 impl Live {
+    /// Whether a connection is being made that will take the space's
+    /// requests.
+    fn expecting(&self, space: &EventId) -> bool {
+        self.expected.values().any(|of| of == space)
+    }
+
     /// Why no connection will fetch an object: `None` while no
-    /// connection takes the space's requests, or one of them has not
-    /// given the object up. `but` leaves one connection out.
+    /// connection takes the space's requests, one of them has not given
+    /// the object up, or one is still being made. `but` leaves one
+    /// connection out.
     fn given_up(&self, space: &EventId, locator: &Locator, but: Option<u64>) -> Option<FetchEnd> {
+        if self.expecting(space) {
+            return None;
+        }
         let mut end = None;
         for (id, taking) in &self.takers {
             if taking.space != *space || but == Some(*id) {
@@ -208,6 +224,37 @@ impl Live {
             end = Some(*taking.given_up.get(locator)?);
         }
         end
+    }
+
+    /// Tells each request of a space that has no end yet the one it has
+    /// now, if every connection that would have tried gave its object up,
+    /// or left the request's chunks unserved: after one of them went, or
+    /// left chunks unserved, and once no connection is being made.
+    fn tell_again(&self, space: &EventId) {
+        if self.expecting(space) {
+            return;
+        }
+        for request in self.requests.values() {
+            if request.space != *space || request.ended.borrow().is_some() {
+                continue;
+            }
+            if let Some(end) = self.given_up(&request.space, &request.locator, None) {
+                request.ended.send_replace(Some(end));
+                continue;
+            }
+            // Each connection is done with it, and one at least would
+            // serve a request made afterwards.
+            let mut takers = self.takers.values().filter(|taking| taking.space == *space);
+            let mut unserved = false;
+            let done = takers.all(|taking| {
+                let left = taking.unserved.contains(&request.id);
+                unserved |= left;
+                left || taking.given_up.contains_key(&request.locator)
+            });
+            if done && unserved {
+                request.ended.send_replace(Some(FetchEnd::Unserved));
+            }
+        }
     }
 
     /// Tells each request still wanted for an object why it ended.
@@ -284,6 +331,7 @@ impl Requests {
             Taking {
                 space,
                 given_up: BTreeMap::new(),
+                unserved: BTreeSet::new(),
             },
         );
         Taker {
@@ -291,6 +339,55 @@ impl Requests {
             space,
             requests: self.clone(),
         }
+    }
+
+    /// A connection that is being made and will take a space's requests,
+    /// until the [`Expected`] is dropped: when the connection takes them
+    /// ([`attach`](Self::attach)), or is not made after all. No request of
+    /// the space ends meanwhile because the other connections gave it up:
+    /// this one may still serve it.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) fn expect(self: &Arc<Self>, space: EventId) -> Expected {
+        let mut live = self.live();
+        live.next += 1;
+        let id = live.next;
+        live.expected.insert(id, space);
+        Expected {
+            id,
+            space,
+            requests: self.clone(),
+        }
+    }
+
+    /// Whether a connection is being made that will take the space's
+    /// requests.
+    #[cfg_attr(
+        not(all(
+            feature = "adapter-blobs",
+            any(feature = "server", feature = "iroh", feature = "server-socket")
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) fn expecting(&self, space: &EventId) -> bool {
+        self.live().expecting(space)
+    }
+
+    /// Whether a connection takes the space's requests now.
+    #[cfg_attr(
+        not(all(
+            feature = "adapter-blobs",
+            any(feature = "server", feature = "iroh", feature = "server-socket")
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) fn taken(&self, space: &EventId) -> bool {
+        self.live()
+            .takers
+            .values()
+            .any(|taking| taking.space == *space)
     }
 
     /// The requests of a space still wanted, oldest first.
@@ -355,7 +452,8 @@ impl Requests {
 /// ([`Requests::attach`]): through it the connection says which objects
 /// it asks the other side for no further. The holders of the requests for
 /// an object hear of its end once every connection of the space that
-/// takes requests gave it up, so that none hears of an end while another
+/// takes requests gave it up and none is still being made
+/// ([`Requests::expect`]), so that none hears of an end while another
 /// connection will still try.
 #[derive(Debug)]
 pub(crate) struct Taker {
@@ -383,16 +481,24 @@ impl Taker {
     /// object, for want of an answer it could keep, without giving the
     /// object up: a request made afterwards is asked for again. Each
     /// request wanted for it now hears of it, unless another connection
-    /// of the space will still try.
+    /// of the space will still try; while one is being made, it hears
+    /// once that connection is made and is done with it too, or is not
+    /// made after all.
     pub(crate) fn unserved(&self, locator: &Locator) {
-        let live = self.requests.live();
-        let others = live
-            .takers
-            .iter()
-            .any(|(id, taking)| *id != self.id && taking.space == self.space);
-        if !others || live.given_up(&self.space, locator, Some(self.id)).is_some() {
-            live.tell(&self.space, locator, FetchEnd::Unserved);
+        let mut live = self.requests.live();
+        let wanted: BTreeSet<u64> = live
+            .requests
+            .values()
+            .filter(|request| request.space == self.space && request.locator == *locator)
+            .map(|request| request.id)
+            .collect();
+        let known: BTreeSet<u64> = live.requests.keys().copied().collect();
+        if let Some(taking) = live.takers.get_mut(&self.id) {
+            // Those of requests that ended are of no use any more.
+            taking.unserved.retain(|id| known.contains(id));
+            taking.unserved.extend(wanted);
         }
+        live.tell_again(&self.space);
     }
 }
 
@@ -402,14 +508,27 @@ impl Drop for Taker {
         live.takers.remove(&self.id);
         // The connections that stay may each have given up an object
         // this one would still have tried.
-        for request in live.requests.values() {
-            if request.space != self.space || request.ended.borrow().is_some() {
-                continue;
-            }
-            if let Some(end) = live.given_up(&request.space, &request.locator, None) {
-                request.ended.send_replace(Some(end));
-            }
-        }
+        live.tell_again(&self.space);
+    }
+}
+
+/// A connection being made that will take a space's requests
+/// ([`Requests::expect`]): while it is held, no request of the space ends
+/// for want of a connection that will try.
+#[derive(Debug)]
+pub(crate) struct Expected {
+    id: u64,
+    space: EventId,
+    requests: Arc<Requests>,
+}
+
+impl Drop for Expected {
+    fn drop(&mut self) {
+        let mut live = self.requests.live();
+        live.expected.remove(&self.id);
+        // Made, and among the takers now; or not made, and the
+        // connections that stay may each have given an object up.
+        live.tell_again(&self.space);
     }
 }
 
@@ -450,7 +569,10 @@ impl Fetch {
     /// ([`end`](Self::end)): a holder that waits for the chunks can stop
     /// waiting for them, until another connection is made. Ready at once
     /// for a request made for an object they gave up before. Never ready
-    /// for a request some connection goes on trying.
+    /// for a request some connection goes on trying, nor while a
+    /// connection of the space is still being made: a peer that has not
+    /// yet granted the space, or a member whose attach is not yet
+    /// started.
     pub async fn ended(&self) -> FetchEnd {
         let mut ended = self.ended.subscribe();
         loop {
@@ -1254,6 +1376,34 @@ mod tests {
         third.unserved(&[5; 64]);
         assert_eq!(again.ended().await, FetchEnd::Unserved);
         drop(elsewhere);
+    }
+
+    /// Chunks left unserved while a connection is being made are told of
+    /// once that connection is not made after all, and not while it may
+    /// still serve them.
+    #[tokio::test]
+    async fn chunks_left_unserved_while_a_connection_is_expected_are_told_of_after() {
+        let requests = Arc::new(Requests::default());
+        let taker = requests.attach(SPACE);
+        let expected = requests.expect(SPACE);
+        let fetch = requests.add(SPACE, [2; 64], 0..1, FetchPriority::Position);
+        taker.unserved(&[2; 64]);
+        assert_eq!(fetch.end(), None, "a connection is being made");
+        drop(expected);
+        assert_eq!(fetch.ended().await, FetchEnd::Unserved);
+        // A request made afterwards is asked for again.
+        let later = requests.add(SPACE, [2; 64], 0..1, FetchPriority::Position);
+        assert_eq!(later.end(), None);
+
+        // The connection is made, and takes the requests: it will try.
+        let expected = requests.expect(SPACE);
+        let other = requests.add(SPACE, [3; 64], 0..1, FetchPriority::Position);
+        taker.unserved(&[3; 64]);
+        let second = requests.attach(SPACE);
+        drop(expected);
+        assert_eq!(other.end(), None, "the second connection will try");
+        second.unserved(&[3; 64]);
+        assert_eq!(other.ended().await, FetchEnd::Unserved);
     }
 
     /// Two fetches that need one slice ask for it once, and it goes once

@@ -207,7 +207,7 @@ fn records() {
     let space = browser.space();
     let rows = family("records");
     let rows = rows.as_array().unwrap();
-    assert_eq!(rows.len(), 43);
+    assert_eq!(rows.len(), 48);
     let mut tables = Vec::new();
     for row in rows {
         let name = text(row, "name");
@@ -271,7 +271,7 @@ fn record_refusals() {
     let browser = Browser::new();
     let cases = family("record_refusals");
     let cases = cases.as_array().unwrap();
-    assert_eq!(cases.len(), 20);
+    assert_eq!(cases.len(), 30);
     for case in cases {
         let name = text(case, "name");
         // The log and the key the case opens it under; a log other than the

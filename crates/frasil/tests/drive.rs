@@ -303,7 +303,11 @@ async fn versions_name_their_author_and_an_old_one_is_restored() {
     heads.sort();
     assert_eq!(parents, heads);
     assert_eq!(
-        files.get(restored).await.unwrap().as_deref(),
+        files
+            .get(restored, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&b"draft"[..])
     );
     assert_eq!(drive.versions(id).await.unwrap().len(), 4);

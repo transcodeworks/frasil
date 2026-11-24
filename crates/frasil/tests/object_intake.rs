@@ -45,6 +45,13 @@ async fn blob() -> Blob {
     blob_of(frasil_units::limits::CHUNK_BYTES + 5).await
 }
 
+/// With a Bob that fetches every blob the space names by itself, and
+/// keeps each: without it, he fetches a blob when a request names it.
+fn keeping_all(blob: Blob) -> Blob {
+    blob.bob.keep_all_blobs();
+    blob
+}
+
 /// [`blob`] with a blob of `size` bytes.
 async fn blob_of(size: usize) -> Blob {
     let alice = device().await;
@@ -206,7 +213,7 @@ async fn fetch_elsewhere(blob: &Blob) {
 /// party serves it whole.
 #[tokio::test]
 async fn a_chunk_that_does_not_open_leaves_the_object_missing() {
-    let blob = blob().await;
+    let blob = keeping_all(blob().await);
     let (mut bobs, held_back) = sync_holding_chunks(&blob).await;
     assert!(bobs.is_fetching(&blob.locator));
     assert!(!held_back.is_empty());
@@ -277,7 +284,7 @@ async fn a_chunk_that_does_not_open_leaves_the_object_missing() {
 /// takes no other part's place, the header's included.
 #[tokio::test]
 async fn a_chunk_past_the_count_is_refused() {
-    let blob = blob().await;
+    let blob = keeping_all(blob().await);
     let (mut bobs, held_back) = sync_holding_chunks(&blob).await;
     let Message::ObjectChunks { header, chunk, .. } = held_back[0].message.clone() else {
         unreachable!()
@@ -307,7 +314,7 @@ async fn a_chunk_past_the_count_is_refused() {
 /// A chunk of another length than the header gives its index is refused.
 #[tokio::test]
 async fn a_chunk_of_another_length_is_refused() {
-    let blob = blob().await;
+    let blob = keeping_all(blob().await);
     let (mut bobs, held_back) = sync_holding_chunks(&blob).await;
     let Message::ObjectChunks { header, chunk, .. } = held_back[0].message.clone() else {
         unreachable!()
@@ -341,7 +348,7 @@ async fn a_chunk_of_another_length_is_refused() {
 /// however well they check.
 #[tokio::test]
 async fn chunks_not_asked_for_are_not_taken() {
-    let blob = blob().await;
+    let blob = keeping_all(blob().await);
     let (_, held_back) = sync_holding_chunks(&blob).await;
     // Another session, on which Bob asked for nothing.
     let mut other = SyncSession::new(blob.space);
@@ -367,7 +374,7 @@ async fn chunks_not_asked_for_are_not_taken() {
 /// refused, and does not replace it.
 #[tokio::test]
 async fn a_second_header_does_not_replace_the_first() {
-    let blob = blob().await;
+    let blob = keeping_all(blob().await);
     let (mut bobs, held_back) = sync_holding_chunks(&blob).await;
     // The real chunk 0, with its header.
     blob.bob
@@ -411,10 +418,9 @@ async fn a_second_header_does_not_replace_the_first() {
     );
 }
 
-/// Bob, who fetches blobs only when asked, synced with Alice: he knows
-/// the blob, which she announced, and holds nothing of it.
+/// Bob, who fetches a blob when it is asked for, synced with Alice: he
+/// knows the blob, which she announced, and holds nothing of it.
 async fn synced_on_demand(blob: &Blob) -> (SyncSession, SyncSession) {
-    blob.bob.fetch_objects_on_demand();
     let mut bobs = SyncSession::new(blob.space);
     let mut alices = SyncSession::new(blob.space);
     let first = blob.bob.sync_start(&mut bobs).await.unwrap();
@@ -565,7 +571,7 @@ async fn an_answer_nobody_wants_any_more_is_dropped_as_it_arrives() {
 /// again, and its answer carries the header.
 #[tokio::test]
 async fn a_chunk_with_no_header_is_not_kept_and_refuses_nothing() {
-    let blob = blob().await;
+    let blob = keeping_all(blob().await);
     let (mut bobs, held_back) = sync_holding_chunks(&blob).await;
     let by_alice = Acknowledger::Member(blob.alice.device_id().0);
     assert_eq!(held_back.len(), 2);
@@ -608,7 +614,7 @@ async fn a_chunk_with_no_header_is_not_kept_and_refuses_nothing() {
 /// object: under the header held it is checked and kept as any other.
 #[tokio::test]
 async fn a_chunk_with_no_header_is_kept_under_the_header_held() {
-    let blob = blob().await;
+    let blob = keeping_all(blob().await);
     let (mut bobs, held_back) = sync_holding_chunks(&blob).await;
     for message in held_back {
         blob.bob

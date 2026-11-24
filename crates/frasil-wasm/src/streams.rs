@@ -1006,7 +1006,8 @@ impl Blobs {
 
     /// Gets a blob into a sink: `push(chunk)` takes each chunk and resolves
     /// when it may take the next; `onProgress(done, total)` reports
-    /// progress. Resolves once the whole blob was pushed.
+    /// progress. A blob this device does not hold whole is fetched first,
+    /// into its cache. Resolves once the whole blob was pushed.
     #[wasm_bindgen(js_name = getStream)]
     pub fn get_stream(
         &self,
@@ -1022,19 +1023,21 @@ impl Blobs {
                 pending: None,
             };
             blobs
-                .get_stream(blob, writer, progress(on_progress))
+                .get_stream(blob, writer, &frasil::Read::new(), progress(on_progress))
                 .await
                 .js()?;
             Ok(JsValue::UNDEFINED)
         }))
     }
 
-    /// A blob's bytes; `undefined` while this device does not hold them whole.
+    /// A blob's bytes. A blob this device does not hold whole is fetched
+    /// first, into its cache; `undefined` when it is not here and nothing
+    /// is connected that could send it.
     pub fn get(&self, blob: String) -> Result<Promise, JsValue> {
         let blob = id::<BlobId>(&blob)?;
         let blobs = self.inner.clone();
         Ok(promise(async move {
-            match blobs.get(blob).await {
+            match blobs.get(blob, &frasil::Read::new()).await {
                 Ok(Some(data)) => Ok(bytes(&data)),
                 Ok(None) => Ok(JsValue::UNDEFINED),
                 Err(failure) => Err(error(failure)),

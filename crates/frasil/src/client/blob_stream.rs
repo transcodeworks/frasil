@@ -6,13 +6,14 @@
 //! with no total until the end. The put then seals the object in memory,
 //! as [`Blobs::put`] does: the plaintext, its sealed chunks and the stored
 //! bytes are held together, so a put needs a few times the blob's size in
-//! memory, and in a browser the WebAssembly memory bounds the blob. A get
-//! waits for the chunks that peers and members send while the device does
-//! not hold the blob whole, reporting the share fetched, then opens the
-//! object chunk by chunk and writes each out as it opens, so that a large
-//! blob never sits whole in memory: a get, a range read and a content hash
-//! each hold a few chunks at a time, and a range read the range too. A
-//! blob the application holds is read from its file the same way.
+//! memory, and in a browser the WebAssembly memory bounds the blob. A read
+//! of a blob the device does not hold whole fetches it first, as its
+//! [`Read`] says, from the peers and members connected, reporting the share
+//! fetched; it then opens the object chunk by chunk and writes each out as
+//! it opens, so that a large blob never sits whole in memory: a get into a
+//! writer, a range read and a content hash each hold a few chunks at a
+//! time, and a range read the range too. A blob the application holds is
+//! read from its file the same way.
 //! Progress is `(bytes, total)`, and never goes back. A reference reads the
 //! same way: a peer serves its object to this space, and the key it carries
 //! opens it.
@@ -23,7 +24,7 @@
 //! blob checks its plaintext's ID (step 7) before it writes the last chunk.
 //! A get that fails part way has written a prefix of the blob: discard it.
 
-use super::{BlobId, Blobs};
+use super::{BlobId, Blobs, Read};
 use crate::error::{Error, Result};
 use crate::objects::Plain;
 use frasil_events::EventId;
@@ -68,7 +69,15 @@ impl Reporter<fn(u64, Option<u64>)> {
 }
 
 impl<F: FnMut(u64, Option<u64>)> Reporter<F> {
-    fn report(&mut self, done: u64, total: Option<u64>) {
+    /// Progress that `on_progress` follows.
+    pub(super) fn following(on_progress: F) -> Self {
+        Self {
+            on_progress,
+            reported: None,
+        }
+    }
+
+    pub(super) fn report(&mut self, done: u64, total: Option<u64>) {
         if self.reported.is_none_or(|reported| done > reported) {
             self.reported = Some(done);
             (self.on_progress)(done, total);
@@ -139,24 +148,27 @@ impl Blobs {
         Ok(id)
     }
 
-    /// Writes a blob's bytes into `writer`, fetching them from the
-    /// connected peers, or from members over member connections, first
-    /// while this device does not hold them whole.
+    /// Writes a blob's bytes into `writer`. A blob this device does not
+    /// hold whole is fetched first, as `read` says ([`Read`]), from the
+    /// connected peers, or from members over member connections.
     /// `on_progress(bytes, Some(size))` follows the fetch, then the
     /// writing.
     ///
     /// # Errors
     ///
     /// [`Error::Invalid`] when the stream holds no blob of this ID;
-    /// `Missing` while the device does not hold it and neither a peer nor a
-    /// member of the space is connected; [`Error::Timeout`] when the fetch
-    /// stops moving;
-    /// [`Error::Connection`] when the writer fails; a class when the bytes
-    /// do not open.
+    /// `Missing` while the device does not hold it and the read is
+    /// [`local`](Read::local), or neither a peer nor a member of the space
+    /// is connected, or the connected parties do not serve it for now;
+    /// [`Error::Timeout`] when the fetch stops moving; `ObjectMismatch` or
+    /// `Malformed` as [`Blobs::get`] says; [`Error::Connection`] when the
+    /// writer fails; a class when the bytes do not open; as [`Blobs::get`]
+    /// for what `read` asks.
     pub async fn get_stream(
         &self,
         id: BlobId,
         mut writer: impl AsyncWrite + Unpin,
+        read: &Read,
         on_progress: impl FnMut(u64, Option<u64>),
     ) -> Result<()> {
         let mut progress = Reporter {
@@ -164,93 +176,126 @@ impl Blobs {
             reported: None,
         };
         let entry = self.entry(id).await?;
-        let (locator, size) = (entry.object, entry.size);
-        let space = self.space().id().event();
-        if !self.holds_entry(&entry).await {
-            self.fetched(space, locator, size, &mut progress).await?;
-        }
-        let mut written = 0u64;
-        let mut chunks = self.plain(&entry, 0..u64::MAX).await?;
-        while let Some((_, chunk)) = chunks.next().await? {
-            for piece in chunk.chunks(PIECE) {
-                write_all(&mut writer, piece).await?;
-                written += piece.len() as u64;
-                progress.report(written, Some(size));
+        let size = entry.size;
+        let reading = self
+            .ready(&entry, read, &mut progress)
+            .await?
+            .ok_or(Error::Class("Missing"))?;
+        let written = async {
+            let mut written = 0u64;
+            let mut chunks = self.plain(&entry, 0..u64::MAX).await?;
+            while let Some((_, chunk)) = chunks.next().await? {
+                for piece in chunk.chunks(PIECE) {
+                    write_all(&mut writer, piece).await?;
+                    written += piece.len() as u64;
+                    progress.report(written, Some(size));
+                }
             }
+            poll_fn(|cx| Pin::new(&mut writer).poll_flush(cx))
+                .await
+                .map_err(|error| io(&error))
         }
-        poll_fn(|cx| Pin::new(&mut writer).poll_flush(cx))
-            .await
-            .map_err(|error| io(&error))?;
+        .await;
+        reading.done().await?;
+        written?;
         progress.report(size, Some(size));
         Ok(())
     }
 
     /// The SHA-256 of a blob's plaintext, a stable hash of its content for
-    /// keying media or comparing with local files; `None` while this device
-    /// cannot read the blob whole, as for [`Blobs::get`]. It fetches
-    /// nothing. It is computed on this device, chunk by chunk, once per
-    /// blob while the device is open; the protocol carries no such hash,
-    /// and peers never see it.
+    /// keying media or comparing with local files. A blob this device does
+    /// not hold whole is fetched first, as `read` says; `None` when the
+    /// blob is not here and cannot be fetched now, or cannot be opened
+    /// yet, as for [`Blobs::get`]. The hash is computed on this device,
+    /// chunk by chunk, and kept while the device is open and holds the
+    /// blob; the protocol carries no such hash, and peers never see it.
     ///
     /// # Errors
     ///
     /// As [`Blobs::get`].
-    pub async fn content_hash(&self, id: BlobId) -> Result<Option<[u8; 32]>> {
+    pub async fn content_hash(&self, id: BlobId, read: &Read) -> Result<Option<[u8; 32]>> {
         let entry = self.entry(id).await?;
-        let key = (self.space().id().event(), entry.object);
-        let hashes = &self.space().device.inner.content_hashes;
-        if let Some(hash) = hashes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&key)
-        {
-            return Ok(Some(*hash));
-        }
-        let mut hasher = frasil_crypto::primitives::Sha256Hasher::new();
-        let mut chunks = match self.plain(&entry, 0..u64::MAX).await {
-            Ok(chunks) => chunks,
-            Err(Error::Class("Missing" | "Sealed")) => return Ok(None),
+        let engine = self.space().device.engine();
+        let space = self.space().id().event();
+        let reading = match self.ready(&entry, read, &mut Reporter::silent()).await {
+            Ok(Some(reading)) => reading,
+            Ok(None) | Err(Error::Class("Missing")) => return Ok(None),
             Err(error) => return Err(error),
         };
-        loop {
-            match chunks.next().await {
-                Ok(Some((_, chunk))) => hasher.update(&chunk),
-                Ok(None) => break,
-                Err(Error::Class("Missing" | "Sealed")) => return Ok(None),
-                Err(error) => return Err(error),
-            }
+        if let Some(hash) = engine.content_hash(&space, &entry.object) {
+            reading.done().await?;
+            return Ok(Some(hash));
         }
-        let hash = hasher.finish();
-        hashes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key, hash);
-        Ok(Some(hash))
+        let hashed = async {
+            let mut hasher = frasil_crypto::primitives::Sha256Hasher::new();
+            let mut chunks = self.plain(&entry, 0..u64::MAX).await?;
+            while let Some((_, chunk)) = chunks.next().await? {
+                hasher.update(&chunk);
+            }
+            Ok(hasher.finish())
+        }
+        .await;
+        // Kept only while the device holds what was hashed: an object the
+        // read drops takes its hash with it.
+        if let Ok(hash) = &hashed {
+            engine.keep_content_hash(space, entry.object, *hash);
+        }
+        reading.done().await?;
+        match hashed {
+            Ok(hash) => Ok(Some(hash)),
+            Err(Error::Class("Missing" | "Sealed")) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
-    /// `len` bytes of a blob from byte `offset`, fewer at its end; `None`
-    /// while this device does not hold the blob whole yet, as for
-    /// [`Blobs::get`]. It holds a few chunks and the range, never the
-    /// blob. Only the chunks that hold the range are opened once every
+    /// `len` bytes of a blob from byte `offset`, fewer at its end. A blob
+    /// this device does not hold whole is fetched first, whole, as `read`
+    /// says; `None` when the blob is not here and cannot be fetched now,
+    /// as for [`Blobs::get`]. It holds a few chunks and the range, never
+    /// the blob. Only the chunks that hold the range are opened once every
     /// check of units.md, 3.3 has run on the whole blob since the device
-    /// opened: until then a range read runs them first, in one pass over
-    /// the stored chunks that keeps only the range, so that the first
-    /// range read of a blob in a session reads all of it. A blob the
-    /// application holds is read from its file, through to its end
-    /// while the object ID is checked.
+    /// opened or last fetched it: until then a range read runs them
+    /// first, in one pass over the stored chunks that keeps only the
+    /// range, so that the first range read of a blob reads all of it. A
+    /// blob the application holds is read from its file, through to its
+    /// end while the object ID is checked.
     ///
     /// # Errors
     ///
     /// As [`Blobs::get`].
-    pub async fn get_range(&self, id: BlobId, offset: u64, len: u64) -> Result<Option<Vec<u8>>> {
+    pub async fn get_range(
+        &self,
+        id: BlobId,
+        offset: u64,
+        len: u64,
+        read: &Read,
+    ) -> Result<Option<Vec<u8>>> {
         let entry = self.entry(id).await?;
         let end = offset.saturating_add(len).min(entry.size);
         if offset >= end {
             return Ok(Some(Vec::new()));
         }
+        let reading = match self.ready(&entry, read, &mut Reporter::silent()).await {
+            Ok(Some(reading)) => reading,
+            Ok(None) | Err(Error::Class("Missing")) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let range = self.range_of(&entry, offset, end).await;
+        reading.done().await?;
+        range
+    }
+
+    /// The bytes of an entry from `offset` to `end`, from the chunks the
+    /// device holds.
+    async fn range_of(
+        &self,
+        entry: &frasil_adapter_blobs::Entry,
+        offset: u64,
+        end: u64,
+    ) -> Result<Option<Vec<u8>>> {
         let chunk = frasil_units::limits::CHUNK_BYTES as u64;
         let chunks = offset / chunk..end.div_ceil(chunk);
-        let mut plain = match self.plain(&entry, chunks).await {
+        let mut plain = match self.plain(entry, chunks).await {
             Ok(plain) => plain,
             Err(Error::Class("Missing")) => return Ok(None),
             Err(error) => return Err(error),
@@ -296,30 +341,59 @@ impl Blobs {
 
     /// Waits until the device holds a blob's object whole, as the
     /// connected peers' chunk streams bring it, or members' answers to the
-    /// device's `ObjectWant` over member connections.
+    /// device's `ObjectWant` over member connections. A connection made
+    /// while it waits serves the request too: the peers are looked at
+    /// again at each turn, and one not seen before is asked.
+    ///
+    /// # Errors
+    ///
+    /// `Missing` when nothing is connected that could send the object, or
+    /// when the space's connections ask for it no further for want of an
+    /// answer ([`FetchEnd::Unserved`]); `ObjectMismatch` when what they
+    /// were sent failed its checks ([`FetchEnd::Refused`]) and `Malformed`
+    /// when it did not read as the object ([`FetchEnd::Malformed`]), each
+    /// as soon as every connection of the space gave the request up and
+    /// none is still being made: a peer that has not yet granted the
+    /// space, or a member whose attach has not started, may still serve
+    /// the request, and it has no end while one is awaited.
+    /// [`Error::Timeout`] when nothing arrives for [`STALL`], which bounds
+    /// that wait too, or the last connection goes.
+    ///
+    /// [`FetchEnd::Unserved`]: crate::fetch::FetchEnd::Unserved
+    /// [`FetchEnd::Refused`]: crate::fetch::FetchEnd::Refused
+    /// [`FetchEnd::Malformed`]: crate::fetch::FetchEnd::Malformed
     #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
     pub(super) async fn fetched<F: FnMut(u64, Option<u64>)>(
         &self,
         space: frasil_events::EventId,
         locator: frasil_adapter::Locator,
         size: u64,
+        priority: crate::fetch::FetchPriority,
         progress: &mut Reporter<F>,
     ) -> Result<()> {
+        use crate::fetch::FetchEnd;
         let device = &self.space().device;
         let engine = device.engine().clone();
-        let peers: Vec<_> = device
-            .peers_of(&space)
-            .into_iter()
-            .filter(|peer| !peer.handle().is_closed())
-            .collect();
-        if peers.is_empty() && !engine.member_attached(&space) {
+        let connected = || {
+            let peers: Vec<_> = device
+                .peers_of(&space)
+                .into_iter()
+                .filter(|peer| !peer.handle().is_closed())
+                .collect();
+            // A connection that takes the space's requests could send it.
+            let any = !peers.is_empty()
+                || engine.member_attached(&space)
+                || engine.fetches().taken(&space);
+            (peers, any)
+        };
+        if !connected().1 {
             return Err(Error::Class("Missing"));
         }
-        // A device that fetches blobs only when asked is asked here.
-        engine.ask_object(space, locator).await;
-        for peer in &peers {
-            peer.handle().fetch(space);
-        }
+        // Every chunk is wanted while this read waits: each connection of
+        // the space fetches those the device lacks, and nothing of the
+        // object is dropped meanwhile.
+        let fetch = engine.fetch_chunks(space, locator, 0..u64::MAX, priority);
+        let mut asked = Vec::new();
         let mut idle = std::time::Duration::ZERO;
         loop {
             if engine
@@ -329,10 +403,11 @@ impl Blobs {
             {
                 return Ok(());
             }
-            // Whole meanwhile, for another read, and released or dropped
-            // since: this read asks again.
-            if engine.ask_object_again(space, locator).await {
-                for peer in &peers {
+            let (peers, any) = connected();
+            for peer in &peers {
+                let by = peer.handle().acknowledger();
+                if !asked.contains(&by) {
+                    asked.push(by);
                     peer.handle().fetch(space);
                 }
             }
@@ -354,12 +429,20 @@ impl Blobs {
                 }
                 _ => idle += POLL,
             }
-            let connected = peers.iter().any(|peer| !peer.handle().is_closed())
-                || engine.member_attached(&space);
-            if idle >= STALL || !connected {
+            if idle >= STALL || !any {
                 return Err(Error::Timeout);
             }
-            device.sleep(POLL).await;
+            // The request's end is heard as it is told, between two looks.
+            tokio::select! {
+                end = fetch.ended() => {
+                    return Err(Error::Class(match end {
+                        FetchEnd::Refused => "ObjectMismatch",
+                        FetchEnd::Malformed => "Malformed",
+                        FetchEnd::Unserved => "Missing",
+                    }));
+                }
+                () = device.sleep(POLL) => {}
+            }
         }
     }
 
@@ -496,9 +579,46 @@ impl Blobs {
         _space: frasil_events::EventId,
         _locator: frasil_adapter::Locator,
         _size: u64,
+        _priority: crate::fetch::FetchPriority,
         _progress: &mut Reporter<F>,
     ) -> Result<()> {
         Err(Error::Class("Missing"))
+    }
+
+    /// Whether a peer or a member of the space is connected, so that a
+    /// read could fetch a blob now.
+    #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
+    pub(super) fn can_fetch(&self) -> bool {
+        let device = &self.space().device;
+        let space = self.space().id().event();
+        device
+            .peers_of(&space)
+            .into_iter()
+            .any(|peer| !peer.handle().is_closed())
+            || device.engine().member_attached(&space)
+    }
+
+    /// Without a connection, nothing can be fetched.
+    #[cfg(not(any(feature = "server", feature = "iroh", feature = "server-socket")))]
+    pub(super) fn can_fetch(&self) -> bool {
+        false
+    }
+
+    /// Whether a party that is not connected now could still send the
+    /// space's blobs ([`Engine::others_may_serve`]).
+    ///
+    /// [`Engine::others_may_serve`]: crate::device::Engine::others_may_serve
+    #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
+    pub(super) async fn others_may_serve(&self) -> bool {
+        let space = self.space().id().event();
+        self.space().device.engine().others_may_serve(&space).await
+    }
+
+    /// Without a connection, no party sends anything.
+    #[cfg(not(any(feature = "server", feature = "iroh", feature = "server-socket")))]
+    #[allow(clippy::unused_async)]
+    pub(super) async fn others_may_serve(&self) -> bool {
+        false
     }
 }
 
@@ -519,5 +639,279 @@ mod tests {
             progress.report(10, Some(10));
         }
         assert_eq!(seen, vec![(5, Some(10)), (10, Some(10))]);
+    }
+
+    /// A read hears how the request for its blob ended as soon as the
+    /// space's connections give it up, and fails with what fits: it does
+    /// not wait until the fetch is found not to move.
+    #[cfg(all(
+        feature = "adapter-blobs",
+        any(feature = "server", feature = "iroh", feature = "server-socket")
+    ))]
+    #[tokio::test]
+    async fn a_read_ends_as_the_request_for_its_blob_ends() {
+        use crate::fetch::FetchEnd;
+        use crate::{Device, Error, Read, Storage};
+        use std::time::Duration;
+
+        let device = Device::open(Storage::Memory, &[1; 32]).await.unwrap();
+        let space = device.create_space().await.unwrap();
+        let blobs = space.create_blobs().unwrap();
+        let id = blobs.put(None, &[7; 1000]).await.unwrap();
+        let locator = blobs.entry(id).await.unwrap().object;
+        // Absent here, by the application's choice.
+        blobs.drop_local(id).await.unwrap();
+        let engine = device.engine().clone();
+        let of = space.id().event();
+
+        for end in [FetchEnd::Refused, FetchEnd::Malformed, FetchEnd::Unserved] {
+            // A connection that takes the space's requests, and gives
+            // this one up once the read has made it.
+            let taker = engine.fetches().attach(of);
+            let reading = {
+                let blobs = blobs.clone();
+                tokio::spawn(async move { blobs.get(id, &Read::new()).await })
+            };
+            let gives_up = async {
+                while engine.fetches().of(&of).is_empty() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                match end {
+                    FetchEnd::Unserved => taker.unserved(&locator),
+                    end => taker.give_up(&locator, end),
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(5), gives_up)
+                .await
+                .expect("the read asks for the blob");
+            let read = tokio::time::timeout(Duration::from_secs(5), reading)
+                .await
+                .expect("the read ends with its request")
+                .unwrap();
+            match end {
+                FetchEnd::Refused => {
+                    assert!(
+                        matches!(read, Err(Error::Class("ObjectMismatch"))),
+                        "{read:?}"
+                    );
+                }
+                FetchEnd::Malformed => {
+                    assert!(matches!(read, Err(Error::Class("Malformed"))), "{read:?}");
+                }
+                // Not served for now: not here, and a later read asks
+                // again.
+                FetchEnd::Unserved => assert!(matches!(read, Ok(None)), "{read:?}"),
+            }
+            drop(taker);
+            assert!(engine.fetches().of(&of).is_empty());
+        }
+    }
+
+    /// A blob of a space whose one member is this device, absent here by
+    /// the application's choice, with its bytes and the parts a party
+    /// that holds it would send.
+    #[cfg(all(
+        feature = "adapter-blobs",
+        any(feature = "server", feature = "iroh", feature = "server-socket")
+    ))]
+    async fn absent_blob(
+        device: &crate::Device,
+    ) -> (
+        crate::Space,
+        crate::Blobs,
+        crate::BlobId,
+        frasil_adapter::Locator,
+        Vec<u8>,
+        Vec<crate::snapshots::ObjectPart>,
+    ) {
+        let space = device.create_space().await.unwrap();
+        let blobs = space.create_blobs().unwrap();
+        let bytes = vec![7; 1000];
+        let id = blobs.put(None, &bytes).await.unwrap();
+        let locator = blobs.entry(id).await.unwrap().object;
+        blobs.drop_local(id).await.unwrap();
+        let (sealed, _, parts) = device
+            .engine()
+            .seal_parts(space.id().event(), &bytes)
+            .await
+            .unwrap();
+        assert_eq!(sealed, locator);
+        (space, blobs, id, locator, bytes, parts)
+    }
+
+    /// Waits until a request for chunks is made in a space.
+    #[cfg(all(
+        feature = "adapter-blobs",
+        any(feature = "server", feature = "iroh", feature = "server-socket")
+    ))]
+    async fn requested(engine: &crate::device::Engine, of: frasil_events::EventId) {
+        let asked = async {
+            while engine.fetches().of(&of).is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), asked)
+            .await
+            .expect("the read asks for the blob");
+    }
+
+    /// A read does not end because the connected parties gave its blob up
+    /// while a connection of the space is still being made: that one
+    /// serves the read once it is made, and a connection that is not made
+    /// after all lets the read end with what the others said.
+    #[cfg(all(
+        feature = "adapter-blobs",
+        any(feature = "server", feature = "iroh", feature = "server-socket")
+    ))]
+    #[tokio::test]
+    async fn a_read_waits_for_a_connection_still_being_made() {
+        use crate::fetch::FetchEnd;
+        use crate::{Device, Error, Read, Storage};
+        use std::time::Duration;
+
+        let device = Device::open(Storage::Memory, &[1; 32]).await.unwrap();
+        let (space, blobs, id, locator, bytes, parts) = absent_blob(&device).await;
+        let engine = device.engine().clone();
+        let of = space.id().event();
+
+        // One connection refuses the blob while another is being made.
+        let refusing = engine.fetches().attach(of);
+        let coming = engine.fetches().expect(of);
+        let reading = {
+            let blobs = blobs.clone();
+            tokio::spawn(async move { blobs.get(id, &Read::new()).await })
+        };
+        requested(&engine, of).await;
+        refusing.give_up(&locator, FetchEnd::Refused);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            !reading.is_finished(),
+            "the connection being made may still serve it"
+        );
+        // It is made, takes the request, and sends the blob.
+        let serving = engine.fetches().attach(of);
+        drop(coming);
+        for part in parts {
+            engine.receive_part(of, part).await.unwrap();
+        }
+        let read = tokio::time::timeout(Duration::from_secs(10), reading)
+            .await
+            .expect("the read ends once the blob is here")
+            .unwrap();
+        assert_eq!(read.unwrap(), Some(bytes));
+
+        // A connection that is not made after all: the read ends as the
+        // connected ones left it.
+        blobs.drop_local(id).await.unwrap();
+        serving.give_up(&locator, FetchEnd::Refused);
+        let coming = engine.fetches().expect(of);
+        let reading = {
+            let blobs = blobs.clone();
+            tokio::spawn(async move { blobs.get(id, &Read::new()).await })
+        };
+        requested(&engine, of).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!reading.is_finished());
+        drop(coming);
+        let read = tokio::time::timeout(Duration::from_secs(10), reading)
+            .await
+            .expect("the read ends with its request")
+            .unwrap();
+        assert!(
+            matches!(read, Err(Error::Class("ObjectMismatch"))),
+            "{read:?}"
+        );
+    }
+
+    /// `get_when_available` waits through a blob that every connected
+    /// party sent wrong while another party could still send it, and
+    /// returns the bytes when one that holds it right appears.
+    #[cfg(all(
+        feature = "adapter-blobs",
+        any(feature = "server", feature = "iroh", feature = "server-socket")
+    ))]
+    #[tokio::test]
+    async fn get_when_available_returns_a_blob_whose_holder_appears_late() {
+        use crate::fetch::FetchEnd;
+        use crate::{Device, Storage};
+        use std::time::Duration;
+
+        let device = Device::open(Storage::Memory, &[1; 32]).await.unwrap();
+        let (space, blobs, id, locator, bytes, parts) = absent_blob(&device).await;
+        let engine = device.engine().clone();
+        let of = space.id().event();
+        // The space has an always-on peer, which is not connected.
+        engine
+            .keep_peer_hints(&of, &["https://peer.example".to_owned()])
+            .await
+            .unwrap();
+
+        let refusing = engine.fetches().attach(of);
+        let waiting = {
+            let blobs = blobs.clone();
+            tokio::spawn(async move { blobs.get_when_available(id, Duration::from_secs(30)).await })
+        };
+        requested(&engine, of).await;
+        refusing.give_up(&locator, FetchEnd::Refused);
+        // Past a second try, which the refusal ends at once.
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert!(!waiting.is_finished(), "another party may still hold it");
+
+        // A holder connects, and sends the blob when it is next asked for.
+        let _holder = engine.fetches().attach(of);
+        requested(&engine, of).await;
+        for part in parts {
+            engine.receive_part(of, part).await.unwrap();
+        }
+        let got = tokio::time::timeout(Duration::from_secs(10), waiting)
+            .await
+            .expect("the wait ends once the blob is here")
+            .unwrap();
+        assert_eq!(got.unwrap(), bytes);
+    }
+
+    /// A blob every party sent wrong ends `get_when_available` at once
+    /// where no other party could send it, and when the time is up where
+    /// one could: with the failure, not as a blob that never came.
+    #[cfg(all(
+        feature = "adapter-blobs",
+        any(feature = "server", feature = "iroh", feature = "server-socket")
+    ))]
+    #[tokio::test]
+    async fn get_when_available_ends_on_a_mismatch_every_party_agrees_on() {
+        use crate::fetch::FetchEnd;
+        use crate::{Device, Error, Storage};
+        use std::time::{Duration, Instant};
+
+        let device = Device::open(Storage::Memory, &[1; 32]).await.unwrap();
+        let (space, blobs, id, locator, _, _) = absent_blob(&device).await;
+        let engine = device.engine().clone();
+        let of = space.id().event();
+        let refusing = engine.fetches().attach(of);
+        refusing.give_up(&locator, FetchEnd::Refused);
+
+        // This device is the space's one member, and it keeps no peer.
+        let began = Instant::now();
+        let got = blobs.get_when_available(id, Duration::from_secs(30)).await;
+        assert!(
+            matches!(got, Err(Error::Class("ObjectMismatch"))),
+            "{got:?}"
+        );
+        assert!(began.elapsed() < Duration::from_secs(10));
+
+        // With a peer that is not connected, it waits its time.
+        engine
+            .keep_peer_hints(&of, &["https://peer.example".to_owned()])
+            .await
+            .unwrap();
+        let began = Instant::now();
+        let got = blobs
+            .get_when_available(id, Duration::from_millis(1_500))
+            .await;
+        assert!(
+            matches!(got, Err(Error::Class("ObjectMismatch"))),
+            "{got:?}"
+        );
+        assert!(began.elapsed() >= Duration::from_millis(1_400));
     }
 }

@@ -107,21 +107,30 @@ async fn a_blob_s_content_hash_is_the_sha256_of_its_bytes() {
     let blobs = space.create_blobs().unwrap();
     let small = blobs.put(Some("a.txt"), b"some content").await.unwrap();
     assert_eq!(
-        blobs.content_hash(small).await.unwrap(),
+        blobs
+            .content_hash(small, &frasil::Read::new())
+            .await
+            .unwrap(),
         Some(sha256(&[b"some content"]))
     );
     // Larger than one chunk: hashed chunk by chunk.
     let large: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
     let id = blobs.put(None, &large).await.unwrap();
     assert_eq!(
-        blobs.content_hash(id).await.unwrap(),
+        blobs.content_hash(id, &frasil::Read::new()).await.unwrap(),
         Some(sha256(&[&large]))
     );
     // Equal content, equal hash.
     let again = blobs.put(Some("b.txt"), b"some content").await.unwrap();
     assert_eq!(
-        blobs.content_hash(again).await.unwrap(),
-        blobs.content_hash(small).await.unwrap()
+        blobs
+            .content_hash(again, &frasil::Read::new())
+            .await
+            .unwrap(),
+        blobs
+            .content_hash(small, &frasil::Read::new())
+            .await
+            .unwrap()
     );
 }
 
@@ -142,7 +151,13 @@ async fn a_listed_blob_with_its_keys_and_no_bytes_is_missing_not_keys_pending() 
     let bobs = bob.space(SpaceId::from_bytes(space.0)).await.unwrap();
     let bobs_blobs = bobs.blobs(blobs.id()).await.unwrap();
     assert_eq!(bobs_blobs.status(id).await.unwrap(), BlobStatus::Missing);
-    assert_eq!(bobs_blobs.content_hash(id).await.unwrap(), None);
+    assert_eq!(
+        bobs_blobs
+            .content_hash(id, &frasil::Read::new())
+            .await
+            .unwrap(),
+        None
+    );
     // A blob the stream does not list, with nothing waiting for a key, is
     // still unknown.
     assert!(

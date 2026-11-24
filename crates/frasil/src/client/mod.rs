@@ -85,6 +85,8 @@ mod membership;
 mod rebase;
 #[cfg(feature = "adapter-blobs")]
 mod references;
+#[cfg(feature = "adapter-blobs")]
+mod retention;
 #[cfg(any(feature = "adapter-loro", feature = "adapter-records"))]
 mod review;
 mod suggestions;
@@ -155,6 +157,8 @@ pub use reads::Receipt;
 pub use recovery::{Passkey, PasskeyAssertion, PasskeyFuture, PrfOutput, RecoverySheet};
 #[cfg(feature = "adapter-blobs")]
 pub use references::BlobInfo;
+#[cfg(feature = "adapter-blobs")]
+pub use retention::{BlobCacheUsage, BlobLocal, BlobState, Read};
 #[cfg(any(feature = "adapter-loro", feature = "adapter-records"))]
 pub use review::{Review, ReviewChange, TextStep};
 pub use space::{Member, MemberKind, Space, StreamInfo, StreamKind};
@@ -248,7 +252,10 @@ pub struct Options {
     local_discovery: bool,
     #[cfg_attr(not(feature = "partial-replicas"), allow(dead_code))]
     partial: bool,
-    objects_on_demand: bool,
+    /// The budget of the blob cache, in stored bytes; 256 MiB when none is
+    /// given.
+    blob_cache: Option<u64>,
+    keep_all_blobs: bool,
     /// `version_compaction_interval`, in seconds (ext-file-versions.md).
     #[cfg(feature = "ext-file-versions")]
     version_compaction_interval: Option<u64>,
@@ -274,7 +281,8 @@ impl core::fmt::Debug for Options {
             .field("restore", &self.restore)
             .field("loopback", &self.loopback)
             .field("partial", &self.partial)
-            .field("objects_on_demand", &self.objects_on_demand)
+            .field("blob_cache", &self.blob_cache)
+            .field("keep_all_blobs", &self.keep_all_blobs)
             .finish_non_exhaustive()
     }
 }
@@ -436,16 +444,36 @@ impl Options {
         self
     }
 
-    /// Fetches a blob only when the application asks for it with
-    /// [`Blobs::materialise`], not because a stream names it: for a device
-    /// that holds a space's blobs as files and shows the rest as
-    /// placeholders. It holds the entries of every Blobs stream it opens and
-    /// none of their files until it asks. [`Blobs::get`] and the other
-    /// readers find a file not fetched `Missing`. This is the device's own
-    /// choice of what to fetch, which no peer or member can see.
+    /// The budget of the blob cache, in bytes as the device stores them: a
+    /// blob's sealed chunks and its header, a little more than its size.
+    /// 256 MiB when not set.
+    ///
+    /// A device fetches a blob when it is read and leaves it in the cache
+    /// ([`Blobs::get`], [`Read`]). When the cached blobs of all its spaces
+    /// would pass the budget, it drops whole blobs, the one read longest
+    /// ago first; a read fetches a dropped blob again. With a budget of
+    /// zero a read stores nothing once it ends, and a blob larger than
+    /// the budget is dropped once the read that fetched it ends. Blobs the
+    /// device keeps ([`Blobs::keep`]), blobs it put that no peer holds
+    /// yet, and what Frasil stores for itself are outside the budget and
+    /// never dropped for it. The budget is not stored: give it at each
+    /// open.
     #[must_use]
-    pub fn objects_on_demand(mut self) -> Self {
-        self.objects_on_demand = true;
+    pub fn blob_cache(mut self, bytes: u64) -> Self {
+        self.blob_cache = Some(bytes);
+        self
+    }
+
+    /// Fetches every blob the device's spaces name, because a stream
+    /// names it, and keeps each: a full copy, for a device that must read
+    /// every blob with no connection. Nothing is evicted, and the budget
+    /// of [`blob_cache`](Self::blob_cache) is not used. Without it, a
+    /// device knows every blob of the streams it holds and fetches one
+    /// when it is read or kept. This is the device's own choice of what to
+    /// fetch, which no peer or member can see.
+    #[must_use]
+    pub fn keep_all_blobs(mut self) -> Self {
+        self.keep_all_blobs = true;
         self
     }
 
@@ -646,12 +674,6 @@ pub(crate) struct Inner {
     reported: events::Reported,
     /// The observed reads shared by key ([`Observed`]).
     observers: observe::Registry,
-    /// The SHA-256 of each blob's plaintext computed so far, by space and
-    /// locator ([`Blobs::content_hash`]).
-    #[cfg(feature = "adapter-blobs")]
-    content_hashes: std::sync::Mutex<
-        std::collections::BTreeMap<(frasil_events::EventId, frasil_adapter::Locator), [u8; 32]>,
-    >,
     #[cfg(feature = "iroh")]
     node: tokio::sync::Mutex<Option<crate::node::Node>>,
     #[cfg_attr(not(feature = "iroh"), allow(dead_code))]
@@ -779,8 +801,11 @@ impl Device {
         if options.partial {
             engine.hold_streams_only();
         }
-        if options.objects_on_demand {
-            engine.fetch_objects_on_demand();
+        if let Some(bytes) = options.blob_cache {
+            engine.set_blob_cache(bytes);
+        }
+        if options.keep_all_blobs {
+            engine.keep_all_blobs();
         }
         #[cfg(feature = "ext-file-versions")]
         let version_interval = options
@@ -843,8 +868,6 @@ impl Device {
             tokens: tokens::Tokens::new(options.deposit_batch),
             reported: events::Reported::default(),
             observers: observe::Registry::default(),
-            #[cfg(feature = "adapter-blobs")]
-            content_hashes: std::sync::Mutex::default(),
             #[cfg(feature = "iroh")]
             node: tokio::sync::Mutex::new(None),
             loopback: options.loopback,
@@ -1273,6 +1296,13 @@ impl Device {
         self.inner.tasks.spawn(task);
     }
 
+    /// Runs a task in the background if the device's tasks can take it
+    /// now, without a panic when they cannot: whether it was taken.
+    #[cfg_attr(not(feature = "adapter-blobs"), allow(dead_code))]
+    pub(crate) fn try_spawn(&self, task: frasil_store::BoxFuture<'static, ()>) -> bool {
+        self.inner.tasks.try_spawn(task)
+    }
+
     /// Joins a space through an exchange mailbox at the peer at `url`,
     /// where this device cannot take part in nearby pairing, such as in a
     /// browser (admission.md, "Without a nearby connection"). Show the
@@ -1505,6 +1535,8 @@ fn start_upkeep(inner: &Arc<Inner>) {
                 return;
             }
             let _ = Box::pin(inner.engine.maintain_all()).await;
+            // The blob cache, back within its budget.
+            let _ = inner.engine.evict().await;
             #[cfg(feature = "ext-file-versions")]
             inner.engine.compact_versions(inner.version_interval).await;
             // Each space that grants the person gets its recovery entry
@@ -1522,6 +1554,11 @@ fn start_upkeep(inner: &Arc<Inner>) {
                     for space in &spaces {
                         peer.present(*space);
                     }
+                }
+                // The blobs this device put that no peer is known to hold
+                // yet, and that no change waiting to be sent names.
+                for peer in peers.iter().chain(&inner.moves.all_scoped()) {
+                    peer.offer_puts();
                 }
                 // This device's own skeleton events that a failed
                 // administration connection left, once more.

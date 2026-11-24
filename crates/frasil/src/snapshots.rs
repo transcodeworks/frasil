@@ -414,6 +414,7 @@ impl Engine {
         Self::keep_parts_in(state, space, &parts.iter().collect::<Vec<_>>()).await?;
         if let Some(replica) = state.replicas.get_mut(&space) {
             replica.snapshot_kept();
+            replica.set_adopted_snapshot(sealed.locator);
         }
         Ok(())
     }
@@ -476,6 +477,7 @@ impl Engine {
             replica.set_system_stream(snapshot.system_stream);
             replica.set_base_lists(&snapshot.placed);
             replica.keep_stream_entries(snapshot.streams);
+            replica.set_adopted_snapshot(locator);
             return Ok(true);
         }
         Ok(false)

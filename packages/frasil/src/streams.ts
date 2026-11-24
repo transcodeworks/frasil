@@ -56,16 +56,18 @@ export type RecordChange =
   | { readonly kind: "all" };
 
 /**
- * A change of a blob stream: a blob put or removed, its bytes arrived whole (`get` reads them
- * now), or a held blob withdrawn because its file changed.
+ * A change of a blob stream: a blob put or removed, its bytes arrived whole (a read gives them
+ * with no connection now), its bytes evicted (this device dropped them, to keep its cache within
+ * its budget; a read fetches them again), or a held blob withdrawn because its file changed.
  */
 export type BlobChange =
   | { readonly kind: "added" | "removed"; readonly id: BlobId; readonly origin: Origin }
-  | { readonly kind: "arrived" | "withdrawn"; readonly id: BlobId };
+  | { readonly kind: "arrived" | "evicted" | "withdrawn"; readonly id: BlobId };
 
 /**
  * Where a blob's bytes stand on this device: readable, being fetched (`done` of `total` bytes),
- * missing (nothing is sending them now), waiting for keys (the key it is sealed under has not
+ * missing (this device does not hold them and nothing is sending them now: a read fetches them
+ * while a peer or member is connected), waiting for keys (the key it is sealed under has not
  * reached this device yet; connecting changes nothing until it does), or withdrawn (a held file
  * changed; peers still have it).
  */
@@ -1163,10 +1165,11 @@ export class Blobs extends Handle<raw.Blobs> {
   }
 
   /**
-   * `length` bytes of a blob from byte `offset`, fewer at its end; `undefined` while this device
-   * does not hold it whole. Only the chunks that hold the range are opened, once the blob was
-   * read whole on this device since it opened; the first range read opens it whole once, without
-   * keeping it, so that every check runs.
+   * `length` bytes of a blob from byte `offset`, fewer at its end. A blob this device does not
+   * hold whole is fetched first, whole, into its cache; `undefined` when it is not here and
+   * nothing is connected that could send it. Only the chunks that hold the range are opened, once
+   * the blob was read whole on this device; the first range read opens it whole once, so that
+   * every check runs.
    */
   getRange(id: BlobId, offset: number, length: number): Promise<Uint8Array | undefined> {
     return callAsync(
@@ -1175,8 +1178,8 @@ export class Blobs extends Handle<raw.Blobs> {
   }
 
   /**
-   * A blob's bytes, once this device holds them whole: at once if it does, else as soon as they
-   * arrive, for at most `withinMs`; rejects with `timeout` when they have not arrived in time.
+   * A blob's bytes within a deadline: at once when this device holds them, else fetched into its
+   * cache, for at most `withinMs`; rejects with `timeout` when they are not here in time.
    */
   getWhenAvailable(id: BlobId, withinMs: number): Promise<Uint8Array> {
     return callAsync(
@@ -1229,8 +1232,8 @@ export class Blobs extends Handle<raw.Blobs> {
 
   /**
    * The SHA-256 of a blob's plaintext, a stable hash of its content for keying media or comparing
-   * with local files; `undefined` while this device cannot read the blob whole. It fetches nothing,
-   * and is computed on this device: peers never see it.
+   * with local files. A blob this device does not hold whole is fetched first, into its cache;
+   * `undefined` when it cannot be read whole. It is computed on this device: peers never see it.
    */
   contentHash(id: BlobId): Promise<Uint8Array | undefined> {
     return callAsync(() => this.raw().contentHash(id) as Promise<Uint8Array | undefined>);
@@ -1287,8 +1290,9 @@ export class Blobs extends Handle<raw.Blobs> {
   }
 
   /**
-   * A blob's bytes as a stream, without holding them whole in memory. `onProgress` reports the
-   * bytes opened so far. The stream errors if the blob cannot be read.
+   * A blob's bytes as a stream, without holding them whole in memory. A blob this device does not
+   * hold whole is fetched first, into its cache. `onProgress` reports the bytes fetched, then the
+   * bytes opened. The stream errors if the blob cannot be read.
    */
   getStream(id: BlobId, onProgress?: Progress): ReadableStream<Uint8Array> {
     let wake: (() => void) | undefined;
@@ -1327,8 +1331,9 @@ export class Blobs extends Handle<raw.Blobs> {
   }
 
   /**
-   * A blob's bytes; `undefined` while this device does not hold them whole yet. A reference reads
-   * like any blob.
+   * A blob's bytes. A blob this device does not hold whole is fetched first from a connected peer
+   * or member, into its cache; `undefined` when it is not here and nothing is connected that
+   * could send it. A reference reads like any blob.
    */
   get(id: BlobId): Promise<Uint8Array | undefined> {
     return callAsync(() => this.raw().get(id) as Promise<Uint8Array | undefined>);

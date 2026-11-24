@@ -217,6 +217,49 @@ impl Engine {
         self.change_peers(space, Change::Demote(url)).await
     }
 
+    /// Whether a party that is not connected now could still send an
+    /// object of a space, so that what the connected ones sent settles
+    /// nothing for good: a connection of the space is being made; the
+    /// device keeps an always-on peer of the space that does not grant it
+    /// the space on a connection now; or the space has a member besides
+    /// this device, which may connect and hold the object. Only a space
+    /// whose one member is this device, with every peer it keeps
+    /// connected, has no other party to wait for.
+    #[cfg_attr(not(feature = "adapter-blobs"), allow(dead_code))]
+    pub(crate) async fn others_may_serve(&self, space: &EventId) -> bool {
+        if self.fetches().expecting(space) {
+            return true;
+        }
+        let kept = self
+            .kept_peers(space)
+            .await
+            .map(|kept| kept.ordered())
+            .unwrap_or_default();
+        let syncing: Vec<String> = self
+            .syncing()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|(of, _)| of == space)
+            .map(|(_, url)| url.clone())
+            .collect();
+        if kept
+            .iter()
+            .any(|url| !syncing.iter().any(|with| same_peer(with, url)))
+        {
+            return true;
+        }
+        let own = frasil_space::MemberRef::device(self.device_id());
+        self.read(space, |replica| {
+            replica
+                .roster()
+                .members_in()
+                .any(|(member, _)| *member != own)
+        })
+        .await
+        .unwrap_or(false)
+    }
+
     /// Notes the peers that grant the device each space on an open
     /// connection now, for the welcomes it signs: each space with a peer's
     /// URL.

@@ -118,7 +118,8 @@ async fn a_large_blob_reads_back_in_a_few_chunks_of_memory() {
     // A range before any whole read: every step runs on the whole object
     // first, keeping only the chunks of the range.
     let offset = 30 * CHUNK - 100;
-    let (range, peak) = peak_of(blobs.get_range(id, offset as u64, 300)).await;
+    let (range, peak) =
+        peak_of(blobs.get_range(id, offset as u64, 300, &frasil::Read::new())).await;
     let range = range.unwrap().unwrap();
     assert!(
         range
@@ -129,19 +130,21 @@ async fn a_large_blob_reads_back_in_a_few_chunks_of_memory() {
     assert!(peak < BOUND, "first range read: peak {peak}");
 
     // A range once the object was checked: only its chunks.
-    let (range, peak) = peak_of(blobs.get_range(id, 5, 2 * CHUNK as u64)).await;
+    let (range, peak) =
+        peak_of(blobs.get_range(id, 5, 2 * CHUNK as u64, &frasil::Read::new())).await;
     let range = range.unwrap().unwrap();
     assert!(range.iter().enumerate().all(|(i, b)| *b == byte(5 + i)));
     assert!(peak < BOUND, "second range read: peak {peak}");
 
     // The whole blob streamed out, without holding it.
     let mut check = Check { at: 0 };
-    let (streamed, peak) = peak_of(blobs.get_stream(id, &mut check, |_, _| {})).await;
+    let (streamed, peak) =
+        peak_of(blobs.get_stream(id, &mut check, &frasil::Read::new(), |_, _| {})).await;
     streamed.unwrap();
     assert_eq!(check.at, SIZE);
     assert!(peak < BOUND, "stream: peak {peak}");
 
-    let (hash, peak) = peak_of(blobs.content_hash(id)).await;
+    let (hash, peak) = peak_of(blobs.content_hash(id, &frasil::Read::new())).await;
     assert!(hash.unwrap().is_some());
     assert!(peak < BOUND, "content hash: peak {peak}");
 

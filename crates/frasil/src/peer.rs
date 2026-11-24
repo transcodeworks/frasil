@@ -218,6 +218,14 @@ impl PeerHandle {
         let _ = self.commands.send(Command::Fetch(space));
     }
 
+    /// Asks the peer again whether it holds the objects this device put in
+    /// a space that no peer is known to hold and no unit waiting to be
+    /// sent names, those that are due (at-rest.md, "Retention", an object
+    /// the device put). A device calls it at its upkeep.
+    pub fn offer_puts(&self, space: EventId) {
+        let _ = self.commands.send(Command::OfferPuts(space));
+    }
+
     /// Asks the peer for a stream's units from its latest snapshot
     /// (units.md, "Sync", by stream): the peer answers `StreamHeads`, then
     /// the snapshot unit and the units after its cover.
@@ -408,6 +416,9 @@ enum Command {
     Resume(EventId),
     Seek(EventId),
     Fetch(EventId),
+    /// Asks the peer again for the objects this device put that no peer
+    /// is known to hold.
+    OfferPuts(EventId),
     Upload(EventId, Locator, tokio::sync::oneshot::Sender<bool>),
     WantStream(EventId, StreamId),
     Mailbox(MailboxAsk, MailboxReply),
@@ -595,6 +606,9 @@ struct Attached {
     streams: Option<BTreeSet<StreamId>>,
     /// Whether the outbox was offered under the store right.
     offered_outbox: bool,
+    /// Whether the objects this device put that no peer is known to hold
+    /// were offered on this transport (at-rest.md, "Retention").
+    offered_puts: bool,
     /// Whether this connection is creating the space at the peer.
     creating: bool,
     /// Merged states a merge statement was sent for.
@@ -608,6 +622,27 @@ struct Attached {
     uploaded: BTreeSet<Locator>,
     /// Objects being uploaded.
     uploading: BTreeSet<Locator>,
+    /// The uploads whose answer is awaited, each with whether it was
+    /// started after the peer acknowledged a unit that names the object:
+    /// only the answer to such a question releases an object this device
+    /// put (at-rest.md, "Retention", an object the device put).
+    asked: BTreeMap<Locator, bool>,
+    /// On a stream, the objects a chunk of which was sent on this
+    /// connection before the peer acknowledged a unit that names them.
+    /// `ObjectHave` names no upload, so one that answers such a chunk
+    /// cannot be told from a later one: none releases the object here.
+    #[cfg(feature = "iroh")]
+    early: BTreeSet<Locator>,
+    /// On a stream, the objects this device put of which it asked the
+    /// peer for one chunk, to learn whether it holds them, each with the
+    /// chunk asked for.
+    #[cfg(feature = "iroh")]
+    probing: BTreeMap<Locator, u64>,
+    /// On a stream, the objects uploaded again because the peer sent no
+    /// chunk of them when asked: the peer is asked for a chunk once more
+    /// when it holds the upload whole.
+    #[cfg(feature = "iroh")]
+    sent_again: BTreeSet<Locator>,
     /// Who waits to learn that the peer holds an object.
     upload_answers: BTreeMap<Locator, Vec<tokio::sync::oneshot::Sender<bool>>>,
     /// Units held back until the objects they name are uploaded (units.md,
@@ -2233,6 +2268,7 @@ impl Driver {
                 self.attach(space).await
             }
             Command::Fetch(space) => self.fetch_missing(space).await,
+            Command::OfferPuts(space) => self.offer_puts(space, false).await,
             Command::Upload(space, locator, reply) => {
                 self.upload_answering(space, locator, reply).await
             }
@@ -2472,6 +2508,11 @@ impl Driver {
         }
         let mut session = SyncSession::new(space);
         session.set_acknowledges(false);
+        // Being made: a request for chunks does not end for want of a
+        // connection that will try while this one may yet take it.
+        if !self.paused(&space) {
+            session.expect(self.device.fetches());
+        }
         // This device's own skeleton events go on administration
         // connections only (peers.md, "Administration connections").
         session.withhold(self.device.own_skeleton(&space).await);
@@ -2487,6 +2528,7 @@ impl Driver {
                 subscribed: false,
                 streams: None,
                 offered_outbox: false,
+                offered_puts: false,
                 creating: false,
                 merged: BTreeSet::new(),
                 inputs: BTreeSet::new(),
@@ -2494,6 +2536,13 @@ impl Driver {
                 store_token: None,
                 uploaded: BTreeSet::new(),
                 uploading: BTreeSet::new(),
+                asked: BTreeMap::new(),
+                #[cfg(feature = "iroh")]
+                early: BTreeSet::new(),
+                #[cfg(feature = "iroh")]
+                probing: BTreeMap::new(),
+                #[cfg(feature = "iroh")]
+                sent_again: BTreeSet::new(),
                 upload_answers: BTreeMap::new(),
                 deferred: Vec::new(),
                 #[cfg(any(feature = "server", feature = "server-socket"))]
@@ -3078,7 +3127,20 @@ impl Driver {
         }
     }
 
+    /// Whether a credential the device presented for a space is not yet
+    /// answered: a grant may still follow.
+    fn presenting(&self, space: &EventId) -> bool {
+        self.requests.values().any(|request| match request {
+            Request::Present { space: of, .. } | Request::Fetch { space: of } => of == space,
+            _ => false,
+        })
+    }
+
     async fn on_granted(&mut self, space: EventId, rights: Vec<Right>) -> Result<()> {
+        let paused = self.paused(&space);
+        #[cfg(any(feature = "server", feature = "server-socket"))]
+        let slices = self.wire.by_slices();
+        let presenting = self.presenting(&space);
         let Some(attached) = self.spaces.get_mut(&space) else {
             return Ok(());
         };
@@ -3094,10 +3156,21 @@ impl Driver {
             attached.offered_outbox = false;
         }
         let all = attached.rights.clone();
-        self.status().granted.insert(space, all.clone());
-        let mut messages = Vec::new();
         let fetches = all.contains(&Right::Fetch) || all.contains(&Right::CatchUp);
         let stores = all.contains(&Right::Store);
+        // The connection takes the space's requests from here on, where
+        // it may fetch, and is no longer one still being made.
+        #[cfg(any(feature = "server", feature = "server-socket"))]
+        let tokened = !slices || attached.fetch_token.is_some();
+        #[cfg(not(any(feature = "server", feature = "server-socket")))]
+        let tokened = true;
+        if fetches && tokened && !paused {
+            attached.session.taker(self.device.fetches());
+        } else if !presenting {
+            attached.session.unexpect();
+        }
+        self.status().granted.insert(space, all.clone());
+        let mut messages = Vec::new();
         // A newcomer admitted "from now on" places no event before its
         // snapshot (admission.md, "The newcomer's snapshot"): it fetches
         // the snapshot first, then syncs.
@@ -3183,7 +3256,135 @@ impl Driver {
                     .await?,
             );
         }
-        self.send_sync(space, messages).await
+        self.send_sync(space, messages).await?;
+        let offers = self
+            .spaces
+            .get_mut(&space)
+            .is_some_and(|attached| stores && !std::mem::replace(&mut attached.offered_puts, true));
+        if offers {
+            self.offer_puts(space, true).await?;
+        }
+        Ok(())
+    }
+
+    /// Asks the peer again whether it holds the objects this device put in
+    /// a space whose record still says that no peer is known to hold
+    /// them, and that no unit of the outbox names
+    /// ([`Engine::puts_to_offer`]): at a connection, once the peer
+    /// acknowledged a unit that names one, and at upkeep. The device
+    /// releases an object once the peer answers such a question put after
+    /// that acknowledgement (at-rest.md, "Retention", an object the device
+    /// put). The question is the upload a writer makes before a unit, to
+    /// which a peer that holds the object answers so; on a stream, where
+    /// that answer names no upload, it is a request for one chunk of the
+    /// object once the peer acknowledged a unit that names it.
+    async fn offer_puts(&mut self, space: EventId, connected: bool) -> Result<()> {
+        let stores = self
+            .spaces
+            .get(&space)
+            .is_some_and(|attached| attached.rights.contains(&Right::Store));
+        if !stores || self.paused(&space) || self.transport_ended() {
+            return Ok(());
+        }
+        for locator in self.device.puts_to_offer(space, self.by, connected).await? {
+            // At a connection the object is uploaded, so that a peer that
+            // lost it takes it at once.
+            #[cfg(feature = "iroh")]
+            if !connected && self.ask_for_chunk(space, locator).await? {
+                continue;
+            }
+            let Some(attached) = self.spaces.get_mut(&space) else {
+                return Ok(());
+            };
+            if attached.uploading.contains(&locator) {
+                continue;
+            }
+            // What an earlier upload on this connection left is asked
+            // again: the peer may have collected the object since.
+            attached.uploaded.remove(&locator);
+            self.upload(space, locator).await?;
+        }
+        Ok(())
+    }
+
+    /// On a stream, asks the peer for the last chunk of an object this
+    /// device put, once the peer acknowledged a unit that names it: a peer
+    /// serves only an object it holds whole (peers.md, "Objects"), and
+    /// `ObjectChunks` answers this `ObjectWant` and nothing sent before
+    /// it, so the chunk says that the peer holds the object now
+    /// ([`chunk_answered`](Self::chunk_answered)). `false` when the
+    /// question is not put this way, and the object is uploaded instead:
+    /// on another binding, before such an acknowledgement, or when an
+    /// earlier such question on this connection had no answer, as from a
+    /// peer that lost the object, which takes the upload and is asked for
+    /// a chunk again once it holds it ([`uploaded`](Self::uploaded)).
+    /// Without the fetch right no chunk can be asked for: the object is
+    /// uploaded, unless a chunk of it went on this connection before the
+    /// acknowledgement, when no answer to an upload releases it here.
+    #[cfg(feature = "iroh")]
+    async fn ask_for_chunk(&mut self, space: EventId, locator: Locator) -> Result<bool> {
+        if !matches!(self.wire, Wire::Iroh(_)) {
+            return Ok(false);
+        }
+        let Some(attached) = self.spaces.get_mut(&space) else {
+            return Ok(false);
+        };
+        if !attached.rights.contains(&Right::Fetch) {
+            return Ok(attached.early.contains(&locator));
+        }
+        if attached.probing.remove(&locator).is_some() {
+            attached.sent_again.insert(locator);
+            return Ok(false);
+        }
+        let Some((have, Some(total))) = self.device.object_progress(&space, &locator).await else {
+            return Ok(false);
+        };
+        if total == 0 || have < total {
+            return Ok(false);
+        }
+        if !self.device.put_asking(space, self.by, &locator).await {
+            return Ok(false);
+        }
+        let Some(attached) = self.spaces.get_mut(&space) else {
+            return Ok(true);
+        };
+        attached.probing.insert(locator, total - 1);
+        self.send_raw(
+            space,
+            vec![SyncMessage {
+                space,
+                message: UnitMessage::ObjectWant {
+                    locator,
+                    first: total - 1,
+                    count: 1,
+                },
+            }],
+        )
+        .await?;
+        Ok(true)
+    }
+
+    /// The peer sent the chunk asked of an object this device put
+    /// ([`ask_for_chunk`](Self::ask_for_chunk)): if it is the chunk this
+    /// device holds, the peer holds the object, by an answer to a question
+    /// put after its acknowledgement.
+    #[cfg(feature = "iroh")]
+    async fn chunk_answered(
+        &mut self,
+        space: EventId,
+        locator: Locator,
+        index: u64,
+        chunk: &[u8],
+    ) -> Result<()> {
+        if !self.device.same_chunk(&space, &locator, index, chunk).await {
+            return Ok(());
+        }
+        let Some(attached) = self.spaces.get_mut(&space) else {
+            return Ok(());
+        };
+        attached.probing.remove(&locator);
+        attached.asked.insert(locator, true);
+        self.uploaded(space, locator).await
     }
 
     async fn on_refused(&mut self, request: Request, code: String) -> Result<()> {
@@ -3203,6 +3404,13 @@ impl Driver {
                 // duties").
                 if code == "erased" {
                     self.device.note_erased_at_peer(space);
+                }
+                // With no credential left to be answered, the connection
+                // is not about to take the space's requests.
+                if !self.presenting(&space)
+                    && let Some(attached) = self.spaces.get_mut(&space)
+                {
+                    attached.session.unexpect();
                 }
                 if credential == Credential::Read
                     && let Some(attached) = self.spaces.get_mut(&space)
@@ -3245,6 +3453,11 @@ impl Driver {
             // recovery fails with the peer's refusal (identity.md,
             // "Recovery", step 1). Nothing is created.
             Request::Fetch { space } => {
+                if !self.presenting(&space)
+                    && let Some(attached) = self.spaces.get_mut(&space)
+                {
+                    attached.session.unexpect();
+                }
                 self.status().refused.push((space, code));
                 Ok(())
             }
@@ -3570,6 +3783,12 @@ impl Driver {
             self.status().created.push(space);
         }
         self.send_sync(space, messages).await?;
+        // An object this device put that the peer now holds a unit of is
+        // asked for again: the answer releases it (at-rest.md,
+        // "Retention", an object the device put).
+        if acknowledged {
+            self.offer_puts(space, false).await?;
+        }
         self.present_current(space).await?;
         self.fetch_missing(space).await
     }
@@ -3835,10 +4054,22 @@ impl Driver {
             // The next transport uploads it, under its own token.
             return Ok(());
         }
+        // Whether the peer already acknowledged a unit that names it.
+        let after = self.device.put_asking(space, self.by, &locator).await;
         let Some(attached) = self.spaces.get_mut(&space) else {
             return Ok(());
         };
+        #[cfg(feature = "iroh")]
+        let after = if matches!(self.wire, Wire::Iroh(_)) {
+            if !after {
+                attached.early.insert(locator);
+            }
+            after && !attached.early.contains(&locator)
+        } else {
+            after
+        };
         attached.uploading.insert(locator);
+        attached.asked.insert(locator, after);
         match &mut self.wire {
             #[cfg(feature = "server")]
             Wire::Server(_, http) => {
@@ -3866,10 +4097,14 @@ impl Driver {
                     Err(Stopped::Refused(code)) => {
                         if let Some(attached) = self.spaces.get_mut(&space) {
                             attached.uploading.remove(&locator);
+                            attached.asked.remove(&locator);
                         }
                         // A transfer of a transport that ended was no
-                        // refusal.
+                        // refusal. A peer that refused an object this
+                        // device put is not offered it again on this
+                        // connection.
                         if !self.transport_ended() {
+                            self.device.put_refused(space, self.by, &locator).await;
                             self.status().refused.push((space, code));
                         }
                         Ok(())
@@ -3909,10 +4144,14 @@ impl Driver {
                     Err(Stopped::Refused(code)) => {
                         if let Some(attached) = self.spaces.get_mut(&space) {
                             attached.uploading.remove(&locator);
+                            attached.asked.remove(&locator);
                         }
                         // A transfer of a transport that ended was no
-                        // refusal.
+                        // refusal. A peer that refused an object this
+                        // device put is not offered it again on this
+                        // connection.
                         if !self.transport_ended() {
+                            self.device.put_refused(space, self.by, &locator).await;
                             self.status().refused.push((space, code));
                         }
                         Ok(())
@@ -4011,8 +4250,23 @@ impl Driver {
         };
         attached.uploading.remove(&locator);
         attached.uploaded.insert(locator);
+        // An object this device put has another holder now, if the peer
+        // was asked after it acknowledged a unit that names the object.
+        let after = attached.asked.remove(&locator).unwrap_or(false);
+        #[cfg(feature = "iroh")]
+        let again = attached.sent_again.remove(&locator) && !after;
+        self.device
+            .object_at_peer(space, self.by, &locator, after)
+            .await?;
         for reply in attached.upload_answers.remove(&locator).unwrap_or_default() {
             let _ = reply.send(true);
+        }
+        // A peer that sent no chunk of the object when asked holds it
+        // again: asked once more, since on a stream the answer to this
+        // upload may release nothing.
+        #[cfg(feature = "iroh")]
+        if again {
+            self.ask_for_chunk(space, locator).await?;
         }
         self.release(space, locator).await
     }
@@ -4091,6 +4345,10 @@ impl Driver {
             return Ok(());
         };
         if !attached.session.is_fetching(&locator) {
+            #[cfg(feature = "iroh")]
+            if attached.probing.get(&locator) == Some(&index) {
+                return self.chunk_answered(space, locator, index, &chunk).await;
+            }
             return Ok(());
         }
         let part = crate::snapshots::ObjectPart {
@@ -4635,6 +4893,11 @@ impl SliceTask {
             };
             drop(slice);
             for part in parts {
+                // Cancelled while the slice was on its way: none of its
+                // parts is stored for this request.
+                if self.request.cancel.is_cancelled() {
+                    return SliceFetch::Cancelled;
+                }
                 match self.device.receive_part(space, part).await {
                     Ok(Received::Kept) => self.kept = true,
                     Ok(Received::Whole) => return SliceFetch::Done,

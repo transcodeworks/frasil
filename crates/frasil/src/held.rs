@@ -826,22 +826,13 @@ pub(crate) struct HeldObjects {
     receiving: BTreeMap<(EventId, Locator), Receiving>,
     /// Hints for fetches the application started, by space and locator.
     hints: BTreeMap<(EventId, Locator), Vec<u8>>,
-    /// Objects a read asked for and the device does not hold whole yet,
-    /// by space and locator: fetched on a device that fetches blobs only
-    /// when asked, with no hint for a provider.
-    asked: BTreeSet<(EventId, Locator)>,
 }
 
 impl HeldObjects {
-    /// Whether the application started a fetch of the object, or read it.
+    /// Whether the application started a fetch of the object, to hold it
+    /// through its provider.
     pub fn asked_for(&self, space: &EventId, locator: &Locator) -> bool {
-        self.hints.contains_key(&(*space, *locator)) || self.asked.contains(&(*space, *locator))
-    }
-
-    /// Forgets that a read asked for an object: it is whole, or released,
-    /// and is asked for again by the next read that lacks it.
-    pub fn answered(&mut self, space: &EventId, locator: &Locator) {
-        self.asked.remove(&(*space, *locator));
+        self.hints.contains_key(&(*space, *locator))
     }
 
     /// A receive in progress: the header it holds, and the index of the
@@ -947,26 +938,12 @@ fn reference_in(_: &Replica, _: &Locator) -> Option<(EventId, [u8; 32])> {
 }
 
 /// Whether an object is Frasil's own, read by Frasil and never by the
-/// application: the space snapshot a newcomer awaits, a stream snapshot
-/// object not yet loaded, or an object a snapshot unit or a unit of the
-/// system stream names, such as a `frasil:body-keys` unit that names a
-/// newcomer's snapshot and its stream snapshot objects (units.md,
-/// "Frasil's own units"). These stay sealed under every policy.
+/// application ([`frasils_own`](crate::retention::frasils_own)): the space
+/// snapshot a newcomer awaits or adopted, a stream snapshot object, an
+/// object a snapshot unit or a unit of the system stream names, or a
+/// checkpoint's record object. These stay sealed under every policy.
 fn is_frasils_own(replica: &Replica, locator: &Locator) -> bool {
-    if replica.awaited_snapshot() == Some(locator)
-        || replica.pending_stream_objects().any(|l| l == locator)
-    {
-        return true;
-    }
-    let Some(log) = replica.log() else {
-        return false;
-    };
-    let system = replica.system_stream();
-    log.events()
-        .filter(|event| event.kind() == frasil_events::kind::UNIT)
-        .filter_map(|event| frasil_units::Unit::from_event(event.clone()).ok())
-        .filter(|unit| unit.body.compacts.is_some() || Some(unit.body.stream) == system)
-        .any(|unit| unit.body.objects.contains(locator))
+    crate::retention::frasils_own(replica, &object_id(locator))
 }
 
 /// A provider and the tokens to call `forget` for.
@@ -1266,11 +1243,18 @@ impl Engine {
                 &[&id[..], &part.to_be_bytes()].concat(),
             );
         }
+        // A held object has no retention (at-rest.md, "Held objects",
+        // changing the policy).
+        state
+            .vault
+            .delete(&mut batch, &space.0, Table::Retention, &id);
         if let Err(error) = state.vault.commit(batch).await {
             drop(state);
             let _ = provider.forget(&record.token).await;
             return Err(error);
         }
+        state.retained.forget_object(&space, &id);
+        self.forget_checks(&space, &id);
         state.held.hints.remove(&(space, locator));
         keep_held(
             &mut state,
@@ -1965,9 +1949,8 @@ impl Engine {
             if let Some(replica) = state.replicas.get_mut(space) {
                 replica.mark_held(*locator, false);
             }
-            // Released, it is no longer asked for: a device that fetches
-            // blobs only when asked leaves it until the next read.
-            state.held.answered(space, locator);
+            // Released, it is no longer asked for: the device leaves it
+            // until the next read.
             state.held.hints.remove(&(*space, *locator));
             (provider, entry.record.token)
         };
@@ -1977,10 +1960,10 @@ impl Engine {
         Ok(())
     }
 
-    /// Starts a fetch the application asked for: `hint` is what it passed,
-    /// for the provider's `create`, and each member connection of the
-    /// space asks the other side for the object. Peer connections fetch
-    /// what the space's units name by themselves.
+    /// Starts a fetch the application asked for, to hold the object
+    /// through its provider: `hint` is what it passed, for the provider's
+    /// `create`. The object counts among the space's missing objects until
+    /// the device holds it, so each connection of the space fetches it.
     pub async fn fetch_object(&self, space: EventId, locator: Locator, hint: Vec<u8>) {
         {
             let mut state = self.lock().await;
@@ -1992,58 +1975,6 @@ impl Engine {
             withdrawn: Vec::new(),
             wanted: vec![locator],
         });
-    }
-
-    /// Asks for an object a read needs, on a device that fetches blobs
-    /// only when asked: it counts among the space's missing objects
-    /// until it is whole, and each member connection of the space asks
-    /// the other side for it. Unlike [`fetch_object`](Self::fetch_object), it gives
-    /// no hint, and the object is stored as the space's policy says.
-    #[cfg_attr(
-        not(all(
-            any(feature = "server", feature = "iroh", feature = "server-socket"),
-            feature = "adapter-blobs"
-        )),
-        allow(dead_code)
-    )]
-    pub(crate) async fn ask_object(&self, space: EventId, locator: Locator) {
-        {
-            let mut state = self.lock().await;
-            state.held.asked.insert((space, locator));
-        }
-        let _ = self.notices().send(Notice {
-            space,
-            placed: Vec::new(),
-            withdrawn: Vec::new(),
-            wanted: vec![locator],
-        });
-    }
-
-    /// Asks again for an object a read still waits for
-    /// ([`ask_object`](Self::ask_object)) when nothing asks for it any
-    /// more and the device does not hold it whole: it became whole
-    /// meanwhile, which took the read's mark away, and was released or
-    /// dropped since. Whether it asked.
-    #[cfg_attr(
-        not(all(
-            any(feature = "server", feature = "iroh", feature = "server-socket"),
-            feature = "adapter-blobs"
-        )),
-        allow(dead_code)
-    )]
-    pub(crate) async fn ask_object_again(&self, space: EventId, locator: Locator) -> bool {
-        {
-            let state = self.lock().await;
-            let whole = state
-                .replicas
-                .get(&space)
-                .is_none_or(|replica| replica.holds_object(&locator));
-            if whole || state.held.asked_for(&space, &locator) {
-                return false;
-            }
-        }
-        self.ask_object(space, locator).await;
-        true
     }
 
     // -- Receiving
@@ -2282,7 +2213,7 @@ impl Engine {
         state.held.objects.remove(space);
         state.held.receiving.retain(|(s, _), _| s != space);
         state.held.hints.retain(|(s, _), _| s != space);
-        state.held.asked.retain(|(s, _)| s != space);
+        state.retained.forget_space(space);
         provider.map(|provider| (provider, tokens))
     }
 }

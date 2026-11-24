@@ -6,7 +6,8 @@
 //! corrupted slice keeps nothing. A range of chunks is fetched from any
 //! index, ahead of a download that runs beside the connection; a fetch
 //! that is cancelled stops before its next slice; and a fetch leaves out
-//! the chunks the device holds, wherever they are. A device that holds
+//! the chunks the device holds, wherever they are, and a range fetched is
+//! not completed by the device itself. A device that holds
 //! its blobs as files takes an object in order, whichever chunks are
 //! asked for. A request whose transfer is cut is tried again after a
 //! wait, which only its own progress starts over, and one whose slices
@@ -328,6 +329,8 @@ async fn a_fetch_cut_part_way_resumes_after_the_chunks_kept() {
     let peer = spawn_loopback().await.unwrap();
     let (proxy, faults) = spawn_proxy(&peer.origin).await;
     let (_alice, alice_link, bob, store, space, locator, big) = setup(&peer.origin).await;
+    // Bob fetches the blob because the space names it.
+    bob.keep_all_blobs();
 
     // Slices 0 to 2 arrive, which carry chunks 0 and 1; slice 3 never does.
     *faults.cut_from.lock().unwrap() = Some(3);
@@ -359,6 +362,8 @@ async fn a_corrupted_slice_keeps_nothing_of_the_object() {
     let peer = spawn_loopback().await.unwrap();
     let (proxy, faults) = spawn_proxy(&peer.origin).await;
     let (_alice, alice_link, bob, _store, space, locator, big) = setup(&peer.origin).await;
+    // Bob fetches the blob because the space names it.
+    bob.keep_all_blobs();
 
     // The first byte of slice 2 is the end of chunk 1, which then fails to
     // open: chunk 0, kept, is dropped with it, and the object is missing.
@@ -396,6 +401,8 @@ async fn a_range_is_fetched_ahead_of_a_download_that_runs_beside_the_connection(
     let (proxy, faults) = spawn_proxy(&peer.origin).await;
     let (alice, alice_link, bob, _store, space, locator, big) =
         setup_with(&peer.origin, SIX_CHUNKS).await;
+    // Bob downloads the blob because the space names it.
+    bob.keep_all_blobs();
 
     // The download takes slice 0 and waits for slice 1, which ends chunk 0.
     faults.hold(&[1]);
@@ -445,7 +452,6 @@ async fn a_cancelled_fetch_stops_before_its_next_slice() {
     let (proxy, faults) = spawn_proxy(&peer.origin).await;
     let (_alice, alice_link, bob, _store, space, locator, _big) =
         setup_with(&peer.origin, SIX_CHUNKS).await;
-    bob.fetch_objects_on_demand();
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
 
     // Nothing is fetched until it is asked for.
@@ -486,7 +492,6 @@ async fn a_fetch_resumes_over_the_chunks_held_wherever_they_are() {
     let (proxy, faults) = spawn_proxy(&peer.origin).await;
     let (_alice, alice_link, bob, store, space, locator, big) =
         setup_with(&peer.origin, SIX_CHUNKS).await;
-    bob.fetch_objects_on_demand();
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
     // Chunks 3 and 4, with slice 5, which ends chunk 4, held back.
     faults.hold(&[5]);
@@ -513,14 +518,52 @@ async fn a_fetch_resumes_over_the_chunks_held_wherever_they_are() {
     drop(link);
     drop(bob);
 
-    // Opened again, it fetches every object the space's units name.
+    // Opened again, to keep every blob: it fetches every object the
+    // space's units name.
     faults.clear();
     let bob = store.reopen().await;
     assert!(holds(&bob, &space, &locator, 4).await);
+    bob.keep_all_blobs();
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
     until(|| async { bob.object(&space, &locator).await.is_ok() }).await;
     assert_eq!(bob.object(&space, &locator).await.unwrap(), big);
     assert_eq!(faults.asked(&locator), vec![0, 1, 2, 3, 5]);
+    link.close();
+    alice_link.close();
+    peer.shutdown().await;
+}
+
+/// A request for chunks brings those chunks and no other: what the
+/// connection does afterwards on account of the space, as when it takes a
+/// unit another device wrote, starts no fetch of the rest of the object.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_range_fetched_is_not_completed_by_the_device_itself() {
+    let peer = spawn_loopback().await.unwrap();
+    let (proxy, faults) = spawn_proxy(&peer.origin).await;
+    let (alice, alice_link, bob, _store, space, locator, _big) =
+        setup_with(&peer.origin, SIX_CHUNKS).await;
+    let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
+    let last = bob.fetch_chunks(space, locator, 5..6, FetchPriority::Position);
+    until(|| async { holds(&bob, &space, &locator, 5).await }).await;
+    assert_eq!(faults.asked(&locator), vec![0, 5]);
+
+    // A unit Alice writes now reaches Bob, whose connection looks again
+    // at what the space lacks.
+    let notes = alice.new_stream("frasil:blobs").unwrap();
+    let (unit, _) = alice
+        .put_blob(space, &notes, Some("note"), b"written meanwhile")
+        .await
+        .unwrap();
+    until(|| async {
+        bob.read(&space, |replica| replica.holds(unit))
+            .await
+            .unwrap()
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(faults.asked(&locator), vec![0, 5]);
+    assert!(!holds(&bob, &space, &locator, 0).await);
+    drop(last);
     link.close();
     alice_link.close();
     peer.shutdown().await;
@@ -536,7 +579,6 @@ async fn a_range_with_no_header_starts_at_slice_0_and_neighbours_share_a_slice()
     let (proxy, faults) = spawn_proxy(&peer.origin).await;
     let (_alice, alice_link, bob, _store, space, locator, _big) =
         setup_with(&peer.origin, SIX_CHUNKS).await;
-    bob.fetch_objects_on_demand();
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
 
     // The last chunk alone: slice 0 for the header, then slice 5.
@@ -573,7 +615,6 @@ async fn a_readers_position_takes_the_place_of_a_background_fetch() {
     let (proxy, faults) = spawn_proxy(&peer.origin).await;
     let (_alice, alice_link, bob, _store, space, locator, _big) =
         setup_with(&peer.origin, SIX_CHUNKS).await;
-    bob.fetch_objects_on_demand();
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
     let last = bob.fetch_chunks(space, locator, 5..6, FetchPriority::Position);
     until(|| async { holds(&bob, &space, &locator, 5).await }).await;
@@ -634,7 +675,6 @@ async fn a_range_of_an_object_held_as_a_file_is_fetched_in_order() {
         setup_with(&peer.origin, SIX_CHUNKS).await;
     let files = provider::DirProvider::new(provider::temp_dir("slices-held"));
     bob.hold_all_objects(files.clone());
-    bob.fetch_objects_on_demand();
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
     // Bob knows the blob once its entry is current in its stream.
     until(|| async {
@@ -689,7 +729,6 @@ async fn a_request_whose_fetch_stops_is_tried_again() {
     let (proxy, faults) = spawn_proxy(&peer.origin).await;
     let (_alice, alice_link, bob, _store, space, locator, _big) =
         setup_with(&peer.origin, SIX_CHUNKS).await;
-    bob.fetch_objects_on_demand();
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
 
     // Chunk 0 is in slices 0 and 1; slice 1 never arrives.
@@ -731,7 +770,6 @@ async fn a_refused_object_stops_its_other_fetches_and_tells_their_holders() {
     let (proxy, faults) = spawn_proxy(&peer.origin).await;
     let (_alice, alice_link, bob, _store, space, locator, _big) =
         setup_with(&peer.origin, SIX_CHUNKS).await;
-    bob.fetch_objects_on_demand();
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
 
     // Chunk 4 waits for slice 4, which is held back.
@@ -782,7 +820,6 @@ async fn another_fetchs_progress_does_not_start_a_stopped_requests_wait_over() {
     let (proxy, faults) = spawn_proxy(&peer.origin).await;
     let (_alice, alice_link, bob, _store, space, locator, _big) =
         setup_with(&peer.origin, SIX_CHUNKS).await;
-    bob.fetch_objects_on_demand();
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
     let first = bob.fetch_chunks(space, locator, 0..1, FetchPriority::Position);
     until(|| async { holds(&bob, &space, &locator, 0).await }).await;
@@ -820,7 +857,6 @@ async fn a_requests_own_progress_starts_its_wait_over() {
     let (proxy, faults) = spawn_proxy(&peer.origin).await;
     let (_alice, alice_link, bob, _store, space, locator, _big) =
         setup_with(&peer.origin, SIX_CHUNKS).await;
-    bob.fetch_objects_on_demand();
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
     let first = bob.fetch_chunks(space, locator, 0..1, FetchPriority::Position);
     until(|| async { holds(&bob, &space, &locator, 0).await }).await;
@@ -858,7 +894,6 @@ async fn an_object_is_reported_while_any_fetch_of_it_runs() {
     let (proxy, faults) = spawn_proxy(&peer.origin).await;
     let (_alice, alice_link, bob, _store, space, locator, _big) =
         setup_with(&peer.origin, SIX_CHUNKS).await;
-    bob.fetch_objects_on_demand();
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
 
     // Chunk 1 waits for slice 2, which is held back.
@@ -899,7 +934,6 @@ async fn two_fetches_that_complete_one_object_leave_it_whole() {
     let (proxy, faults) = spawn_proxy(&peer.origin).await;
     let (_alice, alice_link, bob, _store, space, locator, big) =
         setup_with(&peer.origin, SIX_CHUNKS).await;
-    bob.fetch_objects_on_demand();
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
 
     // Both wait for slice 3, which ends chunk 2 and begins chunk 3.
@@ -954,7 +988,7 @@ async fn a_space_paused_while_a_fetch_runs_fetches_no_more_until_resumed() {
     let space = alice.create_space().await.unwrap();
     alice.connect(&peer.origin).await.unwrap();
     let files = space.create_blobs().unwrap();
-    let bob = open(2, Options::new().objects_on_demand()).await;
+    let bob = open(2, Options::new()).await;
     let joining = within(bob.join_via_peer(&proxy, "Bob", |_, _| async { true }))
         .await
         .unwrap();
@@ -985,7 +1019,7 @@ async fn a_space_paused_while_a_fetch_runs_fetches_no_more_until_resumed() {
         tokio::spawn(async move {
             let mut read = Vec::new();
             bobs_files
-                .get_stream(blob, &mut read, |_, _| {})
+                .get_stream(blob, &mut read, &frasil::Read::new(), |_, _| {})
                 .await
                 .map(|()| read)
         })
@@ -1036,13 +1070,7 @@ async fn a_read_that_waits_asks_again_for_a_blob_released_meanwhile() {
     alice.connect(&peer.origin).await.unwrap();
     let files = space.create_blobs().unwrap();
     let held = provider::DirProvider::new(provider::temp_dir("slices-released"));
-    let bob = open(
-        2,
-        Options::new()
-            .object_provider(held.clone())
-            .objects_on_demand(),
-    )
-    .await;
+    let bob = open(2, Options::new().object_provider(held.clone())).await;
     let joining = within(bob.join_via_peer(&proxy, "Bob", |_, _| async { true }))
         .await
         .unwrap();

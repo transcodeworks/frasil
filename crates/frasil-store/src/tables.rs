@@ -185,6 +185,10 @@ tables! {
     /// this device does not hold: dropped by it, or answered `Missing` by a
     /// peer (at-rest.md, "Forgetting before a checkpoint").
     Dropped = 0x21, "dropped", Log;
+    /// `0x22`, how long this device keeps an object it stores as sealed
+    /// chunks: until the application drops it, or within the device's
+    /// budget (at-rest.md, "Retention").
+    Retention = 0x22, "retention", Log;
 }
 
 // ---------------------------------------------------------------------------
@@ -332,7 +336,8 @@ pub fn check_item(table: Table, item: &[u8]) -> Result<(), ErrorClass> {
         | Table::Invite
         | Table::Claim
         | Table::DepositKeys
-        | Table::Dropped => item.len() == 32,
+        | Table::Dropped
+        | Table::Retention => item.len() == 32,
         Table::Token => item.len() == 64,
         Table::Deposit => item.len() == 16,
         Table::Object => item.len() == 36,
@@ -1077,6 +1082,34 @@ pub struct HeldRecord {
     pub stamp: Vec<u8>,
 }
 
+/// A `retention` record: how long this device keeps an object it stores as
+/// sealed chunks (at-rest.md, "Retention").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retention {
+    /// State 1: the object stays until the application drops it.
+    Kept,
+    /// State 2: the object counts against the device's budget, and is
+    /// dropped when the budget is full.
+    Cached {
+        /// Key 2: the timeline's `T` at which the device last read the
+        /// object, rounded down to a multiple of [`RETENTION_READ_STEP`].
+        read: u64,
+    },
+    /// State 3: this device sealed the object, and knows of no always-on
+    /// peer that holds it. The object stays as a kept one does until such
+    /// a peer holds it.
+    Put {
+        /// Key 3: whether the application asked to keep the object. Once
+        /// a peer holds it, the object is kept if so, and cached if not.
+        keep: bool,
+    },
+}
+
+/// What a cached object's last read is rounded down to, in seconds of the
+/// timeline: reading an object writes its record at most once in this
+/// long (at-rest.md, "Retention").
+pub const RETENTION_READ_STEP: u64 = 3_600;
+
 /// A `peers` record: the space's always-on peers this device knows, as
 /// origins' URLs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1207,6 +1240,8 @@ pub enum TableValue {
     Held(HeldRecord),
     /// `peers`: the space's peers and its home peer.
     Peers(PeersRecord),
+    /// `retention`: whether the object the item names is kept or cached.
+    Retention(Retention),
     /// `announced`: the next member endpoint key the member the item names
     /// announced.
     Announced([u8; 32]),
@@ -1392,6 +1427,7 @@ impl TableValue {
             Self::Announced(_) => Table::Announced,
             Self::Host(_) => Table::Host,
             Self::Dropped(_) => Table::Dropped,
+            Self::Retention(_) => Table::Retention,
         }
     }
 
@@ -1632,6 +1668,21 @@ impl TableValue {
                     stamp: stamp.to_vec(),
                 })
             }
+            Table::Retention => {
+                let map = map_with(value, &[1], &[2, 3])?;
+                // Key 2, the last read, exactly with state 2; key 3, that
+                // the application asked to keep the object, only with
+                // state 3, and then 1.
+                let read = map.get(&2).map(Value::as_unsigned).transpose()?;
+                let keep = map.get(&3).map(Value::as_unsigned).transpose()?;
+                match (map[&1].as_unsigned()?, read, keep) {
+                    (1, None, None) => Self::Retention(Retention::Kept),
+                    (2, Some(read), None) => Self::Retention(Retention::Cached { read }),
+                    (3, None, None) => Self::Retention(Retention::Put { keep: false }),
+                    (3, None, Some(1)) => Self::Retention(Retention::Put { keep: true }),
+                    _ => return Err(malformed),
+                }
+            }
             Table::Peers => {
                 let map = map_with(value, &[], &[1, 2])?;
                 let url = |value: &Value| {
@@ -1760,6 +1811,25 @@ impl TableValue {
                 map.insert(1, held.token.as_slice().into());
                 map.insert(2, held.size.into());
                 map.insert(3, held.stamp.as_slice().into());
+                Value::Map(map).encode()
+            }
+            Self::Retention(retention) => {
+                let mut map = Map::new();
+                match retention {
+                    Retention::Kept => {
+                        map.insert(1, 1u64.into());
+                    }
+                    Retention::Cached { read } => {
+                        map.insert(1, 2u64.into());
+                        map.insert(2, (*read).into());
+                    }
+                    Retention::Put { keep } => {
+                        map.insert(1, 3u64.into());
+                        if *keep {
+                            map.insert(3, 1u64.into());
+                        }
+                    }
+                }
                 Value::Map(map).encode()
             }
             Self::Peers(peers) => {
@@ -2152,6 +2222,56 @@ mod tests {
         }
         assert_eq!(
             TableValue::read(Table::Held, &[3; 31], &held(1, 1, 1), Some(&[4; 32])),
+            Err(ErrorClass::Malformed)
+        );
+    }
+
+    #[test]
+    fn a_retention_record_names_one_state() {
+        let read =
+            |value: &[u8]| TableValue::read(Table::Retention, &[3; 32], value, Some(&[4; 32]));
+        for retention in [
+            Retention::Kept,
+            Retention::Cached { read: 7_200 },
+            // A last read that is no multiple of the step is read as it is.
+            Retention::Cached { read: 7_201 },
+            Retention::Put { keep: false },
+            Retention::Put { keep: true },
+        ] {
+            let value = TableValue::Retention(retention).encode();
+            assert_eq!(read(&value), Ok(TableValue::Retention(retention)));
+        }
+        let map = |pairs: &[(u64, u64)]| {
+            let mut map = Map::new();
+            for (key, value) in pairs {
+                map.insert(*key, (*value).into());
+            }
+            Value::Map(map).encode()
+        };
+        // An unknown state; a kept object with a last read; a cached one
+        // without; a put one with a last read; no state; key 3 with a
+        // state other than 3, and of a value other than 1; a key the
+        // record does not have.
+        for value in [
+            map(&[(1, 0)]),
+            map(&[(1, 4)]),
+            map(&[(1, 4), (2, 0)]),
+            map(&[(1, 3), (2, 0)]),
+            map(&[(1, 1), (2, 0)]),
+            map(&[(1, 2)]),
+            map(&[(2, 0)]),
+            map(&[(1, 1), (3, 1)]),
+            map(&[(1, 2), (2, 0), (3, 1)]),
+            map(&[(1, 3), (3, 0)]),
+            map(&[(1, 3), (3, 2)]),
+            map(&[(1, 3), (2, 0), (3, 1)]),
+            map(&[(1, 3), (4, 1)]),
+        ] {
+            assert_eq!(read(&value), Err(ErrorClass::Malformed));
+        }
+        let kept = TableValue::Retention(Retention::Kept).encode();
+        assert_eq!(
+            TableValue::read(Table::Retention, &[3; 31], &kept, Some(&[4; 32])),
             Err(ErrorClass::Malformed)
         );
     }

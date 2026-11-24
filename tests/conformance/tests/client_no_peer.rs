@@ -59,7 +59,10 @@ async fn fetched(blobs: &frasil::Blobs, id: frasil::BlobId) -> frasil::Result<Ve
     within(async {
         loop {
             let mut out = Vec::new();
-            match blobs.get_stream(id, &mut out, |_, _| {}).await {
+            match blobs
+                .get_stream(id, &mut out, &frasil::Read::new(), |_, _| {})
+                .await
+            {
                 Ok(()) => return Ok(out),
                 Err(Error::Class("Missing")) => {
                     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -122,7 +125,7 @@ async fn a_newcomer_fetches_files_put_before_it_joined_with_no_peer() {
         loop {
             let seen = seen.clone();
             match bobs_blobs
-                .get_stream(id, &mut out, move |done, total| {
+                .get_stream(id, &mut out, &frasil::Read::new(), move |done, total| {
                     seen.lock().unwrap().push((done, total));
                 })
                 .await

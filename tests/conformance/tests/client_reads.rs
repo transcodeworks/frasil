@@ -33,7 +33,14 @@ async fn feeds_waits_and_observed_reads_follow_another_device() {
     let files = space.create_blobs().unwrap();
     let note = space.create_document().unwrap();
 
-    let bob = open(2).await;
+    // Bob keeps every blob, so each arrives without being read.
+    let bob = Device::open_with(
+        Storage::Memory,
+        &[2; 32],
+        Options::new().loopback().keep_all_blobs(),
+    )
+    .await
+    .expect("a device");
     let joining = within(bob.join_via_peer(&peer.origin, "Bob", |_, _| async { true }))
         .await
         .unwrap();
@@ -144,7 +151,7 @@ async fn feeds_waits_and_observed_reads_follow_another_device() {
     );
     assert_eq!(
         bobs_files
-            .get_range(big, 1_048_530, 20)
+            .get_range(big, 1_048_530, 20, &frasil::Read::new())
             .await
             .unwrap()
             .unwrap(),

@@ -243,6 +243,12 @@ pub fn opened_json(value: &TableValue) -> Json {
             },
             DroppedOrigin::Missing => json!({"1": 2}),
         },
+        TableValue::Retention(retention) => match retention {
+            frasil_store::tables::Retention::Kept => json!({"1": 1}),
+            frasil_store::tables::Retention::Cached { read } => json!({"1": 2, "2": read}),
+            frasil_store::tables::Retention::Put { keep: false } => json!({"1": 3}),
+            frasil_store::tables::Retention::Put { keep: true } => json!({"1": 3, "3": 1}),
+        },
         TableValue::Outbox(id) => hex(id),
         TableValue::Ack(heads) => ids(heads),
         TableValue::Listing(listing) => json!({"1": hex(&listing.served), "2": listing.at}),

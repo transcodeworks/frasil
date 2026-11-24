@@ -181,7 +181,11 @@ async fn records_blobs_members_and_events() {
     let files = space.create_blobs().unwrap();
     let blob = files.put(Some("hello.txt"), b"hello").await.unwrap();
     assert_eq!(
-        files.get(blob).await.unwrap().as_deref(),
+        files
+            .get(blob, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&b"hello"[..])
     );
     until(|| async { bobs_space.blobs(files.id()).await.is_ok() }).await;
@@ -190,7 +194,14 @@ async fn records_blobs_members_and_events() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name.as_deref(), Some("hello.txt"));
     assert_eq!(listed[0].size, 5);
-    until(|| async { bobs_files.get(blob).await.unwrap().is_some() }).await;
+    until(|| async {
+        bobs_files
+            .get(blob, &frasil::Read::new())
+            .await
+            .unwrap()
+            .is_some()
+    })
+    .await;
 
     // The streams, by kind.
     let mut kinds: Vec<StreamKind> = space

@@ -649,6 +649,9 @@ pub struct Replica {
     /// A space snapshot adopted from a message, not stored yet: kept as an
     /// object once the device can seal it under a state it holds.
     snapshot_to_keep: Option<Vec<u8>>,
+    /// The locator of the adopted space snapshot the device stores, once
+    /// it sealed it or found it again at open.
+    adopted_snapshot: Option<Locator>,
     /// The newcomer's snapshot a welcome or an invite's drop names, until
     /// it is fetched and used (admission.md, "The newcomer's snapshot").
     awaited_snapshot: Option<Locator>,
@@ -1111,6 +1114,7 @@ impl Replica {
             wanted_at_rest: BTreeSet::new(),
             pending_streams: Vec::new(),
             snapshot_to_keep: None,
+            adopted_snapshot: None,
             awaited_snapshot: None,
             wants_snapshot: false,
             slots: crate::skeleton::Slots::default(),
@@ -2046,6 +2050,25 @@ impl Replica {
         )
     }
 
+    /// The indices of an object's chunks the store holds, by its locator
+    /// and its ID, as [`forget_object`](Self::forget_object) returns them,
+    /// with nothing forgotten: `None` when the replica holds nothing of
+    /// it.
+    pub(crate) fn object_stored(&self, locator: &Locator) -> Option<BTreeSet<u64>> {
+        let located = self.objects.get(locator);
+        let unlocated = self.unlocated.get(&object_id(locator));
+        if located.is_none() && unlocated.is_none() {
+            return None;
+        }
+        Some(
+            located
+                .into_iter()
+                .chain(unlocated)
+                .flat_map(|object| object.stored.iter().copied())
+                .collect(),
+        )
+    }
+
     /// Notes that an object's stored bytes hash to its locator.
     pub(crate) fn mark_checked(&mut self, locator: &Locator) {
         if let Some(object) = self.objects.get_mut(locator) {
@@ -2578,6 +2601,63 @@ impl Replica {
             held.saturating_mul(sealed)
         };
         Some((prefix.saturating_add(whole).min(total), Some(total)))
+    }
+
+    /// The locators under which the replica holds something of an object,
+    /// by its ID: those it knows, or the ID followed by zeros for an object
+    /// found in the store whose locator is not known yet.
+    pub(crate) fn object_locators(&self, id: &[u8; 32]) -> Vec<Locator> {
+        let mut from = [0; 64];
+        from[..32].copy_from_slice(id);
+        let mut out: Vec<Locator> = self
+            .objects
+            .range(from..)
+            .take_while(|(locator, _)| locator[..32] == id[..])
+            .map(|(locator, _)| *locator)
+            .collect();
+        if out.is_empty() && self.unlocated.contains_key(id) {
+            out.push(from);
+        }
+        out
+    }
+
+    /// The stored bytes the replica holds of an object, by its ID, sealed:
+    /// its header and chunks, in memory or in the store. Nothing for an
+    /// object whose plaintext the application holds.
+    pub(crate) fn object_bytes_stored(&self, id: &[u8; 32]) -> u64 {
+        self.object_locators(id)
+            .iter()
+            .filter(|locator| !self.is_held(locator))
+            .filter_map(|locator| self.object_bytes_held(locator))
+            .map(|(held, _)| held)
+            .sum()
+    }
+
+    /// Every object the replica holds sealed chunks of, by ID, with the
+    /// stored bytes it holds of each.
+    pub(crate) fn stored_object_bytes(&self) -> Vec<([u8; 32], u64)> {
+        let located = self.objects.keys().map(object_id);
+        let ids: BTreeSet<[u8; 32]> = located.chain(self.unlocated.keys().copied()).collect();
+        ids.into_iter()
+            .filter(|id| {
+                self.object_locators(id)
+                    .iter()
+                    .any(|locator| self.holds_chunks(locator))
+            })
+            .map(|id| (id, self.object_bytes_stored(&id)))
+            .collect()
+    }
+
+    /// Notes the space snapshot this replica adopted and stores for
+    /// itself, which no unit names (units.md, "The space snapshot", "Using
+    /// it", step 6).
+    pub(crate) fn set_adopted_snapshot(&mut self, locator: Locator) {
+        self.adopted_snapshot = Some(locator);
+    }
+
+    /// The space snapshot this replica adopted and stores for itself.
+    pub(crate) fn adopted_snapshot(&self) -> Option<&Locator> {
+        self.adopted_snapshot.as_ref()
     }
 
     /// Keeps a space snapshot's stream entries, loaded once their objects
@@ -6773,6 +6853,21 @@ pub(crate) fn object_id(locator: &Locator) -> [u8; 32] {
     let mut id = [0; 32];
     id.copy_from_slice(&locator[..32]);
     id
+}
+
+/// An object's stored length by its header (units.md, "Objects"): the
+/// header with its length, and each sealed chunk. `None` for bytes that do
+/// not read as a header.
+pub(crate) fn stored_length(header: &[u8]) -> Option<u64> {
+    let read = frasil_units::objects::Header::read(header).ok()?;
+    let chunk = frasil_units::limits::CHUNK_BYTES as u64;
+    let sealed = frasil_units::limits::SEALED_CHUNK_BYTES as u64;
+    let count = frasil_units::objects::chunk_count(read.size, chunk);
+    Some(
+        (4 + header.len() as u64)
+            .saturating_add(read.size)
+            .saturating_add(count.saturating_mul(sealed - chunk)),
+    )
 }
 
 /// A unit that opened, with what its adapter needs.

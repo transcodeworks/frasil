@@ -698,6 +698,8 @@ impl Driver {
             .or_insert_with(|| Attach::new(space, 0));
         entry.space = space;
         entry.sync = SyncSession::new(space);
+        // Being made: it takes the space's requests once it has started.
+        entry.sync.expect(self.device.fetches());
         if frasil_transport::member::Role::of_attach(attach) == self.connection.role() {
             let (sender, receiver) = self
                 .connection

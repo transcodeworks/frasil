@@ -190,7 +190,11 @@ async fn blobs_in_a_restricted_space() {
         "{listed:?}"
     );
     assert_eq!(
-        blobs.get(id).await.unwrap().as_deref(),
+        blobs
+            .get(id, &frasil::Read::new())
+            .await
+            .unwrap()
+            .as_deref(),
         Some(&b"Dear diary."[..])
     );
     // The parent holds no blob of it.
@@ -210,7 +214,7 @@ async fn blobs_in_a_restricted_space() {
     .await;
     let read = within(async {
         loop {
-            if let Some(bytes) = bobs_blobs.get(id).await.unwrap() {
+            if let Some(bytes) = bobs_blobs.get(id, &frasil::Read::new()).await.unwrap() {
                 break bytes;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;

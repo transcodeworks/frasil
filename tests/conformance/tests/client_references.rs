@@ -148,14 +148,17 @@ async fn a_file_is_stored_once_and_referenced_across_a_library() {
     assert_eq!(info.name.as_deref(), Some("opening.mp4"));
     assert!(!bank_blobs.info(stored).await.unwrap().is_reference());
     assert_eq!(
-        show_blobs.get(referenced).await.unwrap(),
+        show_blobs
+            .get(referenced, &frasil::Read::new())
+            .await
+            .unwrap(),
         Some(file.clone())
     );
     // A range of it, opened with the reference's key.
     let (at, len) = (FILE_BYTES / 3, 4096.min(FILE_BYTES / 3));
     assert_eq!(
         show_blobs
-            .get_range(referenced, at as u64, len as u64)
+            .get_range(referenced, at as u64, len as u64, &frasil::Read::new())
             .await
             .unwrap(),
         Some(file[at..at + len].to_vec())
@@ -216,13 +219,18 @@ async fn a_file_is_stored_once_and_referenced_across_a_library() {
     let bobs_info = bobs_blobs.info(referenced).await.unwrap();
     assert_eq!(bobs_info.source, Some(bank.id()));
     let mut played = Vec::new();
-    within(bobs_blobs.get_stream(referenced, &mut played, |_, _| {}))
+    within(bobs_blobs.get_stream(referenced, &mut played, &frasil::Read::new(), |_, _| {}))
         .await
         .unwrap();
     assert_eq!(played, file, "Bob plays the file");
     assert_eq!(
         bobs_blobs
-            .get_range(referenced, (FILE_BYTES - 10) as u64, 100)
+            .get_range(
+                referenced,
+                (FILE_BYTES - 10) as u64,
+                100,
+                &frasil::Read::new()
+            )
             .await
             .unwrap(),
         Some(file[FILE_BYTES - 10..].to_vec()),
@@ -261,4 +269,55 @@ async fn a_file_is_stored_once_and_referenced_across_a_library() {
     alice.close().await.unwrap();
     bob.close().await.unwrap();
     peer.shutdown().await;
+}
+
+/// A reference's bytes are stored in the space that stores the file:
+/// keeping the blob through the reference keeps them there, and dropping
+/// it through the reference drops them there, so that the two undo each
+/// other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reference_keeps_and_drops_the_bytes_where_they_are_stored() {
+    use frasil::{BlobState, Read};
+    let peer = peer().await;
+    let alice = device(1).await;
+    let bank = alice.create_space().await.unwrap();
+    let show = alice.create_space().await.unwrap();
+    alice.connect(&peer.origin).await.unwrap();
+    let file: Vec<u8> = (0..FILE_BYTES).map(|i| (i % 251) as u8).collect();
+    let bank_blobs = bank.create_blobs().unwrap();
+    let stored = within(bank_blobs.put(Some("opening.mp4"), &file))
+        .await
+        .unwrap();
+    durable(&alice, &bank).await;
+    let show_blobs = show.create_blobs().unwrap();
+    let referenced = within(show_blobs.reference_from(&bank_blobs, stored))
+        .await
+        .unwrap();
+    durable(&alice, &show).await;
+    // The peer holds the bytes: they are the cache's on this device.
+    within(async {
+        while bank_blobs.local(stored).await.unwrap().state != BlobState::Cached {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+
+    within(show_blobs.keep(referenced, |_, _| {}))
+        .await
+        .unwrap();
+    let state = |blobs: frasil::Blobs, id| async move { blobs.local(id).await.unwrap().state };
+    assert_eq!(state(show_blobs.clone(), referenced).await, BlobState::Kept);
+    assert_eq!(state(bank_blobs.clone(), stored).await, BlobState::Kept);
+
+    show_blobs.drop_local(referenced).await.unwrap();
+    assert_eq!(
+        state(show_blobs.clone(), referenced).await,
+        BlobState::Absent
+    );
+    assert_eq!(state(bank_blobs.clone(), stored).await, BlobState::Absent);
+    // A read through the reference fetches them again.
+    let read = within(show_blobs.get(referenced, &Read::new()))
+        .await
+        .unwrap();
+    assert_eq!(read, Some(file));
 }

@@ -326,12 +326,12 @@ async fn blobs_read_whole_streamed_and_by_range_alike() {
         let bytes: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
         let id = blobs.put(None, &bytes).await.unwrap();
         // Read back from the store, not from what the put kept.
-        let reopened = blobs.get(id).await.unwrap().unwrap();
+        let reopened = blobs.get(id, &frasil::Read::new()).await.unwrap().unwrap();
         assert_eq!(reopened, bytes);
         let mut streamed = Vec::new();
         let mut progress = Vec::new();
         blobs
-            .get_stream(id, &mut streamed, |done, total| {
+            .get_stream(id, &mut streamed, &frasil::Read::new(), |done, total| {
                 progress.push((done, total))
             })
             .await
@@ -350,7 +350,11 @@ async fn blobs_read_whole_streamed_and_by_range_alike() {
             (size + 10, 1),
         ];
         for (offset, len) in ranges {
-            let read = blobs.get_range(id, offset, len).await.unwrap().unwrap();
+            let read = blobs
+                .get_range(id, offset, len, &frasil::Read::new())
+                .await
+                .unwrap()
+                .unwrap();
             let start = (offset as usize).min(bytes.len());
             let end = (offset.saturating_add(len) as usize).min(bytes.len());
             assert_eq!(read, bytes[start..end], "{size} bytes, {offset}+{len}");
@@ -387,15 +391,22 @@ async fn a_blob_reads_by_range_and_streamed_after_the_device_opens_again() {
         .await
         .unwrap();
     let offset = 2 * CHUNK as u64 - 5;
-    let range = blobs.get_range(id, offset, 10).await.unwrap().unwrap();
+    let range = blobs
+        .get_range(id, offset, 10, &frasil::Read::new())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(range, bytes[offset as usize..offset as usize + 10]);
     let mut streamed = Vec::new();
     blobs
-        .get_stream(id, &mut streamed, |_, _| {})
+        .get_stream(id, &mut streamed, &frasil::Read::new(), |_, _| {})
         .await
         .unwrap();
     assert_eq!(streamed, bytes);
-    assert_eq!(blobs.get(id).await.unwrap().unwrap(), bytes);
+    assert_eq!(
+        blobs.get(id, &frasil::Read::new()).await.unwrap().unwrap(),
+        bytes
+    );
     drop(device);
     let _ = std::fs::remove_dir_all(&dir);
 }

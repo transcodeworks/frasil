@@ -212,10 +212,15 @@ Each framework has an entry of its own, so the main entry imports none:
 | `@frasil/client/svelte` | `readable(store)`, the Svelte store contract; imports nothing from Svelte |
 | `@frasil/client/solid` | `createObserved(store)`, an accessor under the current owner |
 
-A `BlobId` names immutable bytes, so it is a safe permanent key for a cache of
-opened bytes or object URLs; `blobs.onChange` says when a blob was removed or
-withdrawn. `getStream` opens a blob chunk by chunk, and `getRange` opens only
-the chunks a range needs. The guide
+A device fetches a blob when it is read, and leaves it in a cache of sealed
+bytes whose budget is 256 MiB: `get`, `getStream`, `getRange`, `contentHash`
+and `getWhenAvailable` fetch a blob the device does not hold, and `get`
+resolves to `undefined` when nothing connected could send it. The device
+evicts the blob read longest ago when the budget is full, and a read fetches
+an evicted blob again. A `BlobId` names immutable bytes, so it is a safe
+permanent key for a cache of opened bytes or object URLs; `blobs.onChange`
+says when a blob was removed, evicted or withdrawn. `getStream` opens a blob
+chunk by chunk, and `getRange` opens only the chunks a range needs. The guide
 [Reading, following and caching synced data](../../docs/reading-and-caching.md)
 covers each part, with a cache of object URLs.
 
