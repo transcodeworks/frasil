@@ -556,7 +556,11 @@ async fn a_range_of_an_object_held_as_a_file_is_fetched_in_order() {
     .await;
     faults.hold(&[]);
     until(|| async { faults.asked(&locator) == vec![0, 1, 2, 3, 4, 5] }).await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // The fetch has ended, with chunk 4 written: it asked for no slice
+    // past the chunk it was made for, and holds none of them any more. A
+    // fetch that began while it still ran would take slice 5 from it and
+    // not ask for it.
+    until(|| async { link.status().fetching.is_empty() }).await;
     assert_eq!(faults.asked(&locator), vec![0, 1, 2, 3, 4, 5]);
     assert!(bob.held_record(&space, &locator).await.is_none());
 
@@ -877,18 +881,24 @@ async fn a_space_paused_while_a_fetch_runs_fetches_no_more_until_resumed() {
     // Bob has two connections to the peer, the one he joined over and
     // the one he opened since, and each fetches the blob: both wait for
     // slice 2.
-    let twice = |slice: u64| {
+    let times = |slice: u64| {
         let asked = faults.asked(&locator);
-        asked.iter().filter(|index| **index == slice).count() == 2
+        asked.iter().filter(|index| **index == slice).count()
     };
-    until(|| async { twice(2) }).await;
-    assert!(twice(0) && twice(1));
+    until(|| async { times(2) == 2 }).await;
+    // Chunk 1 lies in slices 1 and 2, which each connection asks for.
+    // Slice 0 carries the header and the start of chunk 0: a connection
+    // whose fetch begins once the other kept chunk 0 starts at slice 1,
+    // under the header held, so slice 0 is asked for once or twice.
+    assert_eq!(times(1), 2);
+    assert!((1..=2).contains(&times(0)), "{:?}", faults.asked(&locator));
+    let before = faults.asked(&locator).len();
 
     // Paused: the slice under way is taken, and no other.
     bobs_space.pause_sync();
     faults.hold(&[]);
     tokio::time::sleep(Duration::from_secs(3)).await;
-    assert_eq!(faults.asked(&locator).len(), 6);
+    assert_eq!(faults.asked(&locator).len(), before);
     assert!(!reading.is_finished());
 
     // Resumed: the fetches go on after the chunks kept, and the two
@@ -897,8 +907,8 @@ async fn a_space_paused_while_a_fetch_runs_fetches_no_more_until_resumed() {
     let read = within(reading).await.unwrap().unwrap();
     assert_eq!(read, big);
     let asked = faults.asked(&locator);
-    assert!(asked[6..].contains(&3), "{asked:?}");
-    assert!(!asked[6..].contains(&0), "{asked:?}");
+    assert!(asked[before..].contains(&3), "{asked:?}");
+    assert!(!asked[before..].contains(&0), "{asked:?}");
     peer.shutdown().await;
 }
 
