@@ -20,7 +20,10 @@
 //! and a kept object. Eviction asks it for every candidate. A drop the
 //! application asks for asks it too, and may take a kept object alone.
 //! What a space's log and outbox say of it is kept from one pass to the
-//! next, and only the events placed since are read.
+//! next. Only the events placed since are read while the log changed in no
+//! other way; once it did, as when the signature of an event another
+//! party sent is checked, the whole log is read again, so a space that
+//! receives events is read whole after most of them.
 //!
 //! A read says what it wants of an object it fetches when it starts to use
 //! it ([`Engine::want_object`]), and the device records the object as
@@ -476,7 +479,13 @@ struct Staying {
 impl Retained {
     /// Brings what must stay in a space up to date. The log is read whole
     /// the first time, and when it changed other than by placing events,
-    /// or lost some: otherwise only the events placed since are read. The
+    /// or lost some: otherwise only the events placed since are read. A
+    /// log changes otherwise each time a copy of an event is replaced, a
+    /// stub or a witness is added, or a signature is checked
+    /// (`Log::revision`), which is after most events another party sends:
+    /// reading only what is new is what a pass costs in a space this
+    /// device alone writes in, or between two passes with nothing
+    /// received. The
     /// units of the outbox are read again when the outbox changed. An
     /// object once found stays in the set until the log is read whole
     /// again, so that a doubt keeps an object.
@@ -1537,7 +1546,8 @@ impl Engine {
         let spaces: Vec<EventId> = state.replicas.keys().copied().collect();
         let mut kept = 0u64;
         for space in &spaces {
-            // Only what the space's log gained since it was last read.
+            // What the space's log gained since it was last read, or the
+            // whole log where it changed otherwise.
             Self::refresh_staying(&mut state, space);
             let Some(replica) = state.replicas.get(space) else {
                 continue;
