@@ -1341,7 +1341,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get() != 22721) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get_range() != 58339) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get_range() != 59637) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get_to_file() != 51323) {
@@ -3008,13 +3008,17 @@ public interface BlobsInterface {
     suspend fun `get`(`id`: kotlin.String): kotlin.ByteArray?
 
     /**
-     * `length` bytes of a blob from byte `offset`, fewer at its end. A
-     * blob this device does not hold whole is fetched first, whole, into
-     * the device's cache; none when it is not here and nothing is
-     * connected that could send it. It opens only the chunks the range
-     * needs, once every check has run on the whole blob; the first range
-     * read of a blob reads it through once, holding a few chunks at a
-     * time.
+     * `length` bytes of a blob from byte `offset`, fewer at its end. Of a
+     * blob this device does not hold whole, only the chunks that hold
+     * the range are fetched, into the device's cache; none when it is
+     * not here and nothing is connected that could send it. Each chunk
+     * opens under the blob's key before its bytes are given, and the
+     * checks that need the whole blob do not run on a range: a member
+     * that holds the blob's key can serve a range read other validly
+     * sealed chunks, and nothing refutes them later, so read with `get`
+     * what must be the blob's. Of a blob the device holds whole, it
+     * opens only the chunks the range needs once every check has run on
+     * the whole blob.
      */
     suspend fun `getRange`(`id`: kotlin.String, `offset`: kotlin.ULong, `length`: kotlin.ULong): kotlin.ByteArray?
 
@@ -3213,13 +3217,17 @@ open class Blobs: Disposable, AutoCloseable, BlobsInterface
 
 
     /**
-     * `length` bytes of a blob from byte `offset`, fewer at its end. A
-     * blob this device does not hold whole is fetched first, whole, into
-     * the device's cache; none when it is not here and nothing is
-     * connected that could send it. It opens only the chunks the range
-     * needs, once every check has run on the whole blob; the first range
-     * read of a blob reads it through once, holding a few chunks at a
-     * time.
+     * `length` bytes of a blob from byte `offset`, fewer at its end. Of a
+     * blob this device does not hold whole, only the chunks that hold
+     * the range are fetched, into the device's cache; none when it is
+     * not here and nothing is connected that could send it. Each chunk
+     * opens under the blob's key before its bytes are given, and the
+     * checks that need the whole blob do not run on a range: a member
+     * that holds the blob's key can serve a range read other validly
+     * sealed chunks, and nothing refutes them later, so read with `get`
+     * what must be the blob's. Of a blob the device holds whole, it
+     * opens only the chunks the range needs once every check has run on
+     * the whole blob.
      */
     @Throws(FrasilException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
