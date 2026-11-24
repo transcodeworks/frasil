@@ -619,6 +619,17 @@ impl BlobReader {
     /// and the device looks at its cache, so that a blob it held beside
     /// the cache for this reader alone goes.
     ///
+    /// It waits for the task that follows the blob to end. Where that
+    /// task is running the whole-object checks on a blob the device has
+    /// come to hold whole, one pass over the stored blob, `close` returns
+    /// only once the pass has ended: the pass is not interrupted, and it
+    /// takes as long as reading the blob from the store does. A caller
+    /// that cannot wait drops the future `close` returned, or the reader
+    /// itself: the reader has ended all the same, its fetches stop and
+    /// its memory is freed at once, the pass runs to its end on its own
+    /// task, and the device looks at its cache on a task of its own
+    /// instead of before `close` returns.
+    ///
     /// # Errors
     ///
     /// The store's.
