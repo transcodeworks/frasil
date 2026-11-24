@@ -75,6 +75,13 @@ struct Inner {
     /// The header that arrived with a chunk a window took, for an object
     /// the device stores nothing of.
     header: Option<Vec<u8>>,
+    /// Whether a chunk has opened under the header the object's readers
+    /// read by, the one above or the store's: a holder of the object's
+    /// key sealed a chunk under it, and bytes may have been given.
+    proved: bool,
+    /// Counts the times what was held under a header nothing had opened
+    /// under was let go: a reader that built on that header starts over.
+    epoch: u64,
     /// Why the object was refused while it had readers, and whether a
     /// reader has reported it.
     refusal: Option<(&'static str, bool)>,
@@ -222,6 +229,29 @@ impl Readers {
         watched.bump();
     }
 
+    /// Lets go of what the windows of an object hold under a header
+    /// nothing has opened under, the header with it: `false`, and nothing
+    /// done, when a chunk has opened under it. The readers of the object
+    /// that built on the header start over.
+    pub(crate) fn disown(&self, key: &Key) -> bool {
+        let Some(watched) = self.watched(key) else {
+            return true;
+        };
+        {
+            let mut inner = lock(&watched.inner);
+            if inner.proved {
+                return false;
+            }
+            inner.header = None;
+            inner.epoch += 1;
+            for held in inner.windows.values_mut() {
+                held.chunks.clear();
+            }
+        }
+        watched.bump();
+        true
+    }
+
     /// Why an object was refused for good since the device opened.
     pub(crate) fn refused(&self, space: &EventId, locator: &Locator) -> Option<&'static str> {
         lock(&self.refused).get(&(*space, *locator)).copied()
@@ -354,6 +384,42 @@ impl Window {
         lock(&self.watched.inner).header.clone()
     }
 
+    /// Notes that a chunk opened under the header the object's readers
+    /// read by.
+    pub(crate) fn prove(&self) {
+        lock(&self.watched.inner).proved = true;
+    }
+
+    /// Whether a chunk has opened under the header the object's readers
+    /// read by, in this reader or another.
+    pub(crate) fn proved(&self) -> bool {
+        lock(&self.watched.inner).proved
+    }
+
+    /// How many times what was held under a header nothing had opened
+    /// under was let go.
+    pub(crate) fn epoch(&self) -> u64 {
+        lock(&self.watched.inner).epoch
+    }
+
+    /// Lets go of the header the windows hold and of every chunk that
+    /// arrived under it, unless a chunk has opened under it: nothing was
+    /// given from them, and they are not known to be the object's.
+    pub(crate) fn disown(&self) {
+        self.readers.disown(&self.key);
+    }
+
+    /// A chunk the window holds in memory, if any: the last.
+    pub(crate) fn any_chunk(&self) -> Option<u64> {
+        lock(&self.watched.inner)
+            .windows
+            .get(&self.number)?
+            .chunks
+            .keys()
+            .next_back()
+            .copied()
+    }
+
     /// Follows the end of the request for a chunk the window asked for.
     pub(crate) fn ends(&self, index: u64) -> Option<watch::Receiver<Option<FetchEnd>>> {
         lock(&self.watched.inner)
@@ -464,6 +530,10 @@ pub(crate) struct PartReader {
     whole: bool,
     /// The fault the pass ended with.
     fault: Option<WholeFault>,
+    /// Whether a chunk has opened: the header is then one a holder of the
+    /// object's key sealed a chunk under, and its size, which every
+    /// chunk's associated data binds, is that holder's.
+    opened: bool,
 }
 
 impl core::fmt::Debug for PartReader {
@@ -507,7 +577,16 @@ impl PartReader {
             stored: true,
             whole: false,
             fault: None,
+            opened: false,
         })
+    }
+
+    /// Whether a chunk has opened under the header. Until one has, the
+    /// header's size is only what the party that sent the header says:
+    /// steps 1 to 3 bind the header's object ID to the locator and
+    /// nothing else of it (units.md, 3.3 Reading an object).
+    pub(crate) fn has_opened(&self) -> bool {
+        self.opened
     }
 
     /// The plaintext's length, from the header.
@@ -551,9 +630,12 @@ impl PartReader {
     pub(crate) fn open(&mut self, index: u64, sealed: &[u8], stored: bool) -> Result<Vec<u8>> {
         let Some((pass, hasher, next)) = self.pass.as_mut().filter(|(_, _, next)| *next == index)
         else {
-            return self.any.open(index, sealed).map_err(Error::class);
+            let plain = self.any.open(index, sealed).map_err(Error::class)?;
+            self.opened = true;
+            return Ok(plain);
         };
         let plain = pass.open(index, sealed).map_err(Error::class)?;
+        self.opened = true;
         hasher.update(sealed);
         *next += 1;
         self.stored &= stored;
@@ -889,6 +971,33 @@ impl Engine {
             }
         }
         Ok(())
+    }
+
+    /// Drops what the device stores of an object in `holders` under a
+    /// header nothing has opened under: a chunk of it did not open for a
+    /// reader, no reader gave anything of it, and so none fails. It is
+    /// missing again, and fetched again; how the device retains it stays
+    /// as it was.
+    ///
+    /// # Errors
+    ///
+    /// The store's.
+    pub(crate) async fn drop_unopened(&self, holders: &[EventId], locator: &Locator) -> Result<()> {
+        let mut state = self.lock().await;
+        for holder in holders {
+            self.readers().disown(&(*holder, object_id(locator)));
+            self.drop_stored(&mut state, *holder, &object_id(locator), false)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// A chunk of an object the device holds sealed in one space, if any.
+    pub(crate) async fn any_held_chunk(&self, space: &EventId, locator: &Locator) -> Option<u64> {
+        self.read(space, |replica| replica.a_sealed_chunk(locator))
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Notes that a read in order of an object the device holds whole

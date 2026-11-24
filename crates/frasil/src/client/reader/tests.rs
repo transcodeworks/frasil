@@ -913,3 +913,141 @@ async fn a_formatted_reader_shows_neither_plaintext_nor_key() {
     assert!(!shown.contains(&listed(&piece[..16])), "{shown}");
     assert!(!shown.contains(&listed(&object_key[..8])), "{shown}");
 }
+
+/// A header of the same object with another size, and the last chunk
+/// that size gives, of its length, which does not open.
+fn forged(absent: &Absent, size: u64) -> ObjectPart {
+    let mut header =
+        frasil_units::objects::Header::read(absent.parts[0].header.as_ref().unwrap()).unwrap();
+    header.size = size;
+    let index = (size - 1) / CHUNK;
+    ObjectPart {
+        locator: absent.locator,
+        header: Some(header.encode()),
+        index,
+        chunk: vec![7; (size - index * CHUNK) as usize + 40],
+    }
+}
+
+/// Reads at `offset` until a read succeeds, while the chunks asked for
+/// arrive: a read that failed for a chunk that did not open is made again.
+async fn read_again(absent: &Absent, reader: &mut BlobReader, offset: u64, len: usize) -> Vec<u8> {
+    let mut out = vec![0; len];
+    let read = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let reading = reader.read_at(offset, &mut out);
+            tokio::pin!(reading);
+            let read = loop {
+                tokio::select! {
+                    read = &mut reading => break read,
+                    () = tokio::time::sleep(Duration::from_millis(5)) => {
+                        for (index, _) in absent.asked() {
+                            absent.send(index as usize).await;
+                        }
+                    }
+                }
+            };
+            match read {
+                Ok(read) => break read,
+                Err(_) => tokio::time::sleep(Duration::from_millis(5)).await,
+            }
+        }
+    })
+    .await
+    .expect("read again");
+    out.truncate(read);
+    out
+}
+
+/// A reference, whose object nothing opens as it arrives: a party answers
+/// with a header that names the right object and a size of its choice,
+/// and a chunk that does not open. The reader gives no size and no end of
+/// the blob from that header, and reads the blob once its chunks come.
+#[tokio::test]
+async fn a_forged_size_gives_neither_a_size_nor_an_end_of_a_reference() {
+    for uncached in [true, false] {
+        let (absent, _) = referenced().await;
+        let read = if uncached {
+            Read::new().uncached()
+        } else {
+            Read::new()
+        };
+        let mut reader = absent.blobs.open_reader(absent.id, &read).await.unwrap();
+        reader.set_read_ahead(0);
+        // Three chunks by the forged header, of the blob's five.
+        let size = 2 * CHUNK + 10;
+        reader.seek(size);
+        {
+            let sizing = reader.fetch_size();
+            tokio::pin!(sizing);
+            tokio::select! {
+                _ = &mut sizing => panic!("nothing arrived yet"),
+                () = absent.asked_for(2) => {}
+            }
+            let _ = absent
+                .engine
+                .receive_part(absent.of, forged(&absent, size))
+                .await
+                .unwrap();
+            let sized = tokio::time::timeout(Duration::from_millis(300), &mut sizing).await;
+            assert!(!matches!(sized, Ok(Ok(_))), "{sized:?} {uncached}");
+        }
+        assert_eq!(reader.size(), None);
+        // At the size the forged header names: no end of the blob.
+        let piece = read_again(&absent, &mut reader, size, 5).await;
+        assert_eq!(piece, absent.bytes[size as usize..size as usize + 5]);
+        assert_eq!(reader.size(), Some(absent.bytes.len() as u64));
+        drop(reader);
+
+        // A range read there gives the blob's bytes or nothing, never an
+        // empty range.
+        let (absent, _) = referenced().await;
+        let ranging = absent.blobs.get_range(absent.id, size, 5, &read);
+        tokio::pin!(ranging);
+        tokio::select! {
+            _ = &mut ranging => panic!("nothing arrived yet"),
+            () = absent.asked_for(2) => {}
+        }
+        let _ = absent
+            .engine
+            .receive_part(absent.of, forged(&absent, size))
+            .await
+            .unwrap();
+        let ranged = tokio::time::timeout(Duration::from_millis(300), &mut ranging).await;
+        assert!(!matches!(ranged, Ok(Ok(Some(_)))), "{ranged:?} {uncached}");
+    }
+}
+
+/// A header and a chunk that the store took while nothing could open
+/// them, under a size that is not the blob's: a reader gives no size and
+/// no end of the blob from them. Nothing was given under that header, so
+/// what is held of it goes, no reader fails, and the blob is read once
+/// its chunks come.
+#[tokio::test]
+async fn a_stored_header_gives_no_size_before_a_chunk_opens_under_it() {
+    let absent = absent().await;
+    let part = forged(&absent, 10);
+    absent
+        .engine
+        .store_parts(absent.of, &[&part], false)
+        .await
+        .unwrap();
+    assert!(absent.holds(0).await);
+    let mut reader = absent
+        .blobs
+        .open_reader(absent.id, &Read::new())
+        .await
+        .unwrap();
+    reader.set_read_ahead(0);
+    assert_eq!(reader.size(), None);
+    let failed = reader.fetch_size().await.unwrap_err();
+    assert_eq!(failed.class_name(), Some("Decrypt"));
+    assert_eq!(reader.size(), None);
+    assert!(!absent.holds(0).await);
+    // Past the size that header named.
+    let piece = read_again(&absent, &mut reader, 20, 5).await;
+    assert_eq!(piece, absent.bytes[20..25]);
+    assert_eq!(reader.size(), Some(absent.bytes.len() as u64));
+    let end = read_again(&absent, &mut reader, absent.bytes.len() as u64, 5).await;
+    assert!(end.is_empty());
+}

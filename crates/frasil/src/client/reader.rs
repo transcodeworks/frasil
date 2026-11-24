@@ -10,7 +10,11 @@
 //! **What is checked, and when.** No byte is given before the header has
 //! passed steps 1 to 3 and 5 of units.md, 3.3 and its chunk has passed
 //! steps 4 and 6: the chunk opens under the object's key, at its own place
-//! in its own object. The two steps that need the whole object, 0 and 7,
+//! in its own object. The header's steps bind its object ID to the blob
+//! and nothing else of it: its size is bound by each chunk's associated
+//! data, so the reader gives no size and no end of the blob before a chunk
+//! has opened under the header in that reader ([`BlobReader::size`]). The
+//! two steps that need the whole object, 0 and 7,
 //! cannot run on a part of it. [`BlobReader::verified`] says whether they
 //! have: [`Verified::Chunks`] until then, and [`Verified::Whole`] after. A
 //! reader that reads the blob in order from its first byte to its last
@@ -114,6 +118,9 @@ pub struct BlobReader {
     file_whole: bool,
     /// The class the reader failed with for good.
     failed: Option<&'static str>,
+    /// The window's count of headers let go when `parts` was made
+    /// ([`Window::epoch`]).
+    epoch: u64,
     /// Held while the reader lives, for the task that follows the object.
     alive: Arc<()>,
 }
@@ -266,6 +273,7 @@ impl Blobs {
             from_window: false,
             file_whole: false,
             failed: None,
+            epoch: 0,
             alive,
             entry,
         };
@@ -370,24 +378,34 @@ impl BlobReader {
         self.blobs.space().device.engine().clone()
     }
 
-    /// The blob's size, once the reader holds its header and the header
-    /// passed its checks: `None` before the first read of a blob the
-    /// device held nothing of. [`fetch_size`](Self::fetch_size) fetches
-    /// it. The size the stream's entry shows is what its writer wrote;
-    /// this one is the header's, which every chunk is bound to.
+    /// The blob's size, once the reader holds its header and a chunk has
+    /// opened under it in this reader: `None` before the reader's first
+    /// read or [`fetch_size`](Self::fetch_size), which opens one. The
+    /// header's own checks bind only its object ID to the blob; its size
+    /// is in the associated data of every chunk, so a chunk that opens
+    /// under the header shows that a holder of the blob's key sealed under
+    /// that size, and until one has the size is only what the party that
+    /// sent the header says. The size the stream's entry shows is what its
+    /// writer wrote; this one decides what is read.
     pub fn size(&self) -> Option<u64> {
-        self.parts.as_ref().map(PartReader::size)
+        self.parts
+            .as_ref()
+            .filter(|parts| parts.has_opened() || self.file_whole)
+            .map(PartReader::size)
     }
 
-    /// The blob's size, fetching the header first when the device does not
-    /// hold it: the header travels with the chunk the reader stands in.
+    /// The blob's size, once a chunk has opened under its header
+    /// ([`size`](Self::size)): the chunk the reader stands in, or the
+    /// blob's last when it stands past the end, fetched with the header
+    /// when the device does not hold them. Of a blob the device holds
+    /// part of, a reader that stands past the end opens a chunk held.
     ///
     /// # Errors
     ///
     /// As [`read_at`](Self::read_at).
     pub async fn fetch_size(&mut self) -> Result<u64> {
-        self.header().await?;
-        self.size().ok_or(Error::Class("Missing"))
+        self.check()?;
+        self.authenticate().await
     }
 
     /// Where the next [`read`](Self::read) reads.
@@ -514,14 +532,11 @@ impl BlobReader {
     pub(super) async fn piece_at(&mut self, offset: u64, most: usize) -> Result<&[u8]> {
         self.check()?;
         self.position = offset;
-        self.header().await?;
-        let size = self.size().ok_or(Error::Class("Missing"))?;
+        // No end of the blob before a chunk opened under its header. An
+        // empty blob has one empty chunk, which this opens.
+        let size = self.authenticate().await?;
         let chunk = CHUNK_BYTES as u64;
         if offset >= size {
-            // An empty blob has one empty chunk, which its checks read.
-            if size == 0 && self.verified() != Verified::Whole {
-                self.chunk(0).await?;
-            }
             return Ok(&[]);
         }
         let index = offset / chunk;
@@ -536,6 +551,39 @@ impl BlobReader {
         Ok(piece)
     }
 
+    /// Makes the reader hold the header with a chunk opened under it, and
+    /// returns the size the header names, which that chunk's associated
+    /// data binds (units.md, 2.8 Objects): the chunk the reader stands
+    /// in, or, when it stands past the end, a chunk the device holds or
+    /// else the last.
+    async fn authenticate(&mut self) -> Result<u64> {
+        loop {
+            self.header().await?;
+            let Some(parts) = &self.parts else {
+                continue;
+            };
+            let (size, count) = (parts.size(), parts.count());
+            if parts.has_opened() || self.file_whole {
+                return Ok(size);
+            }
+            let standing = self.position / CHUNK_BYTES as u64;
+            let index = if standing < count {
+                standing
+            } else {
+                let mut held = self.window.any_chunk();
+                let engine = self.engine();
+                for holder in &self.holders {
+                    if held.is_none() {
+                        held = engine.any_held_chunk(holder, &self.entry.object).await;
+                    }
+                }
+                held.filter(|at| *at < count)
+                    .unwrap_or(count.saturating_sub(1))
+            };
+            self.chunk(index).await?;
+        }
+    }
+
     /// Fails if the reader failed for good, or its blob was refused.
     fn check(&mut self) -> Result<()> {
         if let Some((class, first)) = self.window.refusal() {
@@ -544,6 +592,13 @@ impl BlobReader {
             }
             self.failed.get_or_insert(class);
             self.opened = None;
+        }
+        // The header the reader built on was let go, with nothing opened
+        // under it: it starts over with the next one.
+        if self.parts.as_ref().is_some_and(|parts| !parts.has_opened())
+            && self.window.epoch() != self.epoch
+        {
+            self.parts = None;
         }
         match self.failed {
             Some(class) => Err(Error::Class(class)),
@@ -628,6 +683,7 @@ impl BlobReader {
                         PartReader::new(&header, source, Opening::ObjectKey(key), &locator)
                     }
                 }?;
+                self.epoch = self.window.epoch();
                 self.parts = Some(parts);
                 return Ok(());
             }
@@ -730,9 +786,16 @@ impl BlobReader {
                 self.wait(index, &mut changed).await?;
                 continue;
             };
-            let parts = self.parts.as_mut().ok_or(Error::Class("Missing"))?;
+            let Some(parts) = self.parts.as_mut() else {
+                // Let go meanwhile: read again under the next header.
+                return Err(Error::Class("Missing"));
+            };
+            let proved = parts.has_opened();
             match parts.open(index, &sealed, stored) {
                 Ok(plain) => {
+                    if !proved {
+                        self.window.prove();
+                    }
                     self.from_window |= !stored;
                     self.opened = Some((index, plain));
                     self.passed().await;
@@ -782,6 +845,18 @@ impl BlobReader {
                         false,
                     )
                     .await;
+            }
+            // Nothing has opened under this header, here or in another
+            // reader, so nothing was given under it: the header and what
+            // came under it are not known to be the object's. They go, no
+            // reader fails, and the next read fetches them again.
+            None if !self.window.proved() => {
+                if stored {
+                    let _ = engine.drop_unopened(&self.holders, &locator).await;
+                } else {
+                    self.window.disown();
+                }
+                self.parts = None;
             }
             // A chunk the store holds that does not open is not the
             // object's: what is held of it goes, and is fetched again.
