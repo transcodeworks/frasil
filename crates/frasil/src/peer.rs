@@ -4943,6 +4943,14 @@ impl SliceTask {
                 return SliceFetch::Malformed;
             };
             drop(slice);
+            // The chunks asked for lie past the object's end by the
+            // header the peer serves: a reader that asked by the size its
+            // entry shows hears of the header, and asks for a chunk the
+            // object has.
+            if let Some(header) = reader.beyond() {
+                let key = (space, crate::replica::object_id(&locator));
+                self.device.readers().hint(&key, header);
+            }
             for part in parts {
                 // Cancelled while the slice was on its way: none of its
                 // parts is stored for this request.

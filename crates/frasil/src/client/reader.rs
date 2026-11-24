@@ -830,7 +830,16 @@ impl BlobReader {
             // shows: the header travels with it. A request that ended
             // before this read is made again, once.
             let last = self.entry.size.saturating_sub(1);
-            let index = self.position.min(last) / CHUNK_BYTES as u64;
+            let mut index = self.position.min(last) / CHUNK_BYTES as u64;
+            // A party showed a header under which that chunk does not
+            // exist: the entry shows more than the object holds. The
+            // object's last chunk by that header is asked for instead,
+            // and the header that comes with it is checked as any is.
+            if let Some(count) = self.window.hinted_count()
+                && index >= count
+            {
+                index = count.saturating_sub(1);
+            }
             if std::mem::take(&mut renew) {
                 self.window.renew();
             }

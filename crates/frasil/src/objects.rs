@@ -197,6 +197,16 @@ impl SliceReader {
         (self.header.is_none() || self.next_chunk < self.end).then_some(self.next_chunk)
     }
 
+    /// The header, when the chunks wanted all lie past the object's last
+    /// chunk by it: the fetch then takes nothing more, and whoever asked
+    /// for them asked by a size that is not the header's.
+    pub(crate) fn beyond(&self) -> Option<&[u8]> {
+        self.header
+            .as_ref()
+            .filter(|header| self.next_chunk >= header.count)
+            .map(|header| header.bytes.as_slice())
+    }
+
     /// Goes on at `chunk`, at or after the next one, leaving out the
     /// chunks between: the bytes received of the next chunk are dropped,
     /// and the fetch takes the slice `chunk` begins in.
@@ -2902,6 +2912,9 @@ mod tests {
         let (parts, slices, _) = read_all(&mut reader, &object.bytes);
         assert!(parts.is_empty());
         assert_eq!(slices, vec![0]);
+        assert_eq!(reader.beyond(), Some(&object.header[..]));
+        let within = SliceReader::start(object.locator, Some(object.header.clone()), 2..3);
+        assert_eq!(within.beyond(), None);
         // A header held that does not read is not used.
         let reader = SliceReader::start(object.locator, Some(vec![1, 2, 3]), 2..3);
         assert_eq!(reader.next_slice(), Some(0));

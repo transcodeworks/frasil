@@ -1775,3 +1775,41 @@ async fn an_entry_whose_size_is_not_the_headers_is_reported() {
     agreeing.read(&mut reader, 5, 10).await;
     assert_eq!(told(&mut events).await, 0);
 }
+
+/// An entry that shows more than its object holds, and a reader that
+/// stands past the object's end with nothing of it here: the chunk it
+/// asks for by the entry does not exist. Once a party shows the object's
+/// header, the reader asks for a chunk the object has, and answers the
+/// end of the blob when that chunk has opened.
+#[tokio::test]
+async fn a_read_past_the_end_of_a_blob_its_entry_overstates_ends() {
+    for read in [Read::new(), Read::new().uncached()] {
+        let absent = mislabelled(20 * CHUNK).await;
+        let key = (absent.of, crate::replica::object_id(&absent.locator));
+        let mut reader = absent.blobs.open_reader(absent.id, &read).await.unwrap();
+        reader.set_read_ahead(0);
+        let mut buf = [0u8; 10];
+        let read = {
+            let reading = reader.read_at(10 * CHUNK, &mut buf);
+            tokio::pin!(reading);
+            tokio::select! {
+                _ = &mut reading => panic!("nothing arrived yet"),
+                () = absent.asked_for(10) => {}
+            }
+            // As a connection does that reads the header in slice 0 and
+            // finds no such chunk.
+            let header = absent.parts[0].header.clone().unwrap();
+            absent.engine.readers().hint(&key, &header);
+            tokio::select! {
+                _ = &mut reading => panic!("nothing arrived yet"),
+                () = absent.asked_for(4) => {}
+            }
+            assert_eq!(absent.asked(), vec![(4, FetchPriority::Position)]);
+            absent.send(4).await;
+            reading.await.unwrap()
+        };
+        assert_eq!(read, 0);
+        assert_eq!(reader.size(), Some(absent.bytes.len() as u64));
+        reader.close().await.unwrap();
+    }
+}

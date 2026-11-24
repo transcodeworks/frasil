@@ -96,6 +96,11 @@ struct Inner {
     /// Counts the times what was held under a header nothing had opened
     /// under was let go: a reader that built on that header starts over.
     epoch: u64,
+    /// A header a party showed for the object, with no chunk: under it
+    /// the chunks a reader asked for do not exist. Nothing is read by it;
+    /// it only tells a reader that holds no header which chunk to ask
+    /// for.
+    hint: Option<Vec<u8>>,
     /// Why the object was refused while it had readers, and whether a
     /// reader has reported it.
     refusal: Option<(&'static str, bool)>,
@@ -228,6 +233,27 @@ impl Readers {
         if let Some(watched) = self.watched(key) {
             lock(&watched.inner).proved = true;
         }
+    }
+
+    /// Notes a header a party showed for an object without a chunk,
+    /// because the chunks asked of it lie past the object's end by that
+    /// header: the readers that wait for them hear of it.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) fn hint(&self, key: &Key, header: &[u8]) {
+        let Some(watched) = self.watched(key) else {
+            return;
+        };
+        {
+            let mut inner = lock(&watched.inner);
+            if inner.hint.as_deref() == Some(header) {
+                return;
+            }
+            inner.hint = Some(header.to_vec());
+        }
+        watched.bump();
     }
 
     /// What the open readers of a reference hold to open its object, of
@@ -498,6 +524,16 @@ impl Window {
     /// The header that arrived with the chunks the windows took.
     pub(crate) fn header(&self) -> Option<Vec<u8>> {
         lock(&self.watched.inner).header.clone()
+    }
+
+    /// The chunk count of the header a party showed for the object
+    /// without a chunk ([`Readers::hint`]), if it reads and names this
+    /// object. It is no more than that party's word: a reader uses it
+    /// only to choose the chunk it asks for.
+    pub(crate) fn hinted_count(&self) -> Option<u64> {
+        let inner = lock(&self.watched.inner);
+        let header = Header::read(inner.hint.as_deref()?).ok()?;
+        (header.object_id == self.locator[..32]).then(|| count_of(header.size))
     }
 
     /// Notes that a chunk opened in this reader under the header the
