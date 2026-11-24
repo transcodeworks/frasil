@@ -175,8 +175,10 @@ Each returns at once when the data is here, else as soon as it arrives, and
 fails with `Timeout` (`timeout`) at its deadline. An observed read of the
 same data shows loading meanwhile. `get_when_available` is a `get` with a
 deadline: it fetches a blob the device does not hold, into its cache, and
-while nothing is connected that could send it, it waits for the space to
-change and tries again.
+waits its whole time for one that nothing connected can send yet. While no
+peer or member is connected, and while one is that does not hold the blob,
+so that a fetch gets nowhere, it tries again when the space changes and
+every second.
 
 `blobs.status(id)` says where a blob's bytes stand: readable (the device
 holds them whole, kept or cached), fetching (with the bytes done of the

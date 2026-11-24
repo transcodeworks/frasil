@@ -379,6 +379,13 @@ mod records {
 mod blobs {
     use super::{Duration, Error, Observed, Result, Scope, Space, StreamId, key};
     use crate::client::{Blob, BlobId, Blobs, Read};
+    use tokio::sync::broadcast::error::RecvError;
+
+    /// How long [`Blobs::get_when_available`] waits before it tries again
+    /// when nothing in the space changed: a connection made meanwhile, or
+    /// bytes that reached a peer after their unit, change nothing this
+    /// device sees.
+    const AVAILABLE_AGAIN: Duration = Duration::from_secs(1);
 
     /// Where a blob's bytes stand on this device, from [`Blobs::status`].
     /// [`Blobs::local`] tells whether a blob the device holds is kept or
@@ -573,24 +580,62 @@ mod blobs {
 
         /// A blob's bytes, as [`Blobs::get`] reads them with
         /// [`Read::new`], within a deadline: at once when this device holds
-        /// them, else fetched into the cache, for at most `within`. While
-        /// nothing is connected that could send them, it waits for the
-        /// space to change and tries again.
+        /// them, else fetched into the cache, for at most `within`. It
+        /// waits the whole time for a blob that nothing connected can send
+        /// yet: while no peer or member is connected, and while one is
+        /// that does not hold the blob, so that a fetch gets nowhere, it
+        /// tries again when the space changes and every second, until the
+        /// blob is here or the time is up.
+        /// A read that fetches nothing writes nothing to the store.
         ///
         /// # Errors
         ///
-        /// [`Error::Timeout`] when they are not here in time; as
-        /// [`Blobs::get`].
+        /// [`Error::Timeout`] when the bytes are not here in time; as
+        /// [`Blobs::get`], but for a fetch that stopped moving or that the
+        /// connected parties do not serve, which is tried again.
         pub async fn get_when_available(&self, id: BlobId, within: Duration) -> Result<Vec<u8>> {
+            let engine = self.space().device.engine();
+            let space = self.space().id().event();
+            // Subscribed before the first attempt, so that nothing that
+            // arrives between two attempts is missed.
+            let mut notices = engine.subscribe();
+            let mut arrivals = engine.subscribe_arrivals();
             let deadline = self.space().device.sleep(within);
-            let read = Read::new();
-            let got = self.space().when_available(within, || async {
-                self.get(id, &read).await?.ok_or(Error::Class("Missing"))
-            });
             tokio::pin!(deadline);
-            tokio::select! {
-                () = &mut deadline => Err(Error::Timeout),
-                got = got => got,
+            let read = Read::new();
+            loop {
+                // A fetch under way when the time is up is dropped, and
+                // ends as a cancelled read does.
+                let got = tokio::select! {
+                    () = &mut deadline => return Err(Error::Timeout),
+                    got = self.get(id, &read) => got,
+                };
+                match got {
+                    Ok(Some(bytes)) => return Ok(bytes),
+                    // Not here, and not fetched for now.
+                    Ok(None) | Err(Error::Timeout | Error::Class("Missing")) => {}
+                    Err(error) => return Err(error),
+                }
+                let again = self.space().device.sleep(AVAILABLE_AGAIN);
+                tokio::pin!(again);
+                loop {
+                    tokio::select! {
+                        () = &mut deadline => return Err(Error::Timeout),
+                        () = &mut again => break,
+                        notice = notices.recv() => match notice {
+                            Ok(notice) if notice.space == space => break,
+                            Ok(_) => {}
+                            Err(RecvError::Lagged(_)) => break,
+                            Err(RecvError::Closed) => return Err(Error::Timeout),
+                        },
+                        arrival = arrivals.recv() => match arrival {
+                            Ok((from, _)) if from == space => break,
+                            Ok(_) => {}
+                            Err(RecvError::Lagged(_)) => break,
+                            Err(RecvError::Closed) => return Err(Error::Timeout),
+                        },
+                    }
+                }
             }
         }
 
