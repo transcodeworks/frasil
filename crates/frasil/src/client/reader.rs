@@ -61,7 +61,8 @@ use frasil_keys::derive::Secret;
 use frasil_units::limits::CHUNK_BYTES;
 use frasil_units::objects::Opening;
 use std::collections::BTreeSet;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
+use tokio::sync::oneshot::{self, error::TryRecvError};
 use tokio::sync::watch;
 
 /// How many chunks a reader fetches ahead of where it reads, unless it is
@@ -111,6 +112,10 @@ pub struct BlobReader {
     local: bool,
     /// Whether the application holds the blob as a file.
     file: bool,
+    /// Held while the reader lives, for the task that follows the object,
+    /// which ends when this goes: before the window, whose going wakes
+    /// the task.
+    _alive: oneshot::Sender<()>,
     window: Window,
     reading: Option<Reading>,
     parts: Option<PartReader>,
@@ -137,8 +142,6 @@ pub struct BlobReader {
     /// The window's count of headers let go when `parts` was made
     /// ([`Window::epoch`]).
     epoch: u64,
-    /// Held while the reader lives, for the task that follows the object.
-    alive: Arc<()>,
 }
 
 impl core::fmt::Debug for BlobReader {
@@ -274,7 +277,7 @@ impl Blobs {
             key: key.clone(),
         });
         let window = engine.open_window(space, locator, passing, opening);
-        let alive = Arc::new(());
+        let (_alive, gone) = oneshot::channel();
         let reader = BlobReader {
             blobs: self.clone(),
             id,
@@ -296,10 +299,10 @@ impl Blobs {
             failed: None,
             gave_up: false,
             epoch: 0,
-            alive,
+            _alive,
             entry,
         };
-        reader.follow_object();
+        reader.follow_object(gone);
         Ok(reader)
     }
 }
@@ -313,19 +316,21 @@ struct Following {
     holders: Vec<EventId>,
     reference: Option<(EventId, Secret)>,
     window: Window,
-    alive: Weak<()>,
+    /// Ready once the reader is gone.
+    gone: oneshot::Receiver<()>,
 }
 
 impl Following {
     /// Follows the object while its reader lives: once the device holds
     /// it whole, every step of units.md, 3.3 runs on the stored object,
-    /// and a refusal is told to the application.
-    async fn run(self) {
+    /// and a refusal is told to the application. It ends when the reader
+    /// goes, whatever it waits for then.
+    async fn run(mut self) {
         let engine = self.blobs.space().device.engine().clone();
         let mut changed = self.window.follow();
         loop {
             changed.borrow_and_update();
-            if self.alive.strong_count() == 0 {
+            if !matches!(self.gone.try_recv(), Err(TryRecvError::Empty)) {
                 return;
             }
             if let Some((_, first)) = self.window.refusal() {
@@ -350,8 +355,13 @@ impl Following {
                     Ok(false) => {}
                 }
             }
-            if changed.changed().await.is_err() {
-                return;
+            tokio::select! {
+                _ = &mut self.gone => return,
+                changed = changed.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
             }
         }
     }
@@ -377,7 +387,7 @@ impl BlobReader {
     /// take one. Without it, a reader that does not read in order stays
     /// at [`Verified::Chunks`] unless another read ran every step on the
     /// stored blob.
-    fn follow_object(&self) {
+    fn follow_object(&self, gone: oneshot::Receiver<()>) {
         let engine = self.blobs.space().device.engine();
         let following = Following {
             blobs: self.blobs.clone(),
@@ -387,7 +397,7 @@ impl BlobReader {
             holders: self.holders.clone(),
             reference: self.reference.clone(),
             window: engine.open_window(self.space, self.entry.object, false, None),
-            alive: Arc::downgrade(&self.alive),
+            gone,
         };
         let _ = self
             .blobs

@@ -1607,3 +1607,38 @@ async fn a_chunk_that_arrives_for_a_request_that_ended_is_not_stored() {
     assert!(absent.holds(1).await);
     assert_eq!(absent.state().await, BlobState::Cached);
 }
+
+/// The task that follows a reader's object ends with its reader, in
+/// whatever order the reader's parts go: woken by the reader's window
+/// going while the rest of the reader is still there, it does not stay
+/// parked on the object, with a window of its own and the device.
+#[tokio::test]
+async fn the_task_that_follows_the_object_ends_with_its_reader() {
+    let absent = absent().await;
+    let key = (absent.of, crate::replica::object_id(&absent.locator));
+    let reader = absent
+        .blobs
+        .open_reader(absent.id, &Read::new().uncached())
+        .await
+        .unwrap();
+    // The reader's window and the task's.
+    soon(|| async { absent.engine.readers().windows(&key) == 2 }).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let BlobReader {
+        window,
+        _alive: alive,
+        ..
+    } = reader;
+    drop(window);
+    // The task wakes, finds the reader alive, and waits again.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(absent.engine.readers().windows(&key), 1);
+    drop(alive);
+    let ended = tokio::time::timeout(Duration::from_secs(3), async {
+        while absent.engine.readers().windows(&key) != 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the task outlived its reader");
+}

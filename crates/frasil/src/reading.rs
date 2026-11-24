@@ -158,6 +158,14 @@ impl Readers {
         lock(&self.objects).get(key).cloned()
     }
 
+    /// How many windows are open on an object: its readers', and those of
+    /// the tasks that follow it for them.
+    #[cfg(test)]
+    pub(crate) fn windows(&self, key: &Key) -> usize {
+        self.watched(key)
+            .map_or(0, |watched| lock(&watched.inner).windows.len())
+    }
+
     /// Whether a reader that stores nothing has a window on the object.
     fn passing(&self, key: &Key) -> bool {
         self.watched(key).is_some_and(|watched| {
