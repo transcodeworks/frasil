@@ -304,7 +304,9 @@ not a reopen, not a paused space. In a space with no always-on peer no
 other party is known to hold the bytes, so a blob put there is kept until
 the application drops it. `drop_local` refuses, with `NotAllowed`, a blob in
 use and, in a space with an always-on peer, a blob this device put that no
-peer holds yet.
+peer holds yet, whether or not the application asked to keep it: `keep`
+on such a blob is remembered, and decides only what the blob becomes once
+a peer holds it.
 
 **An evicted blob stays away.** The device does not fetch it again by
 itself: the next read does. An older version of a file that no peer keeps

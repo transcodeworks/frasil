@@ -1247,3 +1247,72 @@ async fn a_drop_the_store_refuses_changes_nothing() {
     assert_eq!(parts_stored(&engine, space).await, 0);
     assert!(records(&engine, space).await.is_empty());
 }
+
+/// That the application asked to keep a blob, and that this device put it
+/// and no storing party is known to hold it, are two facts: keeping the
+/// blob does not make it the application's to drop, across a reopen too,
+/// and once a peer holds it the blob is kept, not cached.
+#[tokio::test]
+async fn keeping_a_blob_this_device_put_leaves_it_put() {
+    let medium = Medium::new();
+    let (engine, sealed, space) = medium.device().await;
+    // The space has an always-on peer, which is not reached.
+    engine
+        .keep_peer_hints(&space, &["https://peer.example".to_owned()])
+        .await
+        .unwrap();
+    let stream = engine.new_stream(frasil_adapter_blobs::TYPE).unwrap();
+    let (unit, locator) = engine
+        .put_blob(space, &stream, Some("a file"), &vec![7; SIZE])
+        .await
+        .unwrap();
+    // A member acknowledges the unit, which leaves the outbox.
+    engine
+        .acknowledge(space, Acknowledger::Member([8; 32]), &[unit])
+        .await
+        .unwrap();
+    assert!(!engine.outbox(&space).await.contains(&unit));
+
+    engine.retain(space, &locator, true).await.unwrap();
+    assert_eq!(
+        records(&engine, space).await[0].1,
+        Retention::Put { keep: true }
+    );
+    assert!(
+        matches!(
+            engine.drop_local_object(space, &locator).await,
+            Err(Error::NotAllowed(_))
+        ),
+        "no storing party holds the bytes"
+    );
+    // Asked again, and read as a read that keeps does: nothing changes.
+    engine.retain(space, &locator, true).await.unwrap();
+    engine.retain(space, &locator, false).await.unwrap();
+    assert_eq!(
+        records(&engine, space).await[0].1,
+        Retention::Put { keep: true }
+    );
+
+    let engine = medium.reopen(engine, &sealed).await;
+    assert!(matches!(
+        engine.drop_local_object(space, &locator).await,
+        Err(Error::NotAllowed(_))
+    ));
+    assert!(holds(&engine, space, &locator).await);
+    assert_eq!(
+        engine.retention_of(&space, &locator).await.0,
+        BlobState::Kept
+    );
+
+    // The peer comes to hold it: kept, as the application asked, and the
+    // application's to drop.
+    let peer = Acknowledger::Peer([9; 32]);
+    engine.object_at_peer(space, peer, &locator).await.unwrap();
+    engine.acknowledge(space, peer, &[unit]).await.unwrap();
+    assert_eq!(records(&engine, space).await[0].1, Retention::Kept);
+    engine.set_blob_cache(0);
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &locator).await);
+    engine.drop_local_object(space, &locator).await.unwrap();
+    assert!(!holds(&engine, space, &locator).await);
+}

@@ -347,7 +347,10 @@ pub enum BlobState {
     /// The device keeps it until the application drops it. A kept blob
     /// that is not whole here yet is fetched by the device itself. A blob
     /// this device put is kept until an always-on peer holds its bytes and
-    /// has acknowledged the change that put it, and cached from then on.
+    /// has acknowledged the change that put it; from then on it is cached,
+    /// or still kept if the application asked to keep it. Until then
+    /// [`Blobs::drop_local`](crate::Blobs::drop_local) refuses it in a
+    /// space with an always-on peer, kept by the application or not.
     Kept,
     /// The device holds it within its cache's budget, and may drop it.
     Cached,
@@ -802,8 +805,11 @@ impl Engine {
     /// so with [`want_object`](Self::want_object) instead, which records
     /// nothing until a part arrives. An object the device holds
     /// parts of with no record is kept already and stays so; a cached one
-    /// becomes kept with `keep`, and a kept one never becomes cached. In a
-    /// space whose objects the application holds, nothing is recorded.
+    /// becomes kept with `keep`, and a kept one never becomes cached. An
+    /// object this device put stays put, and its record notes with `keep`
+    /// that the application asked for it: it is kept once a peer holds it.
+    /// In a space whose objects the application holds, nothing is
+    /// recorded.
     ///
     /// # Errors
     ///
@@ -834,7 +840,12 @@ impl Engine {
                 state.retained.set_passing(&(space, id), large);
                 return Ok(());
             }
-            (Some(Retention::Kept), _) | (Some(Retention::Put { .. }), false) => return Ok(()),
+            (Some(Retention::Kept), _)
+            | (Some(Retention::Put { .. }), false)
+            | (Some(Retention::Put { keep: true }), true) => return Ok(()),
+            // That this device put it stands until a peer holds it,
+            // whatever the application asks.
+            (Some(Retention::Put { keep: false }), true) => Retention::Put { keep: true },
             (_, true) => Retention::Kept,
             // Parts with no record: kept.
             (None, false) if holds || self.keeps_all_blobs() => return Ok(()),
@@ -927,7 +938,8 @@ impl Engine {
         self.settle_puts(&mut state, space, &heads).await
     }
 
-    /// Makes cached each object of a space that this device put, that an
+    /// Makes cached, or kept where the application asked to keep it, each
+    /// object of a space that this device put, that an
     /// always-on peer was seen to hold, and that a unit in the past of
     /// `heads` names, which a peer acknowledged: the peer holds the bytes
     /// and a unit that refers to them, so the device no longer holds the
@@ -999,9 +1011,14 @@ impl Engine {
             }
         }
         for id in settled {
-            let read = self.read_now(state);
-            self.record(state, space, id, Retention::Cached { read })
-                .await?;
+            // Kept from now on if the application asked for that.
+            let retention = match state.retained.get(&(space, id)) {
+                Some(Retention::Put { keep: true }) => Retention::Kept,
+                _ => Retention::Cached {
+                    read: self.read_now(state),
+                },
+            };
+            self.record(state, space, id, retention).await?;
         }
         Ok(())
     }
