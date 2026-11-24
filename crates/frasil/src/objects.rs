@@ -1624,16 +1624,24 @@ impl Engine {
                 .collect();
             // Room for what goes to the cache, before it is written
             // (at-rest.md, "Retention", when). What is held beside the
-            // cache counts against no budget, and makes nothing go.
-            let cached: Vec<&&ObjectPart> = sealed
-                .iter()
-                .filter(|part| {
-                    state
-                        .retained
-                        .counts(&(space, crate::replica::object_id(&part.locator)))
-                })
-                .collect();
-            let incoming: usize = cached.iter().map(|part| part.chunk.len()).sum();
+            // cache counts against no budget, and makes nothing go; nor
+            // does a chunk the device holds already, which adds nothing,
+            // as when two connections fetch one object.
+            let incoming: usize = {
+                let replica = state.replicas.get(&space);
+                sealed
+                    .iter()
+                    .filter(|part| {
+                        state
+                            .retained
+                            .counts(&(space, crate::replica::object_id(&part.locator)))
+                            && !replica.is_some_and(|replica| {
+                                replica.holds_chunk(&part.locator, part.index)
+                            })
+                    })
+                    .map(|part| part.chunk.len())
+                    .sum()
+            };
             if incoming > 0 {
                 let writing = sealed
                     .iter()

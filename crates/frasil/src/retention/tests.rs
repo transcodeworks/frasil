@@ -258,6 +258,52 @@ async fn the_cache_drops_the_object_read_longest_ago_once_a_write_would_pass_the
     assert_eq!(parts_stored(&engine, space).await, 2 * (a_parts.len() + 1));
 }
 
+/// A part that arrives a second time, as when two connections fetch one
+/// object, adds nothing to the cache: no room is made for it, and no
+/// other object goes.
+#[tokio::test]
+async fn a_part_the_device_holds_already_makes_nothing_go() {
+    let medium = Medium::new();
+    let (engine, _, space) = medium.device().await;
+    let chunk = frasil_units::limits::CHUNK_BYTES;
+    let (a, a_parts) = object(&engine, space, b'a', chunk).await;
+    let (b, b_parts) = object(&engine, space, b'b', chunk).await;
+    let (c, c_parts) = object(&engine, space, b'c', 2 * chunk).await;
+    assert_eq!((a_parts.len(), c_parts.len()), (1, 2));
+
+    fetch(&engine, space, &a, &a_parts, false).await;
+    let one = engine.blob_cache_usage().await.cached;
+    // Room for three and a half: `a`, `b` and the first half of `c`.
+    engine.set_blob_cache(one * 7 / 2);
+    fetch(&engine, space, &b, &b_parts, false).await;
+    engine.retain(space, &c, false).await.unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            engine
+                .receive_part(space, c_parts[0].clone())
+                .await
+                .unwrap(),
+            Received::Kept
+        );
+        assert!(holds(&engine, space, &a).await);
+        assert!(holds(&engine, space, &b).await);
+    }
+    let usage = engine.blob_cache_usage().await;
+    assert!(usage.cached > 3 * chunk as u64 && usage.cached <= usage.budget);
+
+    // The second half is new: the one read longest ago goes for it.
+    assert_eq!(
+        engine
+            .receive_part(space, c_parts[1].clone())
+            .await
+            .unwrap(),
+        Received::Whole
+    );
+    assert!(!holds(&engine, space, &a).await);
+    assert!(holds(&engine, space, &b).await);
+    assert!(holds(&engine, space, &c).await);
+}
+
 #[tokio::test]
 async fn the_order_of_the_cache_survives_a_reopen() {
     let medium = Medium::new();
