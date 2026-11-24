@@ -651,7 +651,13 @@ mod blobs {
                     // party that is not connected yet may still hold it
                     // right: the wait goes on for one.
                     Err(error @ Error::Class("ObjectMismatch" | "Malformed")) => {
-                        if !self.others_may_serve().await {
+                        // Within the time too: the look takes the
+                        // device's lock.
+                        let others = tokio::select! {
+                            () = &mut deadline => return Err(error),
+                            others = self.others_may_serve() => others,
+                        };
+                        if !others {
                             return Err(error);
                         }
                         refused = Some(error);
