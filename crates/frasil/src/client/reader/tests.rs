@@ -15,6 +15,8 @@ use frasil_events::EventId;
 use frasil_units::limits::{CHUNK_BYTES, SEALED_CHUNK_BYTES};
 use std::time::Duration;
 
+mod arrival;
+
 const CHUNK: u64 = CHUNK_BYTES as u64;
 
 /// Four chunks and a bit.

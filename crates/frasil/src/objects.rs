@@ -321,19 +321,32 @@ pub(crate) enum Received {
     /// any more. Another connection brought the chunk first. Nothing is
     /// asked for again because of it.
     Unwanted,
-    /// Refused: what the device held of the object is dropped, and it is
-    /// asked of another party.
+    /// Refused: the part opens under another header than the one the
+    /// device holds, under which a chunk had opened too. At most one of
+    /// the two is the object's: what the device held of it is dropped, and
+    /// it is asked of another party. So too for an object that, whole,
+    /// does not hash to its locator, and for a state object larger than
+    /// its adapter loads.
     Refused,
     /// Not kept, and its sender's fault: the part does not check under
-    /// the header it carries, where the device holds none or another one;
-    /// or under the header the device holds, under which a chunk has
-    /// opened ([`Engine::holds_an_open_chunk`], or in a reader). What the
-    /// device holds of the object stays, no reader of it fails, and the
-    /// chunk is asked of another party (units.md, "Sync", objects). A
+    /// the header it carries; or it carries none and does not check under
+    /// the header the device holds, under which a chunk has opened
+    /// ([`Engine::holds_an_open_chunk`], or in a reader); or it carries
+    /// another header than that one, and nothing opens its chunk. What
+    /// the device holds of the object stays, no reader of it fails, and
+    /// the chunk is asked of another party (units.md, "Sync", objects). A
     /// sender whose stored bytes were read under the header held, and not
     /// its own, is judged again under its own
     /// ([`SliceTask`](crate::peer)).
     BadChunk,
+    /// Not kept, and nobody's fault that the device can tell: nothing has
+    /// opened under the header the device holds, and nothing opens the
+    /// part either, which carries another header or none. One of the two
+    /// is not the object's, and a party that holds no key can make
+    /// either. What the device holds stays, its sender is not given up,
+    /// and the chunk is asked for again: a chunk that opens decides,
+    /// once the device holds a key that opens one.
+    Undecided,
 }
 
 /// What became of a chunk the other side of a session sent
@@ -411,13 +424,12 @@ enum Fit {
     Fits { opened: bool },
     /// It carries no header, and none is held.
     Headerless,
-    /// It does not check under the header it carries, and the device
-    /// holds no header or another one: its sender's fault.
+    /// It does not check under the header it carries, whatever the device
+    /// holds: its sender's fault.
     Bad,
-    /// It does not check under the header the device holds, which is the
-    /// one it carries if it carries one: its sender's fault if a chunk
-    /// has opened under that header, and else nothing says which of the
-    /// two is not the object's.
+    /// It carries no header, and does not check under the one the device
+    /// holds: its sender's fault if a chunk has opened under that header,
+    /// and else nothing says which of the two is not the object's.
     Unfit,
     /// It checks under the header it carries, which is not the one the
     /// device holds; `opened` says its chunk opened under it. At most one
@@ -469,7 +481,11 @@ fn fits_object(
             Some(opened) => Fit::Other { opened },
             None => Fit::Bad,
         },
-        (_, Some(held)) => match checks(held) {
+        (Some(_), Some(held)) => match checks(held) {
+            Some(opened) => Fit::Fits { opened },
+            None => Fit::Bad,
+        },
+        (None, Some(held)) => match checks(held) {
             Some(opened) => Fit::Fits { opened },
             None => Fit::Unfit,
         },
@@ -1532,23 +1548,39 @@ impl Engine {
     /// One part of an object another party sent, as sync carries it
     /// (units.md, "Sync", objects): checked as it arrives, then kept. Of
     /// an object the device holds whole, nothing is taken. The chunk is
-    /// checked with [`check_chunk`] under the header the device holds or
-    /// the one the part carries, and opened under the object's key when
-    /// the device holds it. A part that fails is its sender's fault, and
-    /// is not kept, while nothing the device holds is in doubt
-    /// ([`Received::BadChunk`]): the device holds nothing of the object,
-    /// or a chunk has opened under the header it holds. Otherwise at most
-    /// one of what is held and what arrived is the object's: a part that
-    /// opens under another header replaces what is held under a header
-    /// nothing opened under, and in every other case what is held is
-    /// dropped and the part refused, so that the object is missing again
-    /// and asked of another party. Once the object is whole, it is
-    /// checked against its locator's digest, which needs no key. A reader
-    /// of the object fails with what is dropped only when a chunk had
-    /// opened in a reader, whose bytes are then in doubt
-    /// ([`drop_object`](Self::drop_object)). A part with no header of an
-    /// object the device holds no header of cannot be checked: it is not
-    /// kept, and nothing else changes.
+    /// checked with [`check_chunk`] under the header the part carries, or
+    /// the one the device holds when it carries none, and opened under
+    /// the object's key when the device holds it.
+    ///
+    /// A part that fits is kept. Of one that does not, by the header the
+    /// device holds (none; one nothing has opened under; one a chunk has
+    /// opened under, as it arrived, in a reader, or in the store):
+    ///
+    /// | Held | The part | It is | Dropped | Its sender |
+    /// | --- | --- | --- | --- | --- |
+    /// | none | carries no header | [`Received::Headerless`] | nothing | asked again |
+    /// | any | fails under the header it carries | [`Received::BadChunk`] | nothing | given up |
+    /// | opened | no header, fails under the one held | [`Received::BadChunk`] | nothing | given up |
+    /// | opened | another header, nothing opens it | [`Received::BadChunk`] | nothing | given up |
+    /// | opened | another header, opens | [`Received::Refused`] | what is held | given up |
+    /// | not opened | another header, opens | kept | what was held | kept |
+    /// | not opened | no header, fails under the one held | [`Received::Undecided`] | nothing | asked again |
+    /// | not opened | another header, nothing opens it | [`Received::Undecided`] | nothing | asked again |
+    ///
+    /// So a party that holds no key of the object makes the device drop
+    /// nothing a chunk has opened under, and nothing it merely holds
+    /// either: only a part that opens under another header does, which a
+    /// holder of the key sealed. Where a chunk had opened under the
+    /// header held, at most one of the two is the object's, and nothing
+    /// says which: what is held goes, the object is missing again and
+    /// asked of another party, and its whole-object checks decide once
+    /// it is whole (adapter-blobs.md, 4 Security considerations). A
+    /// reader of the object fails with what is dropped only when a chunk
+    /// had opened in a reader, whose bytes are then in doubt
+    /// ([`drop_object`](Self::drop_object)); where none had, the readers
+    /// start over under the header that arrives next. Once the object is
+    /// whole, it is checked against its locator's digest, which needs no
+    /// key.
     ///
     /// `asked` says what the part was asked for ([`Asked`]): a part whose
     /// request ended while it was on its way is not stored, whoever uses
@@ -1565,7 +1597,7 @@ impl Engine {
         asked: Asked<'_>,
     ) -> Result<Received> {
         let key = (space, crate::replica::object_id(&part.locator));
-        let fits = {
+        let (fits, received) = {
             let mut state = self.lock().await;
             self.refresh_held(&mut state);
             let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
@@ -1575,18 +1607,17 @@ impl Engine {
             // The header the replica holds, the one a receive through a
             // provider holds, or the one the windows of readers that
             // store nothing hold.
+            let receive = state.held.receive_at(&space, &part.locator);
+            // A receive through a provider opens each chunk it takes.
+            let received = receive.as_ref().is_some_and(|(_, next)| *next > 0);
             let held = replica
                 .object_header(&part.locator)
                 .map(<[u8]>::to_vec)
-                .or_else(|| {
-                    state
-                        .held
-                        .receive_at(&space, &part.locator)
-                        .map(|(header, _)| header)
-                })
+                .or_else(|| receive.map(|(header, _)| header))
                 .or_else(|| self.readers().header(&key));
             let openings = self.readers().openings(&key);
-            fits_object(replica, &space, &part, held.as_deref(), &openings)
+            let fits = fits_object(replica, &space, &part, held.as_deref(), &openings);
+            (fits, received)
         };
         let opened = match fits {
             Fit::Fits { opened } => opened,
@@ -1598,20 +1629,30 @@ impl Engine {
                 // Whether a chunk has opened under the header held: as
                 // it arrived or in a reader, or a chunk of the store
                 // does now.
-                let proved = self.readers().proved(&key)
+                let proved = received
+                    || self.readers().proved(&key)
                     || self.holds_an_open_chunk(&space, &part.locator).await;
-                if fits == Fit::Unfit && proved {
-                    return Ok(Received::BadChunk);
+                match (fits, proved) {
+                    // A chunk opened under each header.
+                    (Fit::Other { opened: true }, true) => {
+                        let mut state = self.lock().await;
+                        self.drop_object(&mut state, space, &part.locator).await?;
+                        return Ok(Received::Refused);
+                    }
+                    // A chunk opened under the part's header and none
+                    // under the one held, under which nothing was given:
+                    // the part is the object's first.
+                    (Fit::Other { opened: true }, false) => {
+                        let mut state = self.lock().await;
+                        self.drop_object(&mut state, space, &part.locator).await?;
+                        true
+                    }
+                    // Nothing opens the part, and a chunk has opened
+                    // under the header held.
+                    (_, true) => return Ok(Received::BadChunk),
+                    // Nothing has opened under either.
+                    (_, false) => return Ok(Received::Undecided),
                 }
-                let mut state = self.lock().await;
-                self.drop_object(&mut state, space, &part.locator).await?;
-                // A chunk opened under the part's header and none under
-                // the one held, under which nothing was given: the part
-                // is the object's first.
-                if fits != (Fit::Other { opened: true }) || proved {
-                    return Ok(Received::Refused);
-                }
-                true
             }
         };
         // A state object whose header names more than its adapter loads is

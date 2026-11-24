@@ -108,10 +108,11 @@ pub enum FetchEnd {
     /// A chunk the other side sent failed its checks (units.md, 3.3
     /// Reading an object), or the object, once whole, did not hash to its
     /// locator. What the device held of the object stays where the fault
-    /// is that chunk's alone: the device held nothing of the object, or a
-    /// chunk had opened under the header it holds. It was dropped where
-    /// the object did not hash to its locator, and where nothing says
-    /// which of what was held and what arrived is the object's.
+    /// is that chunk's alone: it does not check under the header it came
+    /// with, or under the header the device holds, under which a chunk
+    /// has opened. It was dropped where the object did not hash to its
+    /// locator, and where a chunk opened under each of two headers, the
+    /// one held and the one that arrived.
     Refused,
     /// The stored bytes the other side sent do not read as the object's
     /// header gives them (transport.md, "Objects over HTTP"). What the

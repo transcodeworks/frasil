@@ -4330,8 +4330,11 @@ impl Driver {
 
     /// A chunk the peer sent in answer to an `ObjectWant` of this
     /// connection: checked as it arrives (units.md, "Sync", objects), and
-    /// kept if it is still wanted. A chunk that fails drops what the
-    /// device held of the object, which is no longer asked of this peer.
+    /// kept if it is still wanted. A chunk that fails is this peer's
+    /// fault, and the object is no longer asked of it; what the device
+    /// held of the object stays ([`Engine::receive_part`]).
+    ///
+    /// [`Engine::receive_part`]: crate::device::Engine::receive_part
     async fn on_object_chunk(
         &mut self,
         space: EventId,
@@ -4975,9 +4978,8 @@ impl SliceTask {
                     // header is another one than the device held, under
                     // which its bytes were cut, is first judged under its
                     // own: its chunks then come with that header, and
-                    // the device takes them, refuses them or drops what
-                    // it holds as for any part under another header
-                    // ([`Engine::receive_part`]).
+                    // the device judges them as any part under another
+                    // header ([`Engine::receive_part`]).
                     //
                     // [`Engine::receive_part`]: crate::device::Engine::receive_part
                     Ok(Received::BadChunk) => {
@@ -4993,6 +4995,19 @@ impl SliceTask {
                     // take this chunk: a later fetch starts from where
                     // the device stands then.
                     Ok(Received::Headerless | Received::Left) => return SliceFetch::Stopped,
+                    // Nothing says whether the chunk or what the device
+                    // holds is not the object's: the peer is not given
+                    // up, and a later fetch asks again. A peer whose own
+                    // header is another one than the device held is
+                    // judged under its own first, as above.
+                    Ok(Received::Undecided) => {
+                        if !own && self.peer_header_differs(&space, &locator).await {
+                            own = true;
+                            reader = SliceReader::start(locator, None, self.first..end);
+                            continue 'slices;
+                        }
+                        return SliceFetch::Stopped;
+                    }
                     // Nobody waits for the chunk any more: another
                     // connection brought it first. No failure of this
                     // fetch, which goes on with what is still lacking and

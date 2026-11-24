@@ -23,16 +23,18 @@
 //! keeps a part of it, and when a check of it fails
 //! ([`Readers::refuse`]).
 //!
-//! A part that does not check as it arrives is its sender's fault while
-//! nothing the device holds is in doubt: it is not kept, and another party
-//! is asked ([`Engine::receive_part`]). The windows of an object say what
-//! that takes: whether a chunk has opened under the header its readers
-//! read by, and whether one has in a reader, whose bytes may then have
-//! been given. Readers fail with what the device drops of an object only
-//! in the second case; where no reader was given anything, they start
-//! over under the header that arrives next. The reader of a reference
-//! leaves the object's key with its window while it is open, so that the
-//! chunks of a reference are opened as they arrive too.
+//! A part that does not check as it arrives is its sender's fault, and is
+//! kept nowhere: another party is asked ([`Engine::receive_part`]). What
+//! the device holds of the object goes only for a part that opens under
+//! another header, which a holder of the object's key sealed. The windows
+//! of an object say what that takes: whether a chunk has opened under the
+//! header its readers read by, and whether one has in a reader, whose
+//! bytes may then have been given. Readers fail with what the device
+//! drops of an object only in the second case; where no reader was given
+//! anything, they start over under the header that arrives next. The
+//! reader of a reference leaves the object's key with its window while it
+//! is open, so that the chunks of a reference are opened as they arrive
+//! too.
 
 #![cfg_attr(not(feature = "adapter-blobs"), allow(dead_code))]
 

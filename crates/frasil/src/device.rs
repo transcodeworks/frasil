@@ -3817,10 +3817,12 @@ impl Engine {
             stores: named || in_order || fetches.stores_chunk(&space, &locator, index),
         };
         match self.receive_part(space, part, asked).await? {
-            // A chunk that does not open under the header held: the
-            // header this side sent with its answer was compared with it
-            // as it arrived, so the fault is the chunk's, and what the
-            // device holds stays.
+            // A chunk that does not check under the header this side
+            // sent with it, or under the header held, under which a
+            // chunk has opened: the fault is the chunk's, and what the
+            // device holds stays. One that opens under another header
+            // than the one held, under which a chunk had opened too,
+            // took what was held with it.
             Received::Refused | Received::BadChunk => {
                 // Not asked of this side again; every other connection
                 // of the space asks for it, and who asked for its chunks
@@ -3837,8 +3839,9 @@ impl Engine {
                 });
                 Ok((Taken::Refused, Vec::new()))
             }
-            // Not kept, and so not counted as arrived: asked for again.
-            Received::Headerless | Received::Left => {
+            // Not kept, and so not counted as arrived: asked for again,
+            // and this side is not given up.
+            Received::Headerless | Received::Left | Received::Undecided => {
                 let (wants, ended) = self
                     .asking(&space, &locator, Some(named), |_, skip, _| {
                         session.chunk_again(locator, index, skip)
