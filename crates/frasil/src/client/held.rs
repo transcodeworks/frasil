@@ -241,6 +241,11 @@ mod blobs {
             use frasil_adapter_blobs::entry::Entry;
             let engine = self.space().device.engine();
             let space = self.space().id().event();
+            // In use until its unit names it: a peer that takes it before
+            // that is noted, so that the unit's record of the put knows a
+            // peer holds the bytes (at-rest.md, "An object the device
+            // put").
+            let _using = engine.use_object(space, &locator);
             if how.published {
                 debug_assert!(stored.is_empty(), "a published put keeps its object first");
                 self.taken(space, locator).await?;

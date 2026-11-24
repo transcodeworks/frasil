@@ -394,6 +394,18 @@ async fn a_blob_this_device_put_is_cached_once_the_peer_holds_it() {
     })
     .await;
 
+    // One whose bytes the peer takes before its unit is written.
+    let published = files
+        .put_version(&vec![5; SIZE], &frasil::PutVersion::new().published())
+        .await
+        .unwrap();
+    within(async {
+        while state(&files, published).await != BlobState::Cached {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+
     let alone = open(3, Storage::Memory, Options::new().blob_cache(0)).await;
     let space = alone.create_space().await.unwrap();
     let files = space.create_blobs().unwrap();
