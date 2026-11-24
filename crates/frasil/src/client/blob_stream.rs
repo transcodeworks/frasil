@@ -352,9 +352,12 @@ impl Blobs {
     /// answer ([`FetchEnd::Unserved`]); `ObjectMismatch` when what they
     /// were sent failed its checks ([`FetchEnd::Refused`]) and `Malformed`
     /// when it did not read as the object ([`FetchEnd::Malformed`]), each
-    /// as soon as every connection of the space gave the request up;
-    /// [`Error::Timeout`] when nothing arrives for [`STALL`], or the last
-    /// connection goes.
+    /// as soon as every connection of the space gave the request up and
+    /// none is still being made: a peer that has not yet granted the
+    /// space, or a member whose attach has not started, may still serve
+    /// the request, and it has no end while one is awaited.
+    /// [`Error::Timeout`] when nothing arrives for [`STALL`], which bounds
+    /// that wait too, or the last connection goes.
     ///
     /// [`FetchEnd::Unserved`]: crate::fetch::FetchEnd::Unserved
     /// [`FetchEnd::Refused`]: crate::fetch::FetchEnd::Refused
@@ -600,6 +603,23 @@ impl Blobs {
     pub(super) fn can_fetch(&self) -> bool {
         false
     }
+
+    /// Whether a party that is not connected now could still send the
+    /// space's blobs ([`Engine::others_may_serve`]).
+    ///
+    /// [`Engine::others_may_serve`]: crate::device::Engine::others_may_serve
+    #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
+    pub(super) async fn others_may_serve(&self) -> bool {
+        let space = self.space().id().event();
+        self.space().device.engine().others_may_serve(&space).await
+    }
+
+    /// Without a connection, no party sends anything.
+    #[cfg(not(any(feature = "server", feature = "iroh", feature = "server-socket")))]
+    #[allow(clippy::unused_async)]
+    pub(super) async fn others_may_serve(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -685,5 +705,213 @@ mod tests {
             drop(taker);
             assert!(engine.fetches().of(&of).is_empty());
         }
+    }
+
+    /// A blob of a space whose one member is this device, absent here by
+    /// the application's choice, with its bytes and the parts a party
+    /// that holds it would send.
+    #[cfg(all(
+        feature = "adapter-blobs",
+        any(feature = "server", feature = "iroh", feature = "server-socket")
+    ))]
+    async fn absent_blob(
+        device: &crate::Device,
+    ) -> (
+        crate::Space,
+        crate::Blobs,
+        crate::BlobId,
+        frasil_adapter::Locator,
+        Vec<u8>,
+        Vec<crate::snapshots::ObjectPart>,
+    ) {
+        let space = device.create_space().await.unwrap();
+        let blobs = space.create_blobs().unwrap();
+        let bytes = vec![7; 1000];
+        let id = blobs.put(None, &bytes).await.unwrap();
+        let locator = blobs.entry(id).await.unwrap().object;
+        blobs.drop_local(id).await.unwrap();
+        let (sealed, _, parts) = device
+            .engine()
+            .seal_parts(space.id().event(), &bytes)
+            .await
+            .unwrap();
+        assert_eq!(sealed, locator);
+        (space, blobs, id, locator, bytes, parts)
+    }
+
+    /// Waits until a request for chunks is made in a space.
+    #[cfg(all(
+        feature = "adapter-blobs",
+        any(feature = "server", feature = "iroh", feature = "server-socket")
+    ))]
+    async fn requested(engine: &crate::device::Engine, of: frasil_events::EventId) {
+        let asked = async {
+            while engine.fetches().of(&of).is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), asked)
+            .await
+            .expect("the read asks for the blob");
+    }
+
+    /// A read does not end because the connected parties gave its blob up
+    /// while a connection of the space is still being made: that one
+    /// serves the read once it is made, and a connection that is not made
+    /// after all lets the read end with what the others said.
+    #[cfg(all(
+        feature = "adapter-blobs",
+        any(feature = "server", feature = "iroh", feature = "server-socket")
+    ))]
+    #[tokio::test]
+    async fn a_read_waits_for_a_connection_still_being_made() {
+        use crate::fetch::FetchEnd;
+        use crate::{Device, Error, Read, Storage};
+        use std::time::Duration;
+
+        let device = Device::open(Storage::Memory, &[1; 32]).await.unwrap();
+        let (space, blobs, id, locator, bytes, parts) = absent_blob(&device).await;
+        let engine = device.engine().clone();
+        let of = space.id().event();
+
+        // One connection refuses the blob while another is being made.
+        let refusing = engine.fetches().attach(of);
+        let coming = engine.fetches().expect(of);
+        let reading = {
+            let blobs = blobs.clone();
+            tokio::spawn(async move { blobs.get(id, &Read::new()).await })
+        };
+        requested(&engine, of).await;
+        refusing.give_up(&locator, FetchEnd::Refused);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            !reading.is_finished(),
+            "the connection being made may still serve it"
+        );
+        // It is made, takes the request, and sends the blob.
+        let serving = engine.fetches().attach(of);
+        drop(coming);
+        for part in parts {
+            engine.receive_part(of, part).await.unwrap();
+        }
+        let read = tokio::time::timeout(Duration::from_secs(10), reading)
+            .await
+            .expect("the read ends once the blob is here")
+            .unwrap();
+        assert_eq!(read.unwrap(), Some(bytes));
+
+        // A connection that is not made after all: the read ends as the
+        // connected ones left it.
+        blobs.drop_local(id).await.unwrap();
+        serving.give_up(&locator, FetchEnd::Refused);
+        let coming = engine.fetches().expect(of);
+        let reading = {
+            let blobs = blobs.clone();
+            tokio::spawn(async move { blobs.get(id, &Read::new()).await })
+        };
+        requested(&engine, of).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!reading.is_finished());
+        drop(coming);
+        let read = tokio::time::timeout(Duration::from_secs(10), reading)
+            .await
+            .expect("the read ends with its request")
+            .unwrap();
+        assert!(
+            matches!(read, Err(Error::Class("ObjectMismatch"))),
+            "{read:?}"
+        );
+    }
+
+    /// `get_when_available` waits through a blob that every connected
+    /// party sent wrong while another party could still send it, and
+    /// returns the bytes when one that holds it right appears.
+    #[cfg(all(
+        feature = "adapter-blobs",
+        any(feature = "server", feature = "iroh", feature = "server-socket")
+    ))]
+    #[tokio::test]
+    async fn get_when_available_returns_a_blob_whose_holder_appears_late() {
+        use crate::fetch::FetchEnd;
+        use crate::{Device, Storage};
+        use std::time::Duration;
+
+        let device = Device::open(Storage::Memory, &[1; 32]).await.unwrap();
+        let (space, blobs, id, locator, bytes, parts) = absent_blob(&device).await;
+        let engine = device.engine().clone();
+        let of = space.id().event();
+        // The space has an always-on peer, which is not connected.
+        engine
+            .keep_peer_hints(&of, &["https://peer.example".to_owned()])
+            .await
+            .unwrap();
+
+        let refusing = engine.fetches().attach(of);
+        let waiting = {
+            let blobs = blobs.clone();
+            tokio::spawn(async move { blobs.get_when_available(id, Duration::from_secs(30)).await })
+        };
+        requested(&engine, of).await;
+        refusing.give_up(&locator, FetchEnd::Refused);
+        // Past a second try, which the refusal ends at once.
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert!(!waiting.is_finished(), "another party may still hold it");
+
+        // A holder connects, and sends the blob when it is next asked for.
+        let _holder = engine.fetches().attach(of);
+        requested(&engine, of).await;
+        for part in parts {
+            engine.receive_part(of, part).await.unwrap();
+        }
+        let got = tokio::time::timeout(Duration::from_secs(10), waiting)
+            .await
+            .expect("the wait ends once the blob is here")
+            .unwrap();
+        assert_eq!(got.unwrap(), bytes);
+    }
+
+    /// A blob every party sent wrong ends `get_when_available` at once
+    /// where no other party could send it, and when the time is up where
+    /// one could: with the failure, not as a blob that never came.
+    #[cfg(all(
+        feature = "adapter-blobs",
+        any(feature = "server", feature = "iroh", feature = "server-socket")
+    ))]
+    #[tokio::test]
+    async fn get_when_available_ends_on_a_mismatch_every_party_agrees_on() {
+        use crate::fetch::FetchEnd;
+        use crate::{Device, Error, Storage};
+        use std::time::{Duration, Instant};
+
+        let device = Device::open(Storage::Memory, &[1; 32]).await.unwrap();
+        let (space, blobs, id, locator, _, _) = absent_blob(&device).await;
+        let engine = device.engine().clone();
+        let of = space.id().event();
+        let refusing = engine.fetches().attach(of);
+        refusing.give_up(&locator, FetchEnd::Refused);
+
+        // This device is the space's one member, and it keeps no peer.
+        let began = Instant::now();
+        let got = blobs.get_when_available(id, Duration::from_secs(30)).await;
+        assert!(
+            matches!(got, Err(Error::Class("ObjectMismatch"))),
+            "{got:?}"
+        );
+        assert!(began.elapsed() < Duration::from_secs(10));
+
+        // With a peer that is not connected, it waits its time.
+        engine
+            .keep_peer_hints(&of, &["https://peer.example".to_owned()])
+            .await
+            .unwrap();
+        let began = Instant::now();
+        let got = blobs
+            .get_when_available(id, Duration::from_millis(1_500))
+            .await;
+        assert!(
+            matches!(got, Err(Error::Class("ObjectMismatch"))),
+            "{got:?}"
+        );
+        assert!(began.elapsed() >= Duration::from_millis(1_400));
     }
 }

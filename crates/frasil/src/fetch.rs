@@ -185,6 +185,9 @@ struct Live {
     /// The connections that take the device's requests, each for one
     /// space, by the numbers given them.
     takers: BTreeMap<u64, Taking>,
+    /// The connections being made that will take a space's requests, by
+    /// the numbers given them, each with its space.
+    expected: BTreeMap<u64, EventId>,
 }
 
 /// One connection that takes a space's requests.
@@ -196,10 +199,20 @@ struct Taking {
 }
 
 impl Live {
+    /// Whether a connection is being made that will take the space's
+    /// requests.
+    fn expecting(&self, space: &EventId) -> bool {
+        self.expected.values().any(|of| of == space)
+    }
+
     /// Why no connection will fetch an object: `None` while no
-    /// connection takes the space's requests, or one of them has not
-    /// given the object up. `but` leaves one connection out.
+    /// connection takes the space's requests, one of them has not given
+    /// the object up, or one is still being made. `but` leaves one
+    /// connection out.
     fn given_up(&self, space: &EventId, locator: &Locator, but: Option<u64>) -> Option<FetchEnd> {
+        if self.expecting(space) {
+            return None;
+        }
         let mut end = None;
         for (id, taking) in &self.takers {
             if taking.space != *space || but == Some(*id) {
@@ -208,6 +221,20 @@ impl Live {
             end = Some(*taking.given_up.get(locator)?);
         }
         end
+    }
+
+    /// Tells each request of a space that has no end yet the one it has
+    /// now, if every connection that would have tried gave its object up:
+    /// after one of them went.
+    fn tell_again(&self, space: &EventId) {
+        for request in self.requests.values() {
+            if request.space != *space || request.ended.borrow().is_some() {
+                continue;
+            }
+            if let Some(end) = self.given_up(&request.space, &request.locator, None) {
+                request.ended.send_replace(Some(end));
+            }
+        }
     }
 
     /// Tells each request still wanted for an object why it ended.
@@ -293,6 +320,40 @@ impl Requests {
         }
     }
 
+    /// A connection that is being made and will take a space's requests,
+    /// until the [`Expected`] is dropped: when the connection takes them
+    /// ([`attach`](Self::attach)), or is not made after all. No request of
+    /// the space ends meanwhile because the other connections gave it up:
+    /// this one may still serve it.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) fn expect(self: &Arc<Self>, space: EventId) -> Expected {
+        let mut live = self.live();
+        live.next += 1;
+        let id = live.next;
+        live.expected.insert(id, space);
+        Expected {
+            id,
+            space,
+            requests: self.clone(),
+        }
+    }
+
+    /// Whether a connection is being made that will take the space's
+    /// requests.
+    #[cfg_attr(
+        not(all(
+            feature = "adapter-blobs",
+            any(feature = "server", feature = "iroh", feature = "server-socket")
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) fn expecting(&self, space: &EventId) -> bool {
+        self.live().expecting(space)
+    }
+
     /// Whether a connection takes the space's requests now.
     #[cfg_attr(
         not(all(
@@ -370,7 +431,8 @@ impl Requests {
 /// ([`Requests::attach`]): through it the connection says which objects
 /// it asks the other side for no further. The holders of the requests for
 /// an object hear of its end once every connection of the space that
-/// takes requests gave it up, so that none hears of an end while another
+/// takes requests gave it up and none is still being made
+/// ([`Requests::expect`]), so that none hears of an end while another
 /// connection will still try.
 #[derive(Debug)]
 pub(crate) struct Taker {
@@ -401,6 +463,9 @@ impl Taker {
     /// of the space will still try.
     pub(crate) fn unserved(&self, locator: &Locator) {
         let live = self.requests.live();
+        if live.expecting(&self.space) {
+            return;
+        }
         let others = live
             .takers
             .iter()
@@ -417,14 +482,27 @@ impl Drop for Taker {
         live.takers.remove(&self.id);
         // The connections that stay may each have given up an object
         // this one would still have tried.
-        for request in live.requests.values() {
-            if request.space != self.space || request.ended.borrow().is_some() {
-                continue;
-            }
-            if let Some(end) = live.given_up(&request.space, &request.locator, None) {
-                request.ended.send_replace(Some(end));
-            }
-        }
+        live.tell_again(&self.space);
+    }
+}
+
+/// A connection being made that will take a space's requests
+/// ([`Requests::expect`]): while it is held, no request of the space ends
+/// for want of a connection that will try.
+#[derive(Debug)]
+pub(crate) struct Expected {
+    id: u64,
+    space: EventId,
+    requests: Arc<Requests>,
+}
+
+impl Drop for Expected {
+    fn drop(&mut self) {
+        let mut live = self.requests.live();
+        live.expected.remove(&self.id);
+        // Made, and among the takers now; or not made, and the
+        // connections that stay may each have given an object up.
+        live.tell_again(&self.space);
     }
 }
 
@@ -465,7 +543,10 @@ impl Fetch {
     /// ([`end`](Self::end)): a holder that waits for the chunks can stop
     /// waiting for them, until another connection is made. Ready at once
     /// for a request made for an object they gave up before. Never ready
-    /// for a request some connection goes on trying.
+    /// for a request some connection goes on trying, nor while a
+    /// connection of the space is still being made: a peer that has not
+    /// yet granted the space, or a member whose attach is not yet
+    /// started.
     pub async fn ended(&self) -> FetchEnd {
         let mut ended = self.ended.subscribe();
         loop {

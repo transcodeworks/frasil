@@ -608,11 +608,22 @@ mod blobs {
         /// blob is here or the time is up.
         /// A read that fetches nothing writes nothing to the store.
         ///
+        /// A blob whose bytes failed their checks as every connected
+        /// party sent them is waited for too, while another party could
+        /// still send it: a connection being made, a peer the device
+        /// keeps for the space that is not connected, or any other member
+        /// of the space. Only in a space whose one member is this device,
+        /// with every peer it keeps connected, does such a failure end the
+        /// wait at once.
+        ///
         /// # Errors
         ///
         /// [`Error::Timeout`] when the bytes are not here in time; as
         /// [`Blobs::get`], but for a fetch that stopped moving or that the
-        /// connected parties do not serve, which is tried again.
+        /// connected parties do not serve, which is tried again;
+        /// `ObjectMismatch` or `Malformed` at once when no other party
+        /// could send the blob, and otherwise when the time is up, if
+        /// that is how the last fetch ended.
         pub async fn get_when_available(&self, id: BlobId, within: Duration) -> Result<Vec<u8>> {
             let engine = self.space().device.engine();
             let space = self.space().id().event();
@@ -623,24 +634,35 @@ mod blobs {
             let deadline = self.space().device.sleep(within);
             tokio::pin!(deadline);
             let read = Read::new();
+            // What the connected parties sent last failed its checks.
+            let mut refused = None;
             loop {
                 // A fetch under way when the time is up is dropped, and
                 // ends as a cancelled read does.
                 let got = tokio::select! {
-                    () = &mut deadline => return Err(Error::Timeout),
+                    () = &mut deadline => return Err(refused.unwrap_or(Error::Timeout)),
                     got = self.get(id, &read) => got,
                 };
                 match got {
                     Ok(Some(bytes)) => return Ok(bytes),
                     // Not here, and not fetched for now.
-                    Ok(None) | Err(Error::Timeout | Error::Class("Missing")) => {}
+                    Ok(None) | Err(Error::Timeout | Error::Class("Missing")) => refused = None,
+                    // Every connection of the space gave the blob up. A
+                    // party that is not connected yet may still hold it
+                    // right: the wait goes on for one.
+                    Err(error @ Error::Class("ObjectMismatch" | "Malformed")) => {
+                        if !self.others_may_serve().await {
+                            return Err(error);
+                        }
+                        refused = Some(error);
+                    }
                     Err(error) => return Err(error),
                 }
                 let again = self.space().device.sleep(AVAILABLE_AGAIN);
                 tokio::pin!(again);
                 loop {
                     tokio::select! {
-                        () = &mut deadline => return Err(Error::Timeout),
+                        () = &mut deadline => return Err(refused.unwrap_or(Error::Timeout)),
                         () = &mut again => break,
                         notice = notices.recv() => match notice {
                             Ok(notice) if notice.space == space => break,

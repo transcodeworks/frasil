@@ -17,7 +17,7 @@
 //! It turns what arrives into [`Action`]s; the device places events, stores
 //! them and sends what the session asks.
 
-use crate::fetch::{Asks, CHUNKS_PER_WANT, Requests, Taker, Want};
+use crate::fetch::{Asks, CHUNKS_PER_WANT, Expected, Requests, Taker, Want};
 use crate::replica::Replica;
 use frasil_adapter::Locator;
 use frasil_crypto::device::DeviceId;
@@ -141,6 +141,9 @@ pub struct SyncSession {
     /// requests, from the first time it takes them or gives an object
     /// up; copies of the session share it.
     taker: Option<Arc<Taker>>,
+    /// The session's place among the connections still being made, until
+    /// it takes the requests or is known not to.
+    expected: Option<Arc<Expected>>,
     /// Objects the other side announced in `ObjectHave` that this side did
     /// not hold whole then: asked for once the device finds them missing.
     announced: BTreeSet<Locator>,
@@ -179,6 +182,7 @@ impl SyncSession {
             asks: Asks::default(),
             requested: BTreeSet::new(),
             taker: None,
+            expected: None,
             announced: BTreeSet::new(),
             refused: BTreeSet::new(),
             snapshot: SnapshotAsk::NotAsked,
@@ -359,8 +363,37 @@ impl SyncSession {
     /// the other side for no further.
     pub(crate) fn taker(&mut self, requests: &Arc<Requests>) -> &Taker {
         let space = self.space;
-        self.taker
-            .get_or_insert_with(|| Arc::new(requests.attach(space)))
+        let taker = self
+            .taker
+            .get_or_insert_with(|| Arc::new(requests.attach(space)));
+        // Among the takers from here on, and no longer awaited.
+        self.expected = None;
+        taker
+    }
+
+    /// Says that the session's connection is still being made and will
+    /// take the space's requests ([`Requests::expect`]): none of them ends
+    /// for want of a connection that will try until the session takes
+    /// them ([`taker`](Self::taker)), is known not to
+    /// ([`unexpect`](Self::unexpect)), or is dropped.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) fn expect(&mut self, requests: &Arc<Requests>) {
+        if self.taker.is_none() && self.expected.is_none() {
+            self.expected = Some(Arc::new(requests.expect(self.space)));
+        }
+    }
+
+    /// The session will not take the space's requests for now: it was
+    /// refused, has no right to fetch, or its space is paused.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) fn unexpect(&mut self) {
+        self.expected = None;
     }
 
     /// Forgets the device's requests that ended.

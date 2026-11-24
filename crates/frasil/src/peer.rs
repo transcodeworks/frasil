@@ -2487,6 +2487,11 @@ impl Driver {
         }
         let mut session = SyncSession::new(space);
         session.set_acknowledges(false);
+        // Being made: a request for chunks does not end for want of a
+        // connection that will try while this one may yet take it.
+        if !self.paused(&space) {
+            session.expect(self.device.fetches());
+        }
         // This device's own skeleton events go on administration
         // connections only (peers.md, "Administration connections").
         session.withhold(self.device.own_skeleton(&space).await);
@@ -3094,7 +3099,20 @@ impl Driver {
         }
     }
 
+    /// Whether a credential the device presented for a space is not yet
+    /// answered: a grant may still follow.
+    fn presenting(&self, space: &EventId) -> bool {
+        self.requests.values().any(|request| match request {
+            Request::Present { space: of, .. } | Request::Fetch { space: of } => of == space,
+            _ => false,
+        })
+    }
+
     async fn on_granted(&mut self, space: EventId, rights: Vec<Right>) -> Result<()> {
+        let paused = self.paused(&space);
+        #[cfg(any(feature = "server", feature = "server-socket"))]
+        let slices = self.wire.by_slices();
+        let presenting = self.presenting(&space);
         let Some(attached) = self.spaces.get_mut(&space) else {
             return Ok(());
         };
@@ -3110,10 +3128,21 @@ impl Driver {
             attached.offered_outbox = false;
         }
         let all = attached.rights.clone();
-        self.status().granted.insert(space, all.clone());
-        let mut messages = Vec::new();
         let fetches = all.contains(&Right::Fetch) || all.contains(&Right::CatchUp);
         let stores = all.contains(&Right::Store);
+        // The connection takes the space's requests from here on, where
+        // it may fetch, and is no longer one still being made.
+        #[cfg(any(feature = "server", feature = "server-socket"))]
+        let tokened = !slices || attached.fetch_token.is_some();
+        #[cfg(not(any(feature = "server", feature = "server-socket")))]
+        let tokened = true;
+        if fetches && tokened && !paused {
+            attached.session.taker(self.device.fetches());
+        } else if !presenting {
+            attached.session.unexpect();
+        }
+        self.status().granted.insert(space, all.clone());
+        let mut messages = Vec::new();
         // A newcomer admitted "from now on" places no event before its
         // snapshot (admission.md, "The newcomer's snapshot"): it fetches
         // the snapshot first, then syncs.
@@ -3257,6 +3286,13 @@ impl Driver {
                 if code == "erased" {
                     self.device.note_erased_at_peer(space);
                 }
+                // With no credential left to be answered, the connection
+                // is not about to take the space's requests.
+                if !self.presenting(&space)
+                    && let Some(attached) = self.spaces.get_mut(&space)
+                {
+                    attached.session.unexpect();
+                }
                 if credential == Credential::Read
                     && let Some(attached) = self.spaces.get_mut(&space)
                 {
@@ -3298,6 +3334,11 @@ impl Driver {
             // recovery fails with the peer's refusal (identity.md,
             // "Recovery", step 1). Nothing is created.
             Request::Fetch { space } => {
+                if !self.presenting(&space)
+                    && let Some(attached) = self.spaces.get_mut(&space)
+                {
+                    attached.session.unexpect();
+                }
                 self.status().refused.push((space, code));
                 Ok(())
             }

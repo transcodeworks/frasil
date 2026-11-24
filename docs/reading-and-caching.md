@@ -178,7 +178,13 @@ deadline: it fetches a blob the device does not hold, into its cache, and
 waits its whole time for one that nothing connected can send yet. While no
 peer or member is connected, and while one is that does not hold the blob,
 so that a fetch gets nowhere, it tries again when the space changes and
-every second.
+every second. It waits in the same way through bytes that failed their
+checks as every connected party sent them, while another party could still
+send the blob: a peer the device keeps for the space that is not connected,
+or any other member. It then fails at its deadline with `ObjectMismatch` or
+`Malformed` and not `Timeout`. Only in a space whose one member is this
+device, with every peer it keeps connected, does such a failure end the
+wait at once.
 
 `blobs.status(id)` says where a blob's bytes stand: readable (the device
 holds them whole, kept or cached), fetching (with the bytes done of the
@@ -265,8 +271,9 @@ is connected does not serve the blob for now. A read that must not wait on
 the network is `local`. A read fails with `Timeout` when nothing arrives for
 half a minute, and at once, with `ObjectMismatch` or `Malformed`, when every
 connection of the space gave the blob up because the bytes it was sent
-failed their checks. A peer or a member that connects while a read waits
-serves it.
+failed their checks, and none is still being made. A peer or a member that
+connects while a read waits serves it, and a read does not end on the
+others' failure while a peer has yet to grant the space.
 
 A read fetches the blob whole before it gives any of it, into the device's
 store, so every check of the object format runs as for any stored blob. An
