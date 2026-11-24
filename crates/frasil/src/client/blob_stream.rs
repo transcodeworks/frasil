@@ -486,9 +486,10 @@ impl Blobs {
     ///
     /// # Errors
     ///
-    /// `Missing` when nothing is connected that could send the object, or
-    /// when the space's connections ask for it no further for want of an
-    /// answer ([`FetchEnd::Unserved`]); `ObjectMismatch` when what they
+    /// `Missing` when nothing is connected that could send the object,
+    /// from the start or once the last connection went while it waited,
+    /// or when the space's connections ask for it no further for want of
+    /// an answer ([`FetchEnd::Unserved`]); `ObjectMismatch` when what they
     /// were sent failed its checks ([`FetchEnd::Refused`]) and `Malformed`
     /// when it did not read as the object ([`FetchEnd::Malformed`]), each
     /// as soon as every connection of the space gave the request up and
@@ -496,7 +497,7 @@ impl Blobs {
     /// space, or a member whose attach has not started, may still serve
     /// the request, and it has no end while one is awaited.
     /// [`Error::Timeout`] when nothing arrives for [`STALL`], which bounds
-    /// that wait too, or the last connection goes.
+    /// that wait too.
     ///
     /// [`FetchEnd::Unserved`]: crate::fetch::FetchEnd::Unserved
     /// [`FetchEnd::Refused`]: crate::fetch::FetchEnd::Refused
@@ -568,7 +569,12 @@ impl Blobs {
                 }
                 _ => idle += POLL,
             }
-            if idle >= STALL || !any {
+            // Nothing is connected any more that could send it: as when
+            // nothing was from the start, and as a reader's read says it.
+            if !any {
+                return Err(Error::Class("Missing"));
+            }
+            if idle >= STALL {
                 return Err(Error::Timeout);
             }
             // The request's end is heard as it is told, between two looks.
@@ -892,6 +898,36 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(10), asked)
             .await
             .expect("the read asks for the blob");
+    }
+
+    /// The last connection that could send a blob goes while a fetch of
+    /// the blob waits: the blob is missing, as when nothing was connected
+    /// from the start, and the fetch has not timed out.
+    #[cfg(all(
+        feature = "adapter-blobs",
+        any(feature = "server", feature = "iroh", feature = "server-socket")
+    ))]
+    #[tokio::test]
+    async fn a_fetch_whose_last_connection_goes_is_missing() {
+        use crate::{Device, Error, Storage};
+        use std::time::Duration;
+
+        let device = Device::open(Storage::Memory, &[1; 32]).await.unwrap();
+        let (space, blobs, id, ..) = absent_blob(&device).await;
+        let engine = device.engine().clone();
+        let of = space.id().event();
+        let connection = engine.fetches().attach(of);
+        let keeping = {
+            let blobs = blobs.clone();
+            tokio::spawn(async move { blobs.keep(id, |_, _| ()).await })
+        };
+        requested(&engine, of).await;
+        drop(connection);
+        let kept = tokio::time::timeout(Duration::from_secs(10), keeping)
+            .await
+            .expect("the fetch ends once nothing is connected")
+            .unwrap();
+        assert!(matches!(kept, Err(Error::Class("Missing"))), "{kept:?}");
     }
 
     /// A read does not end because the connected parties gave its blob up
