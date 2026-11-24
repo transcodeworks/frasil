@@ -1624,11 +1624,7 @@ async fn the_task_that_follows_the_object_ends_with_its_reader() {
     // The reader's window and the task's.
     soon(|| async { absent.engine.readers().windows(&key) == 2 }).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let BlobReader {
-        window,
-        _alive: alive,
-        ..
-    } = reader;
+    let BlobReader { window, alive, .. } = reader;
     drop(window);
     // The task wakes, finds the reader alive, and waits again.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2009,5 +2005,27 @@ async fn a_refusal_no_task_told_is_told_by_the_next_read() {
             let _ = absent.blobs.open_reader(absent.id, &Read::new()).await;
         }
         assert!(refusal_told(&mut events, absent.id).await, "{reads}");
+    }
+}
+
+/// A reader that made the blob whole in the store and is closed leaves
+/// nothing that uses the blob: the check of the whole blob that began for
+/// it has ended, and the application may drop the blob at once.
+#[tokio::test]
+async fn a_closed_reader_leaves_nothing_that_uses_the_blob() {
+    for _ in 0..10 {
+        let absent = absent().await;
+        let mut reader = absent
+            .blobs
+            .open_reader(absent.id, &Read::new())
+            .await
+            .unwrap();
+        reader.set_read_ahead(0);
+        for chunk in [1u64, 0, 2, 3, 4] {
+            absent.read(&mut reader, chunk * CHUNK, 10).await;
+        }
+        reader.close().await.unwrap();
+        absent.blobs.drop_local(absent.id).await.unwrap();
+        assert_eq!(absent.state().await, BlobState::Absent);
     }
 }

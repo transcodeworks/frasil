@@ -97,7 +97,9 @@ pub enum Verified {
 
 /// A reader over one blob, from [`Blobs::open_reader`]. Dropping it ends
 /// its fetches and frees what it holds; [`close`](Self::close) does the
-/// same and waits until the device has looked at its cache. Formatted
+/// same and waits until nothing of the reader uses the blob any more,
+/// a check of the whole blob that began for it included, and the device
+/// has looked at its cache. Formatted
 /// for a log, it shows neither bytes of the blob nor a reference's object
 /// key.
 pub struct BlobReader {
@@ -117,7 +119,10 @@ pub struct BlobReader {
     /// Held while the reader lives, for the task that follows the object,
     /// which ends when this goes: before the window, whose going wakes
     /// the task.
-    _alive: oneshot::Sender<()>,
+    alive: Option<oneshot::Sender<()>>,
+    /// Ready once the task that follows the object has ended, or was
+    /// never started.
+    followed: Option<oneshot::Receiver<()>>,
     window: Window,
     reading: Option<Reading>,
     parts: Option<PartReader>,
@@ -299,7 +304,8 @@ impl Blobs {
             key: key.clone(),
         });
         let window = engine.open_window(space, locator, passing, opening);
-        let (_alive, gone) = oneshot::channel();
+        let (alive, gone) = oneshot::channel();
+        let (ended, followed) = oneshot::channel();
         let reader = BlobReader {
             blobs: self.clone(),
             id,
@@ -323,10 +329,11 @@ impl Blobs {
             compared: false,
             caches,
             epoch: 0,
-            _alive,
+            alive: Some(alive),
+            followed: Some(followed),
             entry,
         };
-        reader.follow_object(gone);
+        reader.follow_object(gone, ended);
         Ok(reader)
     }
 }
@@ -355,6 +362,8 @@ struct Following {
     window: Window,
     /// Ready once the reader is gone.
     gone: oneshot::Receiver<()>,
+    /// Dropped when the task ends: a reader that closes waits for it.
+    _ended: oneshot::Sender<()>,
 }
 
 impl Following {
@@ -426,7 +435,7 @@ impl BlobReader {
     /// stored blob, and a refusal is told to the application by the next
     /// call on a reader of the blob, or the next read of it
     /// ([`Blobs::tell_refused`]).
-    fn follow_object(&self, gone: oneshot::Receiver<()>) {
+    fn follow_object(&self, gone: oneshot::Receiver<()>, ended: oneshot::Sender<()>) {
         let engine = self.blobs.space().device.engine();
         let following = Following {
             blobs: self.blobs.clone(),
@@ -437,6 +446,7 @@ impl BlobReader {
             reference: self.reference.clone(),
             window: engine.open_window(self.space, self.entry.object, false, None),
             gone,
+            _ended: ended,
         };
         let _ = self
             .blobs
@@ -619,6 +629,14 @@ impl BlobReader {
     ///
     /// The store's.
     pub async fn close(mut self) -> Result<()> {
+        // The task that follows the blob uses it while it checks it
+        // whole: it has ended, with any check it began, before the
+        // device looks at its cache, so that nothing of this reader
+        // holds the blob once it is closed.
+        drop(self.alive.take());
+        if let Some(followed) = self.followed.take() {
+            let _ = followed.await;
+        }
         match self.reading.take() {
             Some(reading) => reading.done().await,
             None => Ok(()),
