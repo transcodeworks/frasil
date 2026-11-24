@@ -72,8 +72,8 @@ pub const READ_AHEAD: u64 = 8;
 /// The most chunks a reader fetches ahead.
 pub const MAX_READ_AHEAD: u64 = 64;
 
-/// How long a read waits with nothing of its blob arriving before it
-/// gives up.
+/// How long a read waits with none of the chunks its reader asked for
+/// arriving before it gives up.
 const STALL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// How often a read that waits looks whether anything is still connected.
@@ -154,6 +154,17 @@ impl core::fmt::Debug for BlobReader {
             .field("size", &self.size())
             .finish_non_exhaustive()
     }
+}
+
+/// How long one read has waited with nothing arriving of what its reader
+/// asked for, over every wait it makes.
+struct Stall {
+    idle: std::time::Duration,
+    /// How many of the chunks the reader asked for had arrived when the
+    /// read last saw one arrive ([`Window::arrived`]).
+    arrived: u64,
+    /// The wait under way for the next look.
+    tick: frasil_store::BoxFuture<'static, ()>,
 }
 
 /// Waits for a request's end.
@@ -679,6 +690,15 @@ impl BlobReader {
         }
     }
 
+    /// The count of one read's waits, from now.
+    fn stall(&self) -> Stall {
+        Stall {
+            idle: std::time::Duration::ZERO,
+            arrived: self.window.arrived(),
+            tick: self.blobs.space().device.sleep(POLL),
+        }
+    }
+
     /// Whether something is connected that could send the blob.
     fn reachable(&self) -> bool {
         self.blobs.can_fetch()
@@ -700,12 +720,19 @@ impl BlobReader {
     /// again asks again ([`Window::renew`]). The error comes with whether
     /// the connections gave the chunk up for bytes that failed their
     /// checks.
+    ///
+    /// The time a read waits is counted over all its waits (`stall`), and
+    /// starts over only when a chunk its reader asked for arrives: the
+    /// one it waits for, or one read ahead. A chunk that arrives again,
+    /// and whatever else changes of the object, does not put the end
+    /// off, so that no party holds a read open without sending what was
+    /// asked of it.
     async fn wait(
         &self,
         index: u64,
         changed: &mut watch::Receiver<u64>,
+        stall: &mut Stall,
     ) -> std::result::Result<(), (Error, bool)> {
-        let mut idle = std::time::Duration::ZERO;
         let ends = self.window.ends(index);
         let ended = ended(ends);
         tokio::pin!(ended);
@@ -713,11 +740,16 @@ impl BlobReader {
             if !self.reachable() {
                 return Err((Error::Class("Missing"), false));
             }
-            if idle >= STALL {
+            if stall.idle >= STALL {
                 return Err((Error::Timeout, false));
             }
             tokio::select! {
                 changed = changed.changed() => {
+                    let arrived = self.window.arrived();
+                    if arrived != stall.arrived {
+                        stall.arrived = arrived;
+                        stall.idle = std::time::Duration::ZERO;
+                    }
                     return changed.map_err(|_| (Error::Class("Missing"), false));
                 }
                 end = &mut ended => {
@@ -727,7 +759,10 @@ impl BlobReader {
                         FetchEnd::Unserved => (Error::Class("Missing"), false),
                     });
                 }
-                () = self.blobs.space().device.sleep(POLL) => idle += POLL,
+                () = &mut stall.tick => {
+                    stall.idle += POLL;
+                    stall.tick = self.blobs.space().device.sleep(POLL);
+                }
             }
         }
     }
@@ -743,6 +778,7 @@ impl BlobReader {
         let locator = self.entry.object;
         let mut changed = self.window.follow();
         let mut renew = true;
+        let mut stall = self.stall();
         loop {
             changed.borrow_and_update();
             self.check()?;
@@ -787,7 +823,7 @@ impl BlobReader {
                 &[(index..index.saturating_add(1), FetchPriority::Position)],
                 index..index.saturating_add(1).saturating_add(self.read_ahead),
             );
-            if let Err((error, gave_up)) = self.wait(index, &mut changed).await {
+            if let Err((error, gave_up)) = self.wait(index, &mut changed, &mut stall).await {
                 // The blob's refusal, if it came meanwhile, decides.
                 self.check()?;
                 self.gave_up = gave_up;
@@ -887,6 +923,7 @@ impl BlobReader {
         }
         let mut changed = self.window.follow();
         let mut renew = true;
+        let mut stall = self.stall();
         loop {
             changed.borrow_and_update();
             self.check()?;
@@ -895,7 +932,8 @@ impl BlobReader {
                     return Err(Error::Class("Missing"));
                 }
                 self.slide(index, std::mem::take(&mut renew)).await;
-                if let Err((error, gave_up)) = self.wait(index, &mut changed).await {
+                let waited = self.wait(index, &mut changed, &mut stall).await;
+                if let Err((error, gave_up)) = waited {
                     // The blob's refusal, if it came meanwhile, decides.
                     self.check()?;
                     self.gave_up = gave_up;

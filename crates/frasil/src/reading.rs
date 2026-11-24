@@ -140,6 +140,10 @@ struct Held {
     /// The sealed chunks that arrived, of an object the device does not
     /// store.
     chunks: BTreeMap<u64, Arc<Vec<u8>>>,
+    /// Counts the chunks the window asked for that arrived: what a read
+    /// that waits takes for progress. A chunk that arrives again, or one
+    /// the window did not ask for, does not count.
+    arrived: u64,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -259,6 +263,7 @@ impl Readers {
             }
             let chunk = shared.get_or_insert_with(|| Arc::new(part.chunk.clone()));
             held.chunks.insert(part.index, chunk.clone());
+            held.arrived += 1;
         }
         let taken = shared.is_some();
         if taken && inner.header.is_none() {
@@ -342,7 +347,9 @@ impl Readers {
         };
         for held in lock(&watched.inner).windows.values_mut() {
             for index in indices {
-                held.wanted.remove(index);
+                if held.wanted.remove(index).is_some() {
+                    held.arrived += 1;
+                }
             }
         }
         watched.bump();
@@ -428,6 +435,14 @@ impl Window {
         if let Some(held) = lock(&self.watched.inner).windows.get_mut(&self.number) {
             held.wanted.retain(|_, (fetch, _)| fetch.end().is_none());
         }
+    }
+
+    /// How many of the chunks the window asked for have arrived.
+    pub(crate) fn arrived(&self) -> u64 {
+        lock(&self.watched.inner)
+            .windows
+            .get(&self.number)
+            .map_or(0, |held| held.arrived)
     }
 
     /// Cancels every request the window made: what it holds stays.

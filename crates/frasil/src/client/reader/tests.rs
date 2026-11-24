@@ -1642,3 +1642,41 @@ async fn the_task_that_follows_the_object_ends_with_its_reader() {
     .await;
     assert!(ended.is_ok(), "the task outlived its reader");
 }
+
+/// A party that sends again a chunk the reader already has, and never
+/// the chunk a read waits for, does not hold that read open: nothing the
+/// read waits for arrives, and it ends when its time is up.
+#[tokio::test(start_paused = true)]
+async fn a_chunk_sent_again_does_not_hold_a_read_open() {
+    let absent = absent().await;
+    let mut reader = absent
+        .blobs
+        .open_reader(absent.id, &Read::new())
+        .await
+        .unwrap();
+    reader.set_read_ahead(1);
+    read_chunk(&absent, &mut reader, 0).await;
+    let mut buf = [0u8; 10];
+    let reading = reader.read_at(2 * CHUNK, &mut buf);
+    tokio::pin!(reading);
+    tokio::select! {
+        _ = &mut reading => panic!("nothing arrived yet"),
+        () = absent.asked_for(3) => {}
+    }
+    // The chunk read ahead arrives, again and again.
+    let read = tokio::time::timeout(Duration::from_secs(120), async {
+        loop {
+            tokio::select! {
+                read = &mut reading => break read,
+                () = tokio::time::sleep(Duration::from_secs(5)) => {
+                    assert_ne!(absent.send(3).await, Received::BadChunk);
+                }
+            }
+        }
+    })
+    .await;
+    assert!(
+        matches!(read, Ok(Err(Error::Timeout))),
+        "the read is held open: {read:?}"
+    );
+}
