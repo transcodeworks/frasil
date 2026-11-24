@@ -281,7 +281,14 @@ checks each as it arrives, and puts them where the read says. `get`,
 so every check of the object format has run by the time they reach its last
 chunk: `get` gives nothing before that, and `get_stream` writes each chunk
 once it has passed its own checks, and the last one once the whole has.
-`get_range` fetches only the chunks of its range.
+`get_range` fetches only the chunks of its range, and runs no check that
+needs the whole blob. Each chunk it returns opened under the blob's key, so
+no peer can have forged it. A member of the space that holds the blob's
+key, its writer among them, can serve a range read chunks that are validly
+sealed and are not the blob's, and nothing refutes them later: the range
+read ends without the whole-blob checks, and no refusal follows. Where the
+bytes must be the blob's, read with `get` or `get_stream`, or through a
+reader and act once `BlobReader::verified()` says `Whole` (see below).
 
 By default the chunks go to the cache as they arrive. A read that fails or
 is cancelled part way leaves what it fetched there, as part of a cached
@@ -394,14 +401,30 @@ reader.close().await?;
   position, which `seek(position)` moves.
 - The chunk a read needs is asked of the space's connections ahead of
   everything else, and the chunks after it behind that: eight of them
-  unless `set_read_ahead(chunks)` says otherwise. A seek cancels what it
-  leaves behind, and a reader that is dropped or closed cancels all of it.
-- `size()` is the size the blob's header gives, which every chunk is bound
-  to. It is `None` until the reader holds the header; `fetch_size()` fetches
-  it, with the chunk the reader stands in.
+  unless `set_read_ahead(chunks)` says otherwise. A seek, or a read
+  elsewhere than in the chunk the reader stands in or the one after it,
+  cancels what the reader asked for before, so that nothing it left behind
+  is fetched ahead of the chunk it waits for. A reader that is dropped or
+  closed cancels all of it.
+- `size()` is the size the blob's header gives. The header's own checks
+  bind only its object ID to the blob; its size is bound by each chunk, so
+  `size()` is `None`, and no read answers the end of the blob, until a
+  chunk has opened under the header in that reader. `fetch_size()` fetches
+  and opens one: the chunk the reader stands in, or the blob's last when it
+  stands past the end.
 - A read fails with `Missing` while nothing is connected that could send
-  the chunk, and with `Timeout` when nothing arrives for half a minute. Such
-  a read may be made again: what the reader fetched before is still there.
+  the chunk, with `Timeout` when none of the chunks the reader asked for
+  arrives for half a minute, and with `Decrypt` or `Malformed` when every
+  connection of the space gave the chunk up because what it was sent failed
+  its checks. Such a read may be made again, and asks again: the reader has
+  not failed, nothing of the failed chunk was given, and what the reader
+  fetched before is still there. Only `ObjectMismatch` is for good (see
+  below). `get`, `get_stream`, `get_range` and `content_hash`, which read
+  through a reader, give `ObjectMismatch` in both cases, as they do for a
+  blob fetched whole.
+- The size the stream's entry shows is what its writer wrote, and the
+  header decides what is read. A reader tells the application of an entry
+  whose key or size is not the header's with `Event::EntryMismatch`.
 
 **Backing a player.** A player asks for byte ranges, by `Range` requests or
 through a data source of its platform. Answer each from `read_at`, in a loop
@@ -418,7 +441,9 @@ window in memory: the chunk it stands in and its read-ahead, at most
 opened chunk. A window takes only chunks its reader asked for, so nothing a
 peer or a member sends makes it grow. Chunks behind the reader are let go,
 and a seek back fetches them again. A blob too large for the whole budget
-is read that way under any `Read`, as it could not be cached.
+is read that way under any `Read`, as it could not be cached: by the size
+its entry shows when the reader opens, and by the header's once a chunk
+has opened under it, should the entry have shown less.
 
 **What is checked, and when.** Before a reader gives any byte, the blob's
 header has passed its checks and the byte's chunk has opened under the
@@ -446,9 +471,25 @@ when the reader, or any other read, has fetched every chunk into the cache
 or the blob is kept. A reader that is `uncached` and seeks therefore stays
 at `Chunks`.
 
+`Whole` is about the bytes the reader gave. A reader that holds its chunks
+in memory fetches a chunk again when it is read again, from whichever party
+serves it then. It keeps the SHA-256 of each chunk it gave from memory, 32
+bytes a chunk, and takes at that place only the same bytes again: so a
+reader that became `Whole` and seeks back stays `Whole`, and a member cannot
+slip other bytes in after the checks. Other bytes at a place already given
+are not given: the reader fails with `ObjectMismatch`, and the application
+is told. A reader that reads from the device's store reads the same stored
+chunk each time.
+
 When a whole-blob check fails, the blob is refused: every open reader of it
 fails with `ObjectMismatch` from then on, `Event::ObjectRefused` names the
-blob, and the device drops what it cached of it. Content that people only
+blob, and the device drops what it cached of it. The event is reported by a
+task of the device's that follows the blob for each open reader. A device
+whose tasks take no such task (`Options::tasks`) reports it at the next
+call on a reader of the blob, or the next read of it. A chunk that does not
+open as it arrives is no refusal: it is its sender's fault, it is not given,
+that connection asks its sender for no more of the blob, and another party
+is asked. Content that people only
 watch or listen to can be shown at `Chunks`, since the worst a member can do
 is show a viewer something else than it showed another, and the reader says
 so when it finds out. Content that is acted on, such as a document that is

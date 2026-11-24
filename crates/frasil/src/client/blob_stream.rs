@@ -310,9 +310,24 @@ impl Blobs {
     /// range are fetched, and stored as `read` says; `None` when the blob
     /// is not here and cannot be fetched now, as for [`Blobs::get`]. Each
     /// of those chunks opens under the blob's key before its bytes are
-    /// given; the checks that need the whole blob have not run on them
-    /// ([`Verified::Chunks`](crate::Verified::Chunks)), so read the blob
-    /// with [`Blobs::get`] where that matters.
+    /// given, and no check that needs the whole blob runs on them
+    /// ([`Verified::Chunks`](crate::Verified::Chunks)).
+    ///
+    /// **The limit of a range read.** A member of the space that holds the
+    /// blob's key, its writer among them, can serve a range read chunks
+    /// that are validly sealed and are not the blob's, and nothing refutes
+    /// them later: the read ends without the whole-blob checks, and no
+    /// refusal follows. A peer, which holds no key, cannot. A caller that
+    /// needs the bytes to be the blob's reads the blob with [`Blobs::get`]
+    /// or [`Blobs::get_stream`], which give nothing unchecked at their
+    /// end, or reads through a [`BlobReader`](crate::BlobReader) and acts
+    /// only once [`BlobReader::verified`](crate::BlobReader::verified)
+    /// says [`Verified::Whole`](crate::Verified::Whole).
+    ///
+    /// A range at or past the blob's end is empty. To know where the end
+    /// is, a chunk must have opened under the blob's header, which binds
+    /// its size: of a blob the device holds nothing of, a range read past
+    /// the end therefore fetches one chunk, the blob's last.
     ///
     /// It holds a few chunks and the range, never the blob. Of a blob the
     /// device holds whole, only the chunks that hold the range are opened

@@ -46,7 +46,9 @@
 //! `read_ahead + 1` chunks of 1,048,576 bytes each (9 MiB at the default
 //! read-ahead of 8), beside one opened chunk and the header. A blob larger
 //! than the whole cache budget, and any blob under a budget of zero, is
-//! read that way too.
+//! read that way too: by the size its entry shows when the reader opens,
+//! and by the header's once a chunk has opened under it, should the entry
+//! have shown less.
 
 use super::retention::Reading;
 use super::{BlobId, Blobs, Event, Read};
