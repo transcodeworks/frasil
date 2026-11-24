@@ -1954,11 +1954,20 @@ impl Engine {
                             // a read that began since is seen here to
                             // have lost its own.
                             let header = part.header.as_deref();
+                            let id = crate::replica::object_id(&part.locator);
+                            let recorded = state.retained.get(&(space, id)).is_some();
                             let means = (asked.wanted)()
                                 && self
                                     .admit(&mut state, space, &part.locator, header, asked.stores)
-                                    .await?
-                                && (asked.wanted)();
+                                    .await?;
+                            let wanted = means && (asked.wanted)();
+                            // The record made for a part that is not
+                            // stored after all does not stay with no
+                            // part.
+                            if means && !wanted && !recorded {
+                                self.unrecord_empty(&mut state, space, id).await?;
+                            }
+                            let means = wanted;
                             meant.insert(part.locator, means);
                             means
                         }

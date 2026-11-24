@@ -1763,6 +1763,38 @@ impl Engine {
         Ok(())
     }
 
+    /// Deletes the cached record of an object the device holds no byte
+    /// of: the one [`admit`](Self::admit) made for a part whose request
+    /// ended before the part was stored. No part is dropped by it.
+    ///
+    /// # Errors
+    ///
+    /// The store's.
+    pub(crate) async fn unrecord_empty(
+        &self,
+        state: &mut State,
+        space: EventId,
+        id: [u8; 32],
+    ) -> Result<()> {
+        let empty = state
+            .retained
+            .entries
+            .get(&(space, id))
+            .is_some_and(|entry| {
+                entry.bytes == 0 && matches!(entry.retention, Retention::Cached { .. })
+            });
+        let holds = state.replicas.get(&space).is_some_and(|replica| {
+            replica
+                .object_locators(&id)
+                .iter()
+                .any(|locator| replica.holds_chunks(locator))
+        });
+        if empty && !holds {
+            self.unrecord(state, space, id).await?;
+        }
+        Ok(())
+    }
+
     /// [`evict_in`](Self::evict_in) with nothing more to come: at upkeep,
     /// and once a read ends.
     ///
