@@ -885,7 +885,9 @@ that no unit waiting for that peer's acknowledgement names:
 
 The question is the upload a writer makes before a unit, or the fetch of
 item 2, and no other message: a peer that holds the object answers so, and
-one that does not takes the upload. A record of state 3 may thus stand
+one that does not takes the upload. A fetch that brings no chunk is no
+answer: the next time the device asks that peer, it uploads the object,
+and asks by a fetch again once the peer holds the upload whole. A record of state 3 may thus stand
 where the peer holds the object: after a crash between the answer and the
 commit, when the unit reached the peer through another device, or when the
 device put again bytes the peer had answered for. A peer that refuses the

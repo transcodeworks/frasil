@@ -5,15 +5,18 @@
 //! unit reached the peer releases nothing, since the peer collects an
 //! object no unit names (peers.md, "Objects"): the device asks again, and
 //! a peer that lost the bytes takes them then. Over the iroh binding the
-//! question after the acknowledgement is a request for one chunk. Every
-//! wait has a deadline, and nothing leaves the host.
+//! question after the acknowledgement is a request for one chunk, and a
+//! peer that serves none is sent the blob again at upkeep. Every wait has
+//! a deadline, and nothing leaves the host.
 
 use frasil::advanced::peer::{PeerHandle, connect_iroh, connect_server};
+use frasil::advanced::platform::ManualClock;
 use frasil::advanced::{AdapterRegistry, Engine, FetchPriority, Platform};
 use frasil_conformance::{settings, spawn_loopback};
 use frasil_events::EventId;
 use frasil_relay::testing::TestPeer;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 const DEADLINE: Duration = Duration::from_secs(90);
@@ -149,6 +152,70 @@ async fn a_blob_put_over_a_stream_is_let_go_once_the_peer_serves_a_chunk_of_it()
     // The cache's: the application may drop it, and a fetch brings it
     // back from the peer.
     alice.drop_local_object(space, &locator).await.unwrap();
+    let _fetching = alice.fetch_chunks(space, locator, 2..3, FetchPriority::Position);
+    until(|| async {
+        alice
+            .read(&space, |replica| replica.holds_chunk(&locator, 2))
+            .await
+            .unwrap()
+    })
+    .await;
+    drop(link);
+}
+
+/// Over the iroh binding, a peer that collected the bytes before their
+/// unit came serves no chunk of them when asked after its
+/// acknowledgement: the blob stays put. At upkeep, once the wait is over,
+/// the device uploads the blob again, asks for a chunk once the peer
+/// holds the upload, and lets go of the blob on that chunk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_peer_that_lost_a_blob_takes_it_again_over_a_stream_and_is_asked_once_more() {
+    let peer = spawn_loopback().await.unwrap();
+    let clock = Arc::new(ManualClock::new(1_000, Some(1_800_000_000)));
+    let alice = Engine::create(
+        Platform::memory().with_clock(clock.clone()),
+        &[1; 32],
+        AdapterRegistry::with_builtins(),
+    )
+    .await
+    .expect("a device")
+    .0;
+    let space = alice.create_space().await.unwrap();
+    let link = iroh(&alice, &peer, space).await;
+    until(|| async { alice.outbox(&space).await.is_empty() }).await;
+
+    // Three chunks reach the peer with no unit, and are collected.
+    let content = bytes(2_500_000);
+    let locator = alice.put_object(space, &content).await.unwrap();
+    let using = alice.fetch_chunks(space, locator, 0..1, FetchPriority::Position);
+    assert!(within(link.upload(space, locator)).await.unwrap());
+    peer.advance(settings().orphan_grace + 1).await;
+
+    // The unit goes with no upload, and the peer acknowledges it. Asked
+    // for a chunk, the peer has none to send.
+    let stream = alice.new_stream("frasil:blobs").unwrap();
+    let (_, named) = alice
+        .put_blob(space, &stream, Some("a file"), &content)
+        .await
+        .unwrap();
+    assert_eq!(named, locator);
+    until(|| async { alice.outbox(&space).await.is_empty() }).await;
+    drop(using);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        alice.drop_local_object(space, &locator).await.is_err(),
+        "no peer holds the bytes"
+    );
+    // Upkeep within the wait asks nothing more.
+    link.offer_puts(space);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(alice.drop_local_object(space, &locator).await.is_err());
+
+    // Past the wait, the blob is uploaded again and let go of once the
+    // peer serves a chunk of it.
+    clock.advance(1_801);
+    link.offer_puts(space);
+    until(|| async { alice.drop_local_object(space, &locator).await.is_ok() }).await;
     let _fetching = alice.fetch_chunks(space, locator, 2..3, FetchPriority::Position);
     until(|| async {
         alice

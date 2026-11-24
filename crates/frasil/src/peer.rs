@@ -638,6 +638,11 @@ struct Attached {
     /// chunk asked for.
     #[cfg(feature = "iroh")]
     probing: BTreeMap<Locator, u64>,
+    /// On a stream, the objects uploaded again because the peer sent no
+    /// chunk of them when asked: the peer is asked for a chunk once more
+    /// when it holds the upload whole.
+    #[cfg(feature = "iroh")]
+    sent_again: BTreeSet<Locator>,
     /// Who waits to learn that the peer holds an object.
     upload_answers: BTreeMap<Locator, Vec<tokio::sync::oneshot::Sender<bool>>>,
     /// Units held back until the objects they name are uploaded (units.md,
@@ -2536,6 +2541,8 @@ impl Driver {
                 early: BTreeSet::new(),
                 #[cfg(feature = "iroh")]
                 probing: BTreeMap::new(),
+                #[cfg(feature = "iroh")]
+                sent_again: BTreeSet::new(),
                 upload_answers: BTreeMap::new(),
                 deferred: Vec::new(),
                 #[cfg(any(feature = "server", feature = "server-socket"))]
@@ -3306,24 +3313,28 @@ impl Driver {
     /// `ObjectChunks` answers this `ObjectWant` and nothing sent before
     /// it, so the chunk says that the peer holds the object now
     /// ([`chunk_answered`](Self::chunk_answered)). `false` when the
-    /// question is not put this way: on another binding, without the
-    /// fetch right, before such an acknowledgement, or when an earlier
-    /// such question on this connection had no answer.
+    /// question is not put this way, and the object is uploaded instead:
+    /// on another binding, before such an acknowledgement, or when an
+    /// earlier such question on this connection had no answer, as from a
+    /// peer that lost the object, which takes the upload and is asked for
+    /// a chunk again once it holds it ([`uploaded`](Self::uploaded)).
+    /// Without the fetch right no chunk can be asked for: the object is
+    /// uploaded, unless a chunk of it went on this connection before the
+    /// acknowledgement, when no answer to an upload releases it here.
     #[cfg(feature = "iroh")]
     async fn ask_for_chunk(&mut self, space: EventId, locator: Locator) -> Result<bool> {
         if !matches!(self.wire, Wire::Iroh(_)) {
             return Ok(false);
         }
-        let asks = self.spaces.get(&space).is_some_and(|attached| {
-            attached.rights.contains(&Right::Fetch) && !attached.probing.contains_key(&locator)
-        });
-        if !asks {
-            // A chunk of it went before the acknowledgement: an upload
-            // now would have no answer that releases the object.
-            return Ok(self
-                .spaces
-                .get(&space)
-                .is_some_and(|attached| attached.early.contains(&locator)));
+        let Some(attached) = self.spaces.get_mut(&space) else {
+            return Ok(false);
+        };
+        if !attached.rights.contains(&Right::Fetch) {
+            return Ok(attached.early.contains(&locator));
+        }
+        if attached.probing.remove(&locator).is_some() {
+            attached.sent_again.insert(locator);
+            return Ok(false);
         }
         let Some((have, Some(total))) = self.device.object_progress(&space, &locator).await else {
             return Ok(false);
@@ -4242,11 +4253,20 @@ impl Driver {
         // An object this device put has another holder now, if the peer
         // was asked after it acknowledged a unit that names the object.
         let after = attached.asked.remove(&locator).unwrap_or(false);
+        #[cfg(feature = "iroh")]
+        let again = attached.sent_again.remove(&locator) && !after;
         self.device
             .object_at_peer(space, self.by, &locator, after)
             .await?;
         for reply in attached.upload_answers.remove(&locator).unwrap_or_default() {
             let _ = reply.send(true);
+        }
+        // A peer that sent no chunk of the object when asked holds it
+        // again: asked once more, since on a stream the answer to this
+        // upload may release nothing.
+        #[cfg(feature = "iroh")]
+        if again {
+            self.ask_for_chunk(space, locator).await?;
         }
         self.release(space, locator).await
     }
