@@ -333,7 +333,9 @@ that would have to fetch is refused there with `Unsupported`, since it would
 write a file.
 
 The npm package and the Swift and Kotlin bindings read as `Read::new()`
-does, into the cache, under the default budget.
+does, into the cache, under the default budget. They do not yet have
+`Options::blob_cache`, `Options::keep_all_blobs`, `Read`, `keep`,
+`drop_local`, `local` or `blob_cache_usage`.
 
 ## Blobs and an application's cache
 
