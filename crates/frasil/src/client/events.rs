@@ -118,7 +118,12 @@ pub enum Event {
     /// bytes, so that step 0 cannot pass on what was given: bytes the
     /// reader gave may not be the blob's. Every open reader of the blob
     /// fails with `ObjectMismatch`, and what the device cached of it is
-    /// dropped. Reported once for each refusal.
+    /// dropped. So when a part of the blob arrives under another header
+    /// than the one the reader gave bytes under, and nothing says which
+    /// of the two is the blob's. Reported once for each refusal. A chunk
+    /// that does not open as it arrives is its sender's fault, and no
+    /// refusal: it is not given, no reader fails, and another party is
+    /// asked for it.
     #[cfg(feature = "adapter-blobs")]
     ObjectRefused {
         /// The space.

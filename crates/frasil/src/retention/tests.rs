@@ -661,7 +661,7 @@ async fn a_dropped_object_is_checked_from_the_start_when_it_comes_back() {
             .receive_part(space, b_parts[0].clone())
             .await
             .unwrap(),
-        Received::Refused
+        Received::BadChunk
     );
     assert!(
         !engine

@@ -309,13 +309,15 @@ pub(crate) enum Received {
     /// Refused: what the device held of the object is dropped, and it is
     /// asked of another party.
     Refused,
-    /// Not kept: its chunk does not open at its place under the header
-    /// the device holds, under which a chunk it holds does open
-    /// ([`Engine::holds_an_open_chunk`]). What the device holds of the
-    /// object stays, and the chunk is asked of another party (units.md,
-    /// "Sync", objects). The caller drops the object after all if the
-    /// sender's own header is not the one held, so that a header a member
-    /// that is not the object's writer sealed chunks under does not stay.
+    /// Not kept, and its sender's fault: the part does not check under
+    /// the header it carries, where the device holds none or another one;
+    /// or under the header the device holds, under which a chunk has
+    /// opened ([`Engine::holds_an_open_chunk`], or in a reader). What the
+    /// device holds of the object stays, no reader of it fails, and the
+    /// chunk is asked of another party (units.md, "Sync", objects). A
+    /// sender whose stored bytes were read under the header held, and not
+    /// its own, is judged again under its own
+    /// ([`SliceTask`](crate::peer)).
     BadChunk,
 }
 
@@ -361,63 +363,75 @@ enum Source {
 }
 
 /// Whether a part fits the object it names ([`fits_object`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Fit {
-    /// It fits, under the header it carries or the one held.
-    Fits,
+    /// It fits, under the header it carries or the one held; `opened`
+    /// says its chunk opened under the object's key.
+    Fits { opened: bool },
     /// It carries no header, and none is held.
     Headerless,
-    /// It does not fit.
-    Refused,
-    /// Its chunk does not open at its place under the header the device
-    /// holds, which it agrees with, and the device holds the object's key.
-    BadChunk,
+    /// It does not check under the header it carries, and the device
+    /// holds no header or another one: its sender's fault.
+    Bad,
+    /// It does not check under the header the device holds, which is the
+    /// one it carries if it carries one: its sender's fault if a chunk
+    /// has opened under that header, and else nothing says which of the
+    /// two is not the object's.
+    Unfit,
+    /// It checks under the header it carries, which is not the one the
+    /// device holds; `opened` says its chunk opened under it. At most one
+    /// of the two headers is the object's.
+    Other { opened: bool },
 }
 
 /// Whether a part fits the object it names (units.md, "Reading an
 /// object", steps 2 to 4 and 6, by chunk): a header that reads, is the
 /// header held if one is, and names the locator's object ID; and a chunk
 /// that [`check_chunk`] takes under it, opened under the object's key
-/// when the replica holds the key of the state the header names. The
-/// header held is the replica's, or `receiving`, the one a receive
-/// through a provider holds while it runs (at-rest.md, "Held objects",
-/// receiving).
+/// when the replica holds the key of the state the header names, or an
+/// open reader of a reference holds the object's key (`openings`). The
+/// header held, `held`, is the replica's, the one a receive through a
+/// provider holds while it runs (at-rest.md, "Held objects", receiving),
+/// or the one the windows of readers that store nothing hold.
 fn fits_object(
     replica: &Replica,
     space: &EventId,
     part: &ObjectPart,
-    receiving: Option<&[u8]>,
+    held: Option<&[u8]>,
+    openings: &[crate::reading::ObjectOpening],
 ) -> Fit {
-    let stored = replica.object_header(&part.locator);
-    let held = stored.or(receiving);
-    let bytes = match (part.header.as_deref(), held) {
-        (Some(new), Some(held)) if new != held => return Fit::Refused,
-        (Some(new), _) => new,
-        (None, Some(held)) => held,
-        (None, None) => return Fit::Headerless,
-    };
-    let Ok(header) = frasil_units::objects::Header::read(bytes) else {
-        return Fit::Refused;
-    };
-    let object_key = replica
-        .object_key(&header.key_reference)
-        .map(|(key, _)| ObjectKeys::of(&key).object_key(&header.object_id));
-    match check_chunk(
-        space,
-        &header,
-        &part.locator,
-        part.index,
-        &part.chunk,
-        object_key.as_deref(),
-    ) {
-        Ok(()) => Fit::Fits,
-        Err(fault)
-            if stored.is_some()
-                && object_key.is_some()
-                && frasil_base::Class::name(fault) == "Decrypt" =>
-        {
-            Fit::BadChunk
+    // Whether the part checks under a header, and its chunk opened.
+    let checks = |bytes: &[u8]| -> Option<bool> {
+        let header = frasil_units::objects::Header::read(bytes).ok()?;
+        let check = |of: &EventId, key: Option<&[u8; 32]>| {
+            check_chunk(of, &header, &part.locator, part.index, &part.chunk, key).is_ok()
+        };
+        if let Some((key, _)) = replica.object_key(&header.key_reference) {
+            let object_key = ObjectKeys::of(&key).object_key(&header.object_id);
+            return check(space, Some(&object_key)).then_some(true);
         }
-        Err(_) => Fit::Refused,
+        if openings.is_empty() {
+            return check(space, None).then_some(false);
+        }
+        openings
+            .iter()
+            .any(|opening| check(&opening.source, Some(&opening.key)))
+            .then_some(true)
+    };
+    match (part.header.as_deref(), held) {
+        (None, None) => Fit::Headerless,
+        (Some(new), None) => match checks(new) {
+            Some(opened) => Fit::Fits { opened },
+            None => Fit::Bad,
+        },
+        (Some(new), Some(held)) if new != held => match checks(new) {
+            Some(opened) => Fit::Other { opened },
+            None => Fit::Bad,
+        },
+        (_, Some(held)) => match checks(held) {
+            Some(opened) => Fit::Fits { opened },
+            None => Fit::Unfit,
+        },
     }
 }
 
@@ -1476,20 +1490,30 @@ impl Engine {
 
     /// One part of an object another party sent, as sync carries it
     /// (units.md, "Sync", objects): checked as it arrives, then kept. Of
-    /// an object the device holds whole, nothing is taken. A part is
-    /// refused when its header differs from the one held, or when the
-    /// chunk fails [`check_chunk`] under that header, opened under the
-    /// object's key when the device holds it; once the object is whole,
-    /// it is checked against its locator's digest, which needs no key. A
-    /// refused part drops what the device held of the object, so that it
-    /// is missing again and asked of another party. A part with no header
-    /// of an object the device holds no header of cannot be checked: it
-    /// is not kept, and nothing else changes.
+    /// an object the device holds whole, nothing is taken. The chunk is
+    /// checked with [`check_chunk`] under the header the device holds or
+    /// the one the part carries, and opened under the object's key when
+    /// the device holds it. A part that fails is its sender's fault, and
+    /// is not kept, while nothing the device holds is in doubt
+    /// ([`Received::BadChunk`]): the device holds nothing of the object,
+    /// or a chunk has opened under the header it holds. Otherwise at most
+    /// one of what is held and what arrived is the object's: a part that
+    /// opens under another header replaces what is held under a header
+    /// nothing opened under, and in every other case what is held is
+    /// dropped and the part refused, so that the object is missing again
+    /// and asked of another party. Once the object is whole, it is
+    /// checked against its locator's digest, which needs no key. A reader
+    /// of the object fails with what is dropped only when a chunk had
+    /// opened in a reader, whose bytes are then in doubt
+    /// ([`drop_object`](Self::drop_object)). A part with no header of an
+    /// object the device holds no header of cannot be checked: it is not
+    /// kept, and nothing else changes.
     ///
     /// # Errors
     ///
     /// [`Error::UnknownSpace`]; the store's.
     pub(crate) async fn receive_part(&self, space: EventId, part: ObjectPart) -> Result<Received> {
+        let key = (space, crate::replica::object_id(&part.locator));
         let fits = {
             let mut state = self.lock().await;
             self.refresh_held(&mut state);
@@ -1497,32 +1521,48 @@ impl Engine {
             if replica.holds_object(&part.locator) {
                 return Ok(Received::Whole);
             }
-            // The header a receive through a provider holds, or the one
-            // the windows of readers that store nothing hold.
-            let receiving = state
-                .held
-                .receive_at(&space, &part.locator)
-                .map(|(header, _)| header)
+            // The header the replica holds, the one a receive through a
+            // provider holds, or the one the windows of readers that
+            // store nothing hold.
+            let held = replica
+                .object_header(&part.locator)
+                .map(<[u8]>::to_vec)
                 .or_else(|| {
-                    self.readers()
-                        .header(&(space, crate::replica::object_id(&part.locator)))
-                });
-            fits_object(replica, &space, &part, receiving.as_deref())
+                    state
+                        .held
+                        .receive_at(&space, &part.locator)
+                        .map(|(header, _)| header)
+                })
+                .or_else(|| self.readers().header(&key));
+            let openings = self.readers().openings(&key);
+            fits_object(replica, &space, &part, held.as_deref(), &openings)
         };
-        match fits {
-            Fit::Fits => {}
+        let opened = match fits {
+            Fit::Fits { opened } => opened,
             Fit::Headerless => return Ok(Received::Headerless),
-            // Asked of another party (units.md, "Sync", objects); the
-            // chunks that opened stay.
-            Fit::BadChunk if self.holds_an_open_chunk(&space, &part.locator).await => {
-                return Ok(Received::BadChunk);
-            }
-            Fit::Refused | Fit::BadChunk => {
+            // Asked of another party (units.md, "Sync", objects); what
+            // is held stays.
+            Fit::Bad => return Ok(Received::BadChunk),
+            Fit::Unfit | Fit::Other { .. } => {
+                // Whether a chunk has opened under the header held: as
+                // it arrived or in a reader, or a chunk of the store
+                // does now.
+                let proved = self.readers().proved(&key)
+                    || self.holds_an_open_chunk(&space, &part.locator).await;
+                if fits == Fit::Unfit && proved {
+                    return Ok(Received::BadChunk);
+                }
                 let mut state = self.lock().await;
                 self.drop_object(&mut state, space, &part.locator).await?;
-                return Ok(Received::Refused);
+                // A chunk opened under the part's header and none under
+                // the one held, under which nothing was given: the part
+                // is the object's first.
+                if fits != (Fit::Other { opened: true }) || proved {
+                    return Ok(Received::Refused);
+                }
+                true
             }
-        }
+        };
         // A state object whose header names more than its adapter loads is
         // fetched no further. Once the first chunk opened under the
         // object's key, the size is the writer's (it is in every chunk's
@@ -1550,11 +1590,14 @@ impl Engine {
         // Reported as kept only when it was: in the store, or in the
         // window of a reader that stores nothing and asked for it.
         if kept.left.contains(&(locator, part.index)) {
-            return Ok(if self.readers().offer(&space, &part) {
+            return Ok(if self.readers().offer(&space, &part, opened) {
                 Received::Kept
             } else {
                 Received::Left
             });
+        }
+        if opened {
+            self.readers().prove(&key);
         }
         let whole = self
             .read(&space, |replica| replica.holds_object(&locator))
@@ -1569,7 +1612,10 @@ impl Engine {
     /// Forgets an object the device held part of because a check of it
     /// failed, and deletes its records: it is missing again. How the
     /// device retains the object stays as it was, so that what another
-    /// party then sends of it is kept or cached as before.
+    /// party then sends of it is kept or cached as before. Its open
+    /// readers fail if a chunk of it had opened in one of them: the bytes
+    /// given are then not known to be the object's. Where none had, the
+    /// readers gave nothing, and start over with what arrives next.
     ///
     /// # Errors
     ///
@@ -1580,10 +1626,13 @@ impl Engine {
         space: EventId,
         locator: &Locator,
     ) -> Result<()> {
-        // Its open readers fail: what they read of it is not known to be
-        // the object's.
-        self.readers()
-            .refuse(&space, locator, "ObjectMismatch", false);
+        if !self
+            .readers()
+            .disown(&(space, crate::replica::object_id(locator)))
+        {
+            self.readers()
+                .refuse(&space, locator, "ObjectMismatch", false);
+        }
         self.drop_stored(state, space, &crate::replica::object_id(locator), false)
             .await
             .map(drop)
@@ -2347,18 +2396,6 @@ impl Engine {
             return Some((bytes.0, Some(bytes.1)));
         }
         state.replicas.get(space)?.object_bytes_held(locator)
-    }
-
-    /// Drops what the device held of an object a fetch found malformed:
-    /// it is missing again.
-    ///
-    /// # Errors
-    ///
-    /// The store's.
-    #[cfg(any(feature = "server", feature = "server-socket"))]
-    pub(crate) async fn drop_fetched(&self, space: EventId, locator: &Locator) -> Result<()> {
-        let mut state = self.lock().await;
-        self.drop_object(&mut state, space, locator).await
     }
 
     /// `ObjectHave` for every object of a space the device holds whole,

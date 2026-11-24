@@ -222,10 +222,11 @@ async fn a_corrupted_slice_keeps_the_chunks_that_opened() {
     assert_eq!(refused.class_name(), Some("Missing"), "{refused:?}");
     assert!(holds(&bob, &space, &locator, 0).await);
     assert!(!holds(&bob, &space, &locator, 1).await);
-    // Slice 0 once more, for the header the peer serves, which is the
-    // one held: the fault is the chunk's. The object is not asked of this
-    // peer again on this connection.
-    assert_eq!(faults.asked(&locator), vec![0, 1, 2, 0]);
+    // The peer's bytes were read under the header the peer itself served
+    // in slice 0, so the fault is the chunk's, and nothing more is asked
+    // to tell: the object is not asked of this peer again on this
+    // connection.
+    assert_eq!(faults.asked(&locator), vec![0, 1, 2]);
     link.close();
     until(|| async { link.is_closed() }).await;
 

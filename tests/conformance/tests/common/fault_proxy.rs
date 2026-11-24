@@ -22,6 +22,8 @@ pub struct Faults {
     pub cut_only: Mutex<Vec<u64>>,
     /// This slice is served with its first byte flipped.
     pub corrupt: Mutex<Option<u64>>,
+    /// This slice is served without its last byte.
+    pub shorten: Mutex<Option<u64>>,
     /// Requests for these slices wait, once counted, until they are no
     /// longer held back.
     pub hold: Mutex<Vec<u64>>,
@@ -165,6 +167,9 @@ async fn serve(
             && let Some(first) = body.first_mut()
         {
             *first ^= 1;
+        }
+        if *faults.shorten.lock().unwrap() == Some(index) {
+            body.pop();
         }
         let answer = format!(
             "HTTP/1.1 {status} X\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",

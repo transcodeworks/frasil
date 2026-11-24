@@ -52,7 +52,7 @@ use super::retention::Reading;
 use super::{BlobId, Blobs, Event, Read};
 use crate::error::{Error, Result};
 use crate::fetch::{FetchEnd, FetchPriority};
-use crate::reading::{PartReader, WholeFault, Window};
+use crate::reading::{ObjectOpening, PartReader, WholeFault, Window};
 use crate::retention::Want;
 use frasil_adapter::Locator;
 use frasil_adapter_blobs::Entry;
@@ -263,7 +263,11 @@ impl Blobs {
             uses.push(engine.want_object(space, &locator, Want::Cache));
             false
         };
-        let window = engine.open_window(space, locator, passing);
+        let opening = reference.as_ref().map(|(source, key)| ObjectOpening {
+            source: *source,
+            key: key.clone(),
+        });
+        let window = engine.open_window(space, locator, passing, opening);
         let alive = Arc::new(());
         let reader = BlobReader {
             blobs: self.clone(),
@@ -374,7 +378,7 @@ impl BlobReader {
             locator: self.entry.object,
             holders: self.holders.clone(),
             reference: self.reference.clone(),
-            window: engine.open_window(self.space, self.entry.object, false),
+            window: engine.open_window(self.space, self.entry.object, false, None),
             alive: Arc::downgrade(&self.alive),
         };
         let _ = self
@@ -810,7 +814,7 @@ impl BlobReader {
             match parts.open(index, &sealed, stored) {
                 Ok(plain) => {
                     if !proved {
-                        self.window.prove();
+                        self.window.gave();
                     }
                     self.from_window |= !stored;
                     self.opened = Some((index, plain));
@@ -867,7 +871,7 @@ impl BlobReader {
             // reader, so nothing was given under it: the header and what
             // came under it are not known to be the object's. They go, no
             // reader fails, and the next read fetches them again.
-            None if !self.window.proved() => {
+            None if !self.window.given() => {
                 if stored {
                     let _ = engine.drop_unopened(&self.holders, &locator).await;
                 } else {

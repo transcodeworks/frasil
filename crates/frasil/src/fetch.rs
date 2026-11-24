@@ -107,14 +107,15 @@ impl Cancel {
 pub enum FetchEnd {
     /// A chunk the other side sent failed its checks (units.md, 3.3
     /// Reading an object), or the object, once whole, did not hash to its
-    /// locator. What the device held of the object was dropped, unless
-    /// only that chunk failed to open under a header that chunks the
-    /// device holds open under: those stay, and the chunk is asked of
-    /// another party.
+    /// locator. What the device held of the object stays where the fault
+    /// is that chunk's alone: the device held nothing of the object, or a
+    /// chunk had opened under the header it holds. It was dropped where
+    /// the object did not hash to its locator, and where nothing says
+    /// which of what was held and what arrived is the object's.
     Refused,
     /// The stored bytes the other side sent do not read as the object's
-    /// header gives them (transport.md, "Objects over HTTP"): what the
-    /// device held of the object was dropped.
+    /// header gives them (transport.md, "Objects over HTTP"). What the
+    /// device held of the object stays.
     Malformed,
     /// The other side of a stream sent nothing the device could keep of
     /// the chunks asked for, time after time: no answer, or chunks it

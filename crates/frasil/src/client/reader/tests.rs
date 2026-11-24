@@ -589,14 +589,47 @@ async fn a_bad_chunk_is_refused_and_the_good_ones_stay() {
     assert_eq!(piece, absent.bytes[CHUNK as usize - 5..CHUNK as usize + 5]);
     assert_eq!(reader.verified(), Verified::Chunks);
 
-    // Another header for the same object: which of the two is the
-    // object's is not known, so what is held goes, and the reader fails.
+    // Another header for the same object, with a chunk that does not
+    // open under it: its sender's fault, and what is held stays.
     let mut header =
         frasil_units::objects::Header::read(absent.parts[0].header.as_ref().unwrap()).unwrap();
     header.size += 1;
     let other = ObjectPart {
         header: Some(header.encode()),
         ..absent.parts[2].clone()
+    };
+    assert_eq!(
+        absent.engine.receive_part(absent.of, other).await.unwrap(),
+        Received::BadChunk
+    );
+    assert!(absent.holds(0).await && absent.holds(1).await);
+    // Another header under which a holder of the key sealed the chunk:
+    // which of the two is the object's is not known, so what is held
+    // goes, and the reader, which gave bytes under the first, fails.
+    let other = {
+        use frasil_units::objects::{ObjectKeys, seal_chunk};
+        let key = {
+            let state = absent.engine.lock().await;
+            absent.engine.sealing(&state, &absent.of).unwrap().1
+        };
+        let keys = ObjectKeys::of(&key);
+        let id: [u8; 32] = absent.locator[..32].try_into().unwrap();
+        let from = 2 * CHUNK as usize;
+        let plain = &absent.bytes[from..from + CHUNK_BYTES];
+        let sealed = seal_chunk(
+            &absent.of,
+            &keys,
+            &keys.object_key(&id),
+            &id,
+            header.size,
+            2,
+            plain,
+        );
+        ObjectPart {
+            header: Some(header.encode()),
+            chunk: sealed.sealed,
+            ..absent.parts[2].clone()
+        }
     };
     assert_eq!(
         absent.engine.receive_part(absent.of, other).await.unwrap(),
@@ -1172,4 +1205,128 @@ async fn the_pass_in_order_must_read_the_chunks_given() {
     let failed = read_with(&absent, &mut reader, CHUNK, &right).await;
     assert_eq!(failed.unwrap_err().class_name(), Some("ObjectMismatch"));
     assert_eq!(reader.verified(), Verified::Chunks);
+}
+
+/// No refusal was told to the application.
+async fn nothing_told(events: &mut crate::Events) {
+    let told = tokio::time::timeout(Duration::from_millis(100), async {
+        loop {
+            if let Some(Event::ObjectRefused { .. }) = events.next().await {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(told.is_err(), "a chunk that does not open is no refusal");
+}
+
+/// A reader that stores nothing has read a chunk, and a party then sends
+/// chunks that do not open: one with a bit flipped, one of another length,
+/// one of the same plaintext sealed in another space. Each is that
+/// party's fault: it is not given, nothing the reader holds goes, no
+/// reader fails, the application is told of no refusal, and the read ends
+/// with the chunk another party sends.
+#[tokio::test]
+async fn a_bad_chunk_to_a_reader_that_stores_nothing_is_asked_of_another_party() {
+    let absent = absent().await;
+    let second = absent.engine.fetches().attach(absent.of);
+    let other = absent.device.create_space().await.unwrap().id().event();
+    let (_, _, elsewhere) = absent
+        .engine
+        .seal_parts(other, &absent.bytes)
+        .await
+        .unwrap();
+    let mut events = absent.device.events();
+    let mut reader = absent
+        .blobs
+        .open_reader(absent.id, &Read::new().uncached())
+        .await
+        .unwrap();
+    reader.set_read_ahead(0);
+    absent.read(&mut reader, 0, 10).await;
+    let mut flipped = absent.parts[2].clone();
+    flipped.chunk[100] ^= 1;
+    let mut short = absent.parts[2].clone();
+    short.chunk.truncate(1000);
+    let foreign = ObjectPart {
+        chunk: elsewhere[2].chunk.clone(),
+        ..absent.parts[2].clone()
+    };
+    let mut buf = [0u8; 10];
+    let read = {
+        let reading = reader.read_at(2 * CHUNK, &mut buf);
+        tokio::pin!(reading);
+        tokio::select! {
+            _ = &mut reading => panic!("nothing arrived yet"),
+            () = absent.asked_for(2) => {}
+        }
+        for bad in [flipped, short, foreign] {
+            let received = absent.engine.receive_part(absent.of, bad).await.unwrap();
+            assert_eq!(received, Received::BadChunk);
+        }
+        // That connection asks for no more of the object; the other one
+        // serves the chunk.
+        absent
+            ._taker
+            .give_up(&absent.locator, crate::fetch::FetchEnd::Refused);
+        assert_eq!(absent.send(2).await, Received::Kept);
+        reading.await.unwrap()
+    };
+    assert_eq!(read, 10);
+    let from = 2 * CHUNK as usize;
+    assert_eq!(buf[..], absent.bytes[from..from + 10]);
+    // What was read before still reads, from the chunk asked for again.
+    assert_eq!(absent.read(&mut reader, 5, 10).await, absent.bytes[5..15]);
+    nothing_told(&mut events).await;
+    drop(second);
+}
+
+/// The first chunk a read gets does not open: nothing is held and
+/// nothing was given, so no reader fails, and the read ends with the
+/// chunk another party sends. So for a reference, whose chunks open as
+/// they arrive under the key its reader holds.
+#[tokio::test]
+async fn a_bad_first_chunk_fails_no_reader() {
+    for (reference, read) in [
+        (false, Read::new()),
+        (false, Read::new().uncached()),
+        (true, Read::new()),
+        (true, Read::new().uncached()),
+    ] {
+        let absent = if reference {
+            referenced().await.0
+        } else {
+            absent().await
+        };
+        let second = absent.engine.fetches().attach(absent.of);
+        let mut events = absent.device.events();
+        {
+            let mut reader = absent.blobs.open_reader(absent.id, &read).await.unwrap();
+            reader.set_read_ahead(0);
+            let mut flipped = absent.parts[1].clone();
+            flipped.chunk[100] ^= 1;
+            let mut buf = [0u8; 10];
+            let read = {
+                let reading = reader.read_at(CHUNK, &mut buf);
+                tokio::pin!(reading);
+                tokio::select! {
+                    _ = &mut reading => panic!("nothing arrived yet"),
+                    () = absent.asked_for(1) => {}
+                }
+                let received = absent
+                    .engine
+                    .receive_part(absent.of, flipped)
+                    .await
+                    .unwrap();
+                assert_eq!(received, Received::BadChunk, "{reference}");
+                assert_eq!(absent.send(1).await, Received::Kept);
+                reading.await.unwrap()
+            };
+            assert_eq!(read, 10);
+            assert_eq!(buf[..], absent.bytes[CHUNK as usize..CHUNK as usize + 10]);
+            reader.close().await.unwrap();
+        }
+        nothing_told(&mut events).await;
+        drop(second);
+    }
 }

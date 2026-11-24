@@ -323,6 +323,51 @@ async fn a_bad_chunk_fails_the_read_and_another_connection_serves_it() {
     scene.close().await;
 }
 
+/// A slice of the wrong length is the peer's fault: the read that needs
+/// it fails for now, what the device holds of the blob stays, no reader
+/// fails for good, and another connection serves the chunk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slice_of_the_wrong_length_fails_the_read_and_no_reader() {
+    for mode in [Read::new(), Read::new().uncached()] {
+        let scene = scene(Options::new()).await;
+        let mut reader = scene.blobs.open_reader(scene.id, &mode).await.unwrap();
+        reader.set_read_ahead(0);
+        assert_eq!(
+            read(&mut reader, 5, 100).await.unwrap(),
+            scene.slice(5, 100)
+        );
+        let held = scene.local().await;
+        // Chunk 2 ends in slice 3.
+        *scene.faults.shorten.lock().unwrap() = Some(3);
+        let failed = read(&mut reader, 2 * CHUNK + 5, 100).await.unwrap_err();
+        assert_eq!(failed.class_name(), Some("Malformed"), "{failed:?}");
+        assert_eq!(scene.local().await, held);
+        if held.0 == BlobState::Cached {
+            assert_eq!(
+                read(&mut reader, 5, 100).await.unwrap(),
+                scene.slice(5, 100)
+            );
+        }
+        // Another connection, which serves the slice whole.
+        *scene.faults.shorten.lock().unwrap() = None;
+        scene.link.close();
+        let link = scene.bob.connect(&scene.proxy).await.unwrap();
+        let piece = within(async {
+            loop {
+                match read(&mut reader, 2 * CHUNK + 5, 100).await {
+                    Ok(piece) => break piece,
+                    Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+                }
+            }
+        })
+        .await;
+        assert_eq!(piece, scene.slice(2 * CHUNK + 5, 100));
+        reader.close().await.unwrap();
+        link.close();
+        scene.close().await;
+    }
+}
+
 /// A transfer cut part way is taken up again by the connection, and the
 /// read that waits for it ends with its bytes. With no connection a read
 /// is missing at once; made again once one is back, it reads, and what

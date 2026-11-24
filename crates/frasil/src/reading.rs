@@ -22,6 +22,17 @@
 //! than its reader allows. The readers of an object hear when the device
 //! keeps a part of it, and when a check of it fails
 //! ([`Readers::refuse`]).
+//!
+//! A part that does not check as it arrives is its sender's fault while
+//! nothing the device holds is in doubt: it is not kept, and another party
+//! is asked ([`Engine::receive_part`]). The windows of an object say what
+//! that takes: whether a chunk has opened under the header its readers
+//! read by, and whether one has in a reader, whose bytes may then have
+//! been given. Readers fail with what the device drops of an object only
+//! in the second case; where no reader was given anything, they start
+//! over under the header that arrives next. The reader of a reference
+//! leaves the object's key with its window while it is open, so that the
+//! chunks of a reference are opened as they arrive too.
 
 #![cfg_attr(not(feature = "adapter-blobs"), allow(dead_code))]
 
@@ -76,9 +87,12 @@ struct Inner {
     /// the device stores nothing of.
     header: Option<Vec<u8>>,
     /// Whether a chunk has opened under the header the object's readers
-    /// read by, the one above or the store's: a holder of the object's
-    /// key sealed a chunk under it, and bytes may have been given.
+    /// read by, the one above or the store's, as it arrived or in a
+    /// reader: a holder of the object's key sealed a chunk under it.
     proved: bool,
+    /// Whether a chunk has opened under that header in a reader, which
+    /// may have given its bytes.
+    given: bool,
     /// Counts the times what was held under a header nothing had opened
     /// under was let go: a reader that built on that header starts over.
     epoch: u64,
@@ -90,9 +104,31 @@ struct Inner {
     verifying: bool,
 }
 
+/// What the reader of a reference opens its object with: the reference's
+/// source, which is the space in each chunk's associated data, and the
+/// object's key (adapter-blobs.md, 3.5 Fetching). Formatted, it shows no
+/// key.
+#[derive(Clone)]
+pub(crate) struct ObjectOpening {
+    pub source: EventId,
+    pub key: frasil_keys::derive::Secret,
+}
+
+impl core::fmt::Debug for ObjectOpening {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ObjectOpening")
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
+}
+
 /// What one window holds.
 #[derive(Debug, Default)]
 struct Held {
+    /// For a reference, what its reader opens the object with: what opens
+    /// a chunk as it arrives where the space holds no key of the state
+    /// the object's header names.
+    opening: Option<ObjectOpening>,
     /// Whether chunks the device does not store are taken into memory.
     passing: bool,
     /// The most chunks it holds in memory.
@@ -167,12 +203,42 @@ impl Readers {
             .and_then(|watched| lock(&watched.inner).header.clone())
     }
 
+    /// Whether a chunk has opened under the header the readers of an
+    /// object read by, as it arrived or in a reader.
+    pub(crate) fn proved(&self, key: &Key) -> bool {
+        self.watched(key)
+            .is_some_and(|watched| lock(&watched.inner).proved)
+    }
+
+    /// Notes that a chunk the device kept of an object opened as it
+    /// arrived, under the header its readers read by.
+    pub(crate) fn prove(&self, key: &Key) {
+        if let Some(watched) = self.watched(key) {
+            lock(&watched.inner).proved = true;
+        }
+    }
+
+    /// What the open readers of a reference hold to open its object, of
+    /// each.
+    pub(crate) fn openings(&self, key: &Key) -> Vec<ObjectOpening> {
+        self.watched(key)
+            .map(|watched| {
+                lock(&watched.inner)
+                    .windows
+                    .values()
+                    .filter_map(|held| held.opening.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Offers a chunk the device does not store to the windows that asked
     /// for it: whether one took it. The caller has checked the part
     /// against the header it carries or the one held
-    /// ([`Engine::receive_part`]). A window takes a chunk only at an
-    /// index it waits for, once, and never more than its limit.
-    pub(crate) fn offer(&self, space: &EventId, part: &ObjectPart) -> bool {
+    /// ([`Engine::receive_part`]); `opened` says its chunk opened there.
+    /// A window takes a chunk only at an index it waits for, once, and
+    /// never more than its limit.
+    pub(crate) fn offer(&self, space: &EventId, part: &ObjectPart, opened: bool) -> bool {
         let Some(watched) = self.watched(&(*space, object_id(&part.locator))) else {
             return false;
         };
@@ -190,6 +256,7 @@ impl Readers {
         if taken && inner.header.is_none() {
             inner.header.clone_from(&part.header);
         }
+        inner.proved |= taken && opened;
         drop(inner);
         if taken {
             watched.bump();
@@ -229,20 +296,21 @@ impl Readers {
         watched.bump();
     }
 
-    /// Lets go of what the windows of an object hold under a header
-    /// nothing has opened under, the header with it: `false`, and nothing
-    /// done, when a chunk has opened under it. The readers of the object
-    /// that built on the header start over.
+    /// Lets go of what the windows of an object hold under a header no
+    /// reader has opened a chunk under, the header with it: `false`, and
+    /// nothing done, when one has, and may have given its bytes. The
+    /// readers of the object that built on the header start over.
     pub(crate) fn disown(&self, key: &Key) -> bool {
         let Some(watched) = self.watched(key) else {
             return true;
         };
         {
             let mut inner = lock(&watched.inner);
-            if inner.proved {
+            if inner.given {
                 return false;
             }
             inner.header = None;
+            inner.proved = false;
             inner.epoch += 1;
             for held in inner.windows.values_mut() {
                 held.chunks.clear();
@@ -384,16 +452,18 @@ impl Window {
         lock(&self.watched.inner).header.clone()
     }
 
-    /// Notes that a chunk opened under the header the object's readers
-    /// read by.
-    pub(crate) fn prove(&self) {
-        lock(&self.watched.inner).proved = true;
+    /// Notes that a chunk opened in this reader under the header the
+    /// object's readers read by: its bytes may have been given.
+    pub(crate) fn gave(&self) {
+        let mut inner = lock(&self.watched.inner);
+        inner.proved = true;
+        inner.given = true;
     }
 
-    /// Whether a chunk has opened under the header the object's readers
-    /// read by, in this reader or another.
-    pub(crate) fn proved(&self) -> bool {
-        lock(&self.watched.inner).proved
+    /// Whether a chunk has opened in a reader of the object, this one or
+    /// another, under the header they read by.
+    pub(crate) fn given(&self) -> bool {
+        lock(&self.watched.inner).given
     }
 
     /// How many times what was held under a header nothing had opened
@@ -706,7 +776,16 @@ impl Engine {
     /// Opens a reader's window on an object of `space`. With `passing`,
     /// chunks of it the device does not store are taken into the window's
     /// memory, and the requests the window makes are not the store's.
-    pub(crate) fn open_window(&self, space: EventId, locator: Locator, passing: bool) -> Window {
+    /// `opening` is what the reader of a reference opens the object with:
+    /// chunks of the object are opened with it as they arrive, while the
+    /// window is open.
+    pub(crate) fn open_window(
+        &self,
+        space: EventId,
+        locator: Locator,
+        passing: bool,
+        opening: Option<ObjectOpening>,
+    ) -> Window {
         let readers = self.readers().clone();
         let key = (space, object_id(&locator));
         let (watched, number) = {
@@ -727,6 +806,7 @@ impl Engine {
                 inner.windows.insert(
                     number,
                     Held {
+                        opening,
                         passing,
                         ..Held::default()
                     },
