@@ -214,9 +214,9 @@ reads the blob. An application may conclude from a durable put that
 another device knows of the blob. It may not conclude that anyone else
 holds the bytes, and it must not delete its source file because a put is
 durable. `blobs.local(id)` answers that: a blob this device put is kept
-until an always-on peer has answered that it holds the bytes and has
-acknowledged the change, and cached from then on, unless the application
-asked to keep it. In a space with no always-on peer the blob stays kept,
+until an always-on peer that has acknowledged the change answers that it
+holds the bytes, and cached from then on, unless the application asked to
+keep it. In a space with no always-on peer the blob stays kept,
 and this device's copy may be the only one.
 
 `device.arrivals()` gives each space and each stream the device holds for
@@ -304,13 +304,17 @@ them there, so the file's own blob stands as the reference does.
 always-on peer holds its bytes; what Frasil stores for itself, such as
 snapshots; and a blob that a read or a fetch is using. A blob this device
 put is kept, and `blobs.local(id)` says so, until a peer of the space has
-answered that it holds the bytes and has acknowledged the change that put
-the blob: the blob is cached from then on, unless the application asked to
-keep it. Nothing else releases it: not another member's or another peer's
-acknowledgement, not a reopen, not a paused space. A blob that is still
-kept so once its change is durable, as when the change reached the peer
-through another device, is offered to the peer again when the device
-connects and from time to time, until the peer answers that it holds it. In a space with no always-on peer no
+acknowledged the change that put the blob and then answers that it holds
+the bytes: the blob is cached from then on, unless the application asked to
+keep it. The answer a peer gives when the bytes are uploaded, before the
+change reaches it, does not count: a peer discards bytes that no change
+names after a while, so the device asks it once more after the
+acknowledgement, with one more slice of the blob over HTTP and one chunk
+back over iroh. Nothing else releases the blob: not another member's or
+another peer's acknowledgement, not a reopen, not a paused space. A blob
+that is still kept so, as when the change reached the peer through another
+device, is asked of the peer again when the device connects and from time
+to time, and uploaded again if the peer lost it. In a space with no always-on peer no
 other party is known to hold the bytes, so a blob put there is kept until
 the application drops it. `drop_local` refuses, with `NotAllowed`, a blob in
 use and, in a space with an always-on peer, a blob this device put that no

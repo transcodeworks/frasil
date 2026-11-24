@@ -9,16 +9,20 @@
 //!
 //! An object this device sealed is put: it stays as a kept one does while
 //! no always-on peer is known to hold it, since this device may hold its
-//! only copy. It is released once one peer has answered that it holds the
-//! object and that same peer has acknowledged a unit that names it, while
-//! the answer still counts ([`PUT_ANSWER`]): cached from then on, or kept
-//! if the application asked to keep it or it was kept before the put.
-//! That the application asked to keep it never takes away that it is put:
-//! the record carries both. Whether a unit is durable says nothing of
-//! who holds its objects: a member's acknowledgement makes a unit durable
-//! in a space whose peer has not been heard, and covers events alone. An
-//! object still put with no unit left to send is offered to a peer again
-//! ([`Engine::puts_to_offer`]).
+//! only copy. It is released once one peer, which has acknowledged a unit
+//! that names the object and still stands, answers a question put to it
+//! after that acknowledgement that it holds the object whole
+//! ([`Engine::object_at_peer`]): cached from then on, or kept if the
+//! application asked to keep it or it was kept before the put. An answer
+//! to a question put before the acknowledgement releases nothing, whatever
+//! its age: the peer may have held the object with no unit that names it,
+//! and collected it since. That the application asked to keep it never
+//! takes away that it is put: the record carries both. Whether a unit is
+//! durable says nothing of who holds its objects: a member's
+//! acknowledgement makes a unit durable in a space whose peer has not been
+//! heard, and covers events alone. The device asks a peer again for each
+//! object still put ([`Engine::puts_to_offer`]): once that peer
+//! acknowledged a unit that names it, at each connection, and at upkeep.
 //!
 //! [`Engine::must_stay`] is the one place that says what the device never
 //! drops by itself: Frasil's own objects, an object of a unit this device
@@ -64,15 +68,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// The budget of a device that names none: 256 MiB of stored bytes.
 pub(crate) const DEFAULT_BLOB_CACHE: u64 = 256 << 20;
 
-/// How long a peer's answer that it holds an object counts toward
-/// releasing an object this device put, in seconds of the timeline
-/// (at-rest.md, "Retention", an object the device put). A peer collects an
-/// object that no unit names `orphan_grace` after its upload, and the
-/// device does not know the grace of the peer it speaks to: this is half
-/// the least a peer may run with (overview.md, "Timers"), so that an
-/// acknowledgement taken within it says the unit reached the peer while
-/// the object was still there.
-pub(crate) const PUT_ANSWER: u64 = 1_800;
+/// How long the device waits, at upkeep, before it asks a peer again
+/// whether it holds an object this device put, in seconds of the timeline
+/// (at-rest.md, "Retention", an object the device put). It is a rule that
+/// waits, and counts by the lower estimate (overview.md, "The two
+/// estimates"): time the timeline does not count makes the wait longer.
+pub(crate) const PUT_OFFER: u64 = 1_800;
 
 /// An object, by the space whose replica stores it and its object ID.
 type Key = (EventId, [u8; 32]);
@@ -101,24 +102,108 @@ impl Entry {
     }
 }
 
-/// What the device knows of an object it put, while its record says so.
+/// What the device knows of an object it put, while its record says so:
+/// kept while the device runs, and never at rest.
 #[derive(Debug, Default)]
 struct PutFacts {
-    /// The units of this device that name it, once known: those written
-    /// since the device opened, or all the log holds once it was read.
-    units: Option<Vec<EventId>>,
-    /// The locators those units name it by.
-    locators: BTreeSet<Locator>,
-    /// The always-on peers that answered that they hold the object whole,
-    /// each with the timeline's reading at its latest answer.
-    at_peer: Answers,
-    /// The always-on peers the device offered the object to again, each
-    /// with the timeline's reading at the latest offer.
-    offered: Answers,
+    /// The always-on peers the device asked whether they hold the object,
+    /// each with its latest question.
+    asked: BTreeMap<crate::outbox::Acknowledger, Asked>,
 }
 
-/// The peers that answered that they hold an object, and when.
-type Answers = BTreeMap<crate::outbox::Acknowledger, u64>;
+/// A question put to a peer: whether it holds an object this device put.
+#[derive(Debug, Clone, Copy)]
+struct Asked {
+    /// The timeline's reading when it was put.
+    at: u64,
+    /// Whether the peer had by then acknowledged a unit that names the
+    /// object and stands: only the answer to such a question releases
+    /// the object.
+    after: bool,
+}
+
+/// What a space's log says of the units that name some objects, by object
+/// ID ([`naming`]).
+#[derive(Debug, Default)]
+struct Naming {
+    /// The units that name an object and stand, each with the locator it
+    /// names the object by: a unit the log holds that is neither replaced
+    /// nor released, which is what makes an object referenced at a peer
+    /// (peers.md, "Objects").
+    standing: BTreeMap<[u8; 32], Vec<(EventId, Locator)>>,
+    /// The objects that a unit names of which the log does not say whether
+    /// it stands: one in the cover of a snapshot unit the replica does not
+    /// use yet, or one of a released stream, which a restore brings back.
+    doubtful: BTreeSet<[u8; 32]>,
+    /// The locators those units, standing or in doubt, name each object
+    /// by.
+    locators: BTreeMap<[u8; 32], BTreeSet<Locator>>,
+}
+
+/// Reads from a replica's log the units that name the objects `ids`. A
+/// unit in the cover of a snapshot unit the replica uses is replaced, and
+/// names nothing. One in the cover of a snapshot unit the replica holds
+/// and does not use yet, and one of a released stream, is in doubt: it
+/// releases nothing, and the object is still named.
+fn naming(replica: &Replica, ids: &BTreeSet<[u8; 32]>) -> Naming {
+    let mut out = Naming::default();
+    let Some(log) = replica.log() else {
+        return out;
+    };
+    let mut snapshots = Vec::new();
+    let mut named = Vec::new();
+    for event in log.events() {
+        if event.kind() != frasil_events::kind::UNIT {
+            continue;
+        }
+        let Ok(unit) = frasil_units::Unit::from_event(event.clone()) else {
+            continue;
+        };
+        for locator in &unit.body.objects {
+            if ids.contains(&object_id(locator)) {
+                named.push((event.id(), unit.body.stream, *locator));
+            }
+        }
+        if let Some(compacts) = unit.body.compacts {
+            snapshots.push((event.id(), unit.body.stream, compacts.covers));
+        }
+    }
+    if named.is_empty() {
+        return out;
+    }
+    let mut replaced = BTreeSet::new();
+    let mut claimed = BTreeSet::new();
+    for (id, stream, covers) in &snapshots {
+        let cover = frasil_units::compaction::cover_set(
+            log,
+            |unit| crate::compaction::stream_of(log, unit),
+            covers,
+            stream,
+        );
+        if replica.used_snapshots().contains(id) {
+            replaced.extend(cover);
+        } else {
+            claimed.extend(cover);
+        }
+    }
+    let mut released = BTreeMap::new();
+    for (unit, stream, locator) in named {
+        let id = object_id(&locator);
+        if replaced.contains(&unit) {
+            continue;
+        }
+        let released = *released
+            .entry(stream)
+            .or_insert_with(|| crate::release::released(replica, &stream));
+        out.locators.entry(id).or_default().insert(locator);
+        if released || claimed.contains(&unit) {
+            out.doubtful.insert(id);
+        } else {
+            out.standing.entry(id).or_default().push((unit, locator));
+        }
+    }
+    out
+}
 
 /// Which stored objects are kept and which cached, with the bytes each
 /// holds: built from the `retention` records when the device opens, and
@@ -139,9 +224,6 @@ pub(crate) struct Retained {
     reads: u64,
     /// What is known of the objects whose record says the device put them.
     puts: BTreeMap<Key, PutFacts>,
-    /// Objects an always-on peer took before the unit that names them was
-    /// written, which have no record yet, with the peers and when.
-    taken: BTreeMap<Key, Answers>,
     /// Objects this device sealed and stored while it held nothing of
     /// them and they had no record: the put that names one is its first.
     /// An object with parts and no record that is not here was kept
@@ -274,7 +356,6 @@ impl Retained {
             self.remove(&key);
         }
         self.sealed.retain(|(of, _)| of != space);
-        self.taken.retain(|(of, _), _| of != space);
         self.staying.remove(space);
     }
 
@@ -958,8 +1039,8 @@ impl Engine {
         Self::note_sealed(&mut state, space, locators);
     }
 
-    /// Records that this device put an object, which `unit`, just written
-    /// here, names: it stays until an always-on peer holds it (at-rest.md,
+    /// Records that this device put an object, which a unit just written
+    /// here names: it stays until an always-on peer holds it (at-rest.md,
     /// "Retention", what is never dropped), whatever makes the unit
     /// durable. An object that was kept before, by a record of state 1 or
     /// by parts with no record, stays kept once a peer holds it: its
@@ -971,11 +1052,8 @@ impl Engine {
         state: &mut State,
         space: EventId,
         locator: &Locator,
-        unit: EventId,
     ) -> Result<()> {
         let key = (space, object_id(locator));
-        // Whether a peer took it before its unit was written.
-        let taken = state.retained.taken.remove(&key).unwrap_or_default();
         // Whether the device held nothing of it before it sealed it.
         let first = state.retained.sealed.remove(&key);
         if self.is_held_space(state, &space) {
@@ -986,36 +1064,108 @@ impl Engine {
             .get(&space)
             .is_some_and(|replica| replica.holds_chunks(locator) && !replica.is_held(locator));
         let put = match state.retained.get(&key) {
-            Some(Retention::Put { .. }) => None,
+            Some(Retention::Put { .. }) => return Ok(()),
             _ if !stored => return Ok(()),
-            Some(Retention::Kept) => Some(Retention::Put { keep: true }),
-            Some(Retention::Cached { .. }) => Some(Retention::Put { keep: false }),
+            Some(Retention::Kept) => Retention::Put { keep: true },
+            Some(Retention::Cached { .. }) => Retention::Put { keep: false },
             // Parts with no record are kept, unless this put stored them.
-            None => Some(Retention::Put { keep: !first }),
+            None => Retention::Put { keep: !first },
         };
-        if let Some(put) = put {
-            self.record(state, space, key.1, put).await?;
-        }
-        let facts = state.retained.puts.entry(key).or_default();
-        facts.locators.insert(*locator);
-        for (by, at) in taken {
-            let known = facts.at_peer.entry(by).or_insert(at);
-            *known = (*known).max(at);
-        }
-        if put.is_some() {
-            // Only the unit just written is known to wait for a peer.
-            facts.units = Some(vec![unit]);
-        } else if let Some(units) = &mut facts.units {
-            // The units of an earlier run are looked for when needed.
-            units.push(unit);
-        }
-        Ok(())
+        self.record(state, space, key.1, put).await
     }
 
-    /// Notes that the always-on peer `by` holds an object whole, by its
-    /// own answer to an upload made now: an object this device put is
-    /// released once that same peer has also acknowledged a unit that
-    /// names it, while the answer counts ([`PUT_ANSWER`]).
+    /// The objects of a space whose record says this device put them.
+    fn put_ids(state: &State, space: &EventId) -> BTreeSet<[u8; 32]> {
+        state
+            .retained
+            .puts
+            .range((*space, [0; 32])..)
+            .take_while(|((of, _), _)| of == space)
+            .map(|((_, id), _)| *id)
+            .collect()
+    }
+
+    /// Whether the heads the always-on peer `by` last acknowledged have in
+    /// their past a unit that names `locator` and stands ([`naming`]): the
+    /// object is then referenced at that peer while it holds it, and is
+    /// not collected there as an orphan (peers.md, "Objects").
+    fn acknowledged_naming(
+        state: &State,
+        space: &EventId,
+        by: &crate::outbox::Acknowledger,
+        locator: &Locator,
+    ) -> bool {
+        let Some(replica) = state.replicas.get(space) else {
+            return false;
+        };
+        let Some(log) = replica.log() else {
+            return false;
+        };
+        let acknowledged = state
+            .outboxes
+            .get(space)
+            .map(|outbox| outbox.acknowledged_past(log, by))
+            .unwrap_or_default();
+        if acknowledged.is_empty() {
+            return false;
+        }
+        let id = object_id(locator);
+        naming(replica, &BTreeSet::from([id]))
+            .standing
+            .get(&id)
+            .is_some_and(|units| {
+                units
+                    .iter()
+                    .any(|(unit, named)| named == locator && acknowledged.contains(unit))
+            })
+    }
+
+    /// Notes that the device asks the always-on peer `by` now whether it
+    /// holds an object, by the upload a writer makes (units.md, "What a
+    /// writer does", item 7) or a request for one of its chunks. Whether
+    /// the question is put after that peer acknowledged a unit that names
+    /// the object and stands: only then does its answer release an object
+    /// this device put ([`object_at_peer`](Self::object_at_peer)). `false`
+    /// for an object whose record does not say that this device put it.
+    #[cfg_attr(
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+        allow(dead_code)
+    )]
+    pub(crate) async fn put_asking(
+        &self,
+        space: EventId,
+        by: crate::outbox::Acknowledger,
+        locator: &Locator,
+    ) -> bool {
+        let mut state = self.lock().await;
+        let key = (space, object_id(locator));
+        if !matches!(state.retained.get(&key), Some(Retention::Put { .. })) {
+            return false;
+        }
+        let after = Self::acknowledged_naming(&state, &space, &by, locator);
+        let at = self.timeline_now(&mut state);
+        state
+            .retained
+            .puts
+            .entry(key)
+            .or_default()
+            .asked
+            .insert(by, Asked { at, after });
+        after
+    }
+
+    /// Takes the answer of the always-on peer `by` that it holds an object
+    /// whole. `after` says that the question was put after that peer
+    /// acknowledged a unit that names the object
+    /// ([`put_asking`](Self::put_asking)), and that the answer is to that
+    /// question and no earlier one. An object this device put is then
+    /// released, if such a unit still stands in the past of the heads
+    /// that peer last acknowledged: the peer stores a unit that refers to
+    /// the object and holds its bytes, so the object is referenced there
+    /// and this device no longer holds the only copy (at-rest.md,
+    /// "Retention", an object the device put). Any other answer releases
+    /// nothing: a peer that holds an object no unit names collects it,
+    /// and may do so before the unit arrives.
     ///
     /// # Errors
     ///
@@ -1029,86 +1179,55 @@ impl Engine {
         space: EventId,
         by: crate::outbox::Acknowledger,
         locator: &Locator,
+        after: bool,
     ) -> Result<()> {
         let mut state = self.lock().await;
-        let key = (space, object_id(locator));
-        let now = self.timeline_now(&mut state);
-        match state.retained.get(&key) {
-            Some(Retention::Put { .. }) => {
-                state
-                    .retained
-                    .puts
-                    .entry(key)
-                    .or_default()
-                    .at_peer
-                    .insert(by, now);
-            }
-            // Taken before its unit is written, by a put that holds it.
-            None if self.in_use(&space, &key.1) => {
-                state.retained.taken.entry(key).or_default().insert(by, now);
-                return Ok(());
-            }
+        let id = object_id(locator);
+        if !after
+            || !matches!(
+                state.retained.get(&(space, id)),
+                Some(Retention::Put { .. })
+            )
+            || !Self::acknowledged_naming(&state, &space, &by, locator)
+        {
+            return Ok(());
+        }
+        self.release_put(&mut state, space, id).await
+    }
+
+    /// Makes an object this device put kept, where the application asked
+    /// to keep it, and cached otherwise.
+    async fn release_put(&self, state: &mut State, space: EventId, id: [u8; 32]) -> Result<()> {
+        let retention = match state.retained.get(&(space, id)) {
+            Some(Retention::Put { keep: true }) => Retention::Kept,
+            Some(Retention::Put { keep: false }) => Retention::Cached {
+                read: self.read_now(state),
+            },
             _ => return Ok(()),
-        }
-        self.settle_puts(&mut state, space, by).await
-    }
-
-    /// Finds, for each object of a space that this device put in an
-    /// earlier run, the units that name it and the locators they name it
-    /// by, from the space's log: read once, when first needed.
-    fn learn_puts(state: &mut State, space: EventId) {
-        let State {
-            retained, replicas, ..
-        } = state;
-        let unknown: BTreeSet<[u8; 32]> = retained
-            .puts
-            .range((space, [0; 32])..)
-            .take_while(|((of, _), _)| *of == space)
-            .filter(|(_, facts)| facts.units.is_none())
-            .map(|((_, id), _)| *id)
-            .collect();
-        if unknown.is_empty() {
-            return;
-        }
-        let Some(log) = replicas.get(&space).and_then(Replica::log) else {
-            return;
         };
-        for id in &unknown {
-            if let Some(facts) = retained.puts.get_mut(&(space, *id)) {
-                facts.units = Some(Vec::new());
-            }
-        }
-        for event in log.events() {
-            if event.kind() != frasil_events::kind::UNIT {
-                continue;
-            }
-            let Ok(unit) = frasil_units::Unit::from_event(event.clone()) else {
-                continue;
-            };
-            for locator in unit.body.objects.iter() {
-                let id = object_id(locator);
-                if unknown.contains(&id)
-                    && let Some(facts) = retained.puts.get_mut(&(space, id))
-                {
-                    facts.units.get_or_insert_default().push(event.id());
-                    facts.locators.insert(*locator);
-                }
-            }
-        }
+        self.record(state, space, id, retention).await
     }
 
-    /// The objects of a space to upload to the always-on peer `by` again
+    /// The objects of a space to ask the always-on peer `by` for now
     /// (at-rest.md, "Retention", an object the device put): those this
-    /// device put and holds whole, whose record still says so, that no
-    /// unit of the outbox names, and for which no answer of `by` counts.
-    /// A unit of the outbox is sent behind the upload of its objects, so
-    /// its objects need no other. Such a record stands after a crash
-    /// between the peer's acknowledgement and the release, when the unit
-    /// reached the peer through another device, and when the device put
-    /// again bytes the connection had uploaded before. `connected` says
-    /// the connection was just granted the space: otherwise an object
-    /// offered to `by` within [`PUT_ANSWER`] is left, so that upkeep asks
-    /// a peer that gives no answer once in that long.
+    /// device put and holds whole, whose record still says so, and that
+    /// no unit of the outbox names. A unit of the outbox is sent behind
+    /// the upload of its objects, so its objects need no other. Of these:
+    ///
+    /// - with `connected`, the connection was just granted the space, and
+    ///   every one is asked for;
+    /// - one that `by` has acknowledged a unit of since it was last asked
+    ///   is asked for at once, since the answer to that question is the
+    ///   one that releases it;
+    /// - any other is asked for once in [`PUT_OFFER`], so that upkeep
+    ///   brings the object to a peer that lost it or never took it.
+    ///
+    /// The caller notes each question it then puts
+    /// ([`put_asking`](Self::put_asking)).
+    ///
+    /// # Errors
+    ///
+    /// The store's.
     #[cfg_attr(
         not(any(feature = "server", feature = "iroh", feature = "server-socket")),
         allow(dead_code)
@@ -1118,130 +1237,71 @@ impl Engine {
         space: EventId,
         by: crate::outbox::Acknowledger,
         connected: bool,
-    ) -> Vec<Locator> {
+    ) -> Result<Vec<Locator>> {
         let mut state = self.lock().await;
-        let none = state
-            .retained
-            .puts
-            .range((space, [0; 32])..)
-            .next()
-            .is_none_or(|((of, _), _)| *of != space);
-        if none {
-            return Vec::new();
+        let ids = Self::put_ids(&state, &space);
+        if ids.is_empty() {
+            return Ok(Vec::new());
         }
         let now = self.timeline_now(&mut state);
         Self::refresh_staying(&mut state, &space);
-        Self::learn_puts(&mut state, space);
         let State {
-            retained, replicas, ..
+            retained,
+            replicas,
+            outboxes,
+            ..
         } = &mut *state;
         let Some(replica) = replicas.get(&space) else {
-            return Vec::new();
+            return Ok(Vec::new());
+        };
+        let Some(log) = replica.log() else {
+            return Ok(Vec::new());
         };
         let pending = retained
             .staying
             .get(&space)
             .map(|staying| staying.pending.clone())
             .unwrap_or_default();
-        let counts = |at: Option<&u64>| at.is_some_and(|at| now.saturating_sub(*at) <= PUT_ANSWER);
-        let mut offer = Vec::new();
-        for ((_, id), facts) in retained
-            .puts
-            .range_mut((space, [0; 32])..)
-            .take_while(|((of, _), _)| *of == space)
-        {
-            if pending.contains(id)
-                || counts(facts.at_peer.get(&by))
-                || (!connected && counts(facts.offered.get(&by)))
-            {
-                continue;
-            }
-            let whole = facts
-                .locators
-                .iter()
-                .find(|locator| replica.holds_object(locator) && !replica.is_held(locator))
-                .copied();
-            if let Some(locator) = whole {
-                facts.offered.insert(by, now);
-                offer.push(locator);
-            }
-        }
-        offer
-    }
-
-    /// Releases each object of a space that this device put, that the
-    /// always-on peer `by` answered that it holds no longer ago than
-    /// [`PUT_ANSWER`], and that a unit names which is in the past of the
-    /// heads `by` itself last acknowledged: that peer holds the bytes and
-    /// a unit that refers to them, so the device no longer holds the only
-    /// copy (at-rest.md, "Retention", an object the device put). Another
-    /// peer's acknowledgement says nothing of an object this one holds,
-    /// nor does an acknowledgement that comes after the peer may have
-    /// collected the object. The object becomes kept where the
-    /// application asked to keep it, and cached otherwise.
-    ///
-    /// # Errors
-    ///
-    /// The store's.
-    pub(crate) async fn settle_puts(
-        &self,
-        state: &mut State,
-        space: EventId,
-        by: crate::outbox::Acknowledger,
-    ) -> Result<()> {
-        let now = self.timeline_now(state);
-        let waiting: Vec<[u8; 32]> = state
-            .retained
-            .puts
-            .range((space, [0; 32])..)
-            .take_while(|((of, _), _)| *of == space)
-            .filter(|(_, facts)| {
-                facts
-                    .at_peer
-                    .get(&by)
-                    .is_some_and(|at| now.saturating_sub(*at) <= PUT_ANSWER)
-            })
-            .map(|((_, id), _)| *id)
-            .collect();
-        if waiting.is_empty() {
-            return Ok(());
-        }
-        let Some(log) = state.replicas.get(&space).and_then(Replica::log) else {
-            return Ok(());
-        };
-        let covered = state
-            .outboxes
+        let acknowledged = outboxes
             .get(&space)
             .map(|outbox| outbox.acknowledged_past(log, &by))
             .unwrap_or_default();
-        if covered.is_empty() {
-            return Ok(());
-        }
-        Self::learn_puts(state, space);
-        let mut settled = Vec::new();
-        for id in waiting {
-            let Some(facts) = state.retained.puts.get(&(space, id)) else {
+        let naming = naming(replica, &ids);
+        let mut offer = Vec::new();
+        for id in ids {
+            let Some(facts) = retained.puts.get_mut(&(space, id)) else {
                 continue;
             };
-            let names = facts
-                .units
-                .as_ref()
-                .is_some_and(|units| units.iter().any(|unit| covered.contains(unit)));
-            if names {
-                settled.push(id);
+            if connected {
+                facts.asked.remove(&by);
+            }
+            if pending.contains(&id) {
+                continue;
+            }
+            let asked = facts.asked.get(&by).copied();
+            // By the locator a unit names it by, which is what the peer
+            // stores it under.
+            let whole = naming.locators.get(&id).and_then(|locators| {
+                locators
+                    .iter()
+                    .find(|locator| replica.holds_object(locator) && !replica.is_held(locator))
+            });
+            let Some(locator) = whole else {
+                continue;
+            };
+            let after = naming.standing.get(&id).is_some_and(|units| {
+                units
+                    .iter()
+                    .any(|(unit, named)| named == locator && acknowledged.contains(unit))
+            });
+            let due = asked.is_none_or(|asked| {
+                (after && !asked.after) || now.saturating_sub(asked.at) > PUT_OFFER
+            });
+            if due {
+                offer.push(*locator);
             }
         }
-        for id in settled {
-            // Kept from now on if the application asked for that.
-            let retention = match state.retained.get(&(space, id)) {
-                Some(Retention::Put { keep: true }) => Retention::Kept,
-                _ => Retention::Cached {
-                    read: self.read_now(state),
-                },
-            };
-            self.record(state, space, id, retention).await?;
-        }
-        Ok(())
+        Ok(offer)
     }
 
     /// Notes that a cached object was read: it is the last the device

@@ -2622,7 +2622,7 @@ impl Engine {
         // An object this device put stays until an always-on peer holds
         // it.
         for locator in &named {
-            self.retain_put(&mut state, space, locator, id).await?;
+            self.retain_put(&mut state, space, locator).await?;
         }
         Ok(id)
     }
