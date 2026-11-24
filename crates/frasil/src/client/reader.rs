@@ -128,6 +128,9 @@ pub struct BlobReader {
     file_whole: bool,
     /// The class the reader failed with for good.
     failed: Option<&'static str>,
+    /// Whether the last read failed because every connection of the
+    /// space gave its chunk up, for bytes that failed their checks.
+    gave_up: bool,
     /// The window's count of headers let go when `parts` was made
     /// ([`Window::epoch`]).
     epoch: u64,
@@ -287,6 +290,7 @@ impl Blobs {
             from_window: false,
             file_whole: false,
             failed: None,
+            gave_up: false,
             epoch: 0,
             alive,
             entry,
@@ -419,6 +423,7 @@ impl BlobReader {
     /// As [`read_at`](Self::read_at).
     pub async fn fetch_size(&mut self) -> Result<u64> {
         self.check()?;
+        self.gave_up = false;
         self.authenticate().await
     }
 
@@ -515,13 +520,19 @@ impl BlobReader {
     /// `Missing` while the device does not hold the chunk and the reader
     /// is [`local`](Read::local), or neither a peer nor a member is
     /// connected, or what is connected does not serve the blob for now;
-    /// [`Error::Timeout`] when nothing of the blob arrives for half a
-    /// minute; `ObjectMismatch` or `Malformed` once every connection of
-    /// the space gave the chunk up because what it was sent failed its
-    /// checks; `Decrypt` for a chunk that does not open; `ObjectMismatch`
-    /// when the blob fails a whole-object check, from then on for every
-    /// read; `Sealed` without the blob's key; the store's. A read that
-    /// failed for want of a connection or of an answer may be made again.
+    /// [`Error::Timeout`] when nothing the read waits for arrives for
+    /// half a minute; `Decrypt` or `Malformed` for a chunk that does not
+    /// open, and once every connection of the space gave the chunk up
+    /// because what it was sent failed its checks; `Sealed` without the
+    /// blob's key; the store's. After each of these the reader lives on,
+    /// nothing of the failed chunk was given, and the read may be made
+    /// again: it asks again, and a party connected since, or one that
+    /// had not answered, serves it.
+    ///
+    /// `ObjectMismatch` when the blob was refused: it failed a
+    /// whole-object check, or bytes this reader gave are in doubt
+    /// ([`Event::ObjectRefused`]). The reader has then failed for good,
+    /// and every later read fails the same way.
     pub async fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         self.check()?;
         if buf.is_empty() {
@@ -551,6 +562,7 @@ impl BlobReader {
     /// empty at or past the blob's end.
     pub(super) async fn piece_at(&mut self, offset: u64, most: usize) -> Result<&[u8]> {
         self.check()?;
+        self.gave_up = false;
         self.position = offset;
         // No end of the blob before a chunk opened under its header. An
         // empty blob has one empty chunk, which this opens.
@@ -604,6 +616,19 @@ impl BlobReader {
         }
     }
 
+    /// A read's error as [`Blobs::get`], [`Blobs::get_stream`],
+    /// [`Blobs::get_range`] and [`Blobs::content_hash`] give it: for a
+    /// chunk that every connection of the space gave up because what it
+    /// was sent failed its checks, `ObjectMismatch`, as for a blob fetched
+    /// whole before it is read.
+    fn of_blob(&self, error: Error) -> Error {
+        if self.gave_up {
+            Error::Class("ObjectMismatch")
+        } else {
+            error
+        }
+    }
+
     /// Fails if the reader failed for good, or its blob was refused.
     fn check(&mut self) -> Result<()> {
         if let Some((class, first)) = self.window.refusal() {
@@ -640,29 +665,39 @@ impl BlobReader {
 
     /// Waits until the object changes, the request for `index` ends,
     /// nothing is connected any more that could send it, or nothing
-    /// arrives for too long.
-    async fn wait(&self, index: u64, changed: &mut watch::Receiver<u64>) -> Result<()> {
+    /// arrives for too long. A request the space's connections gave up
+    /// fails the read with a class of its own, which is not the blob's
+    /// refusal: `Decrypt` or `Malformed` where what they were sent failed
+    /// its checks, `Missing` where they were sent nothing. The read made
+    /// again asks again ([`Window::renew`]). The error comes with whether
+    /// the connections gave the chunk up for bytes that failed their
+    /// checks.
+    async fn wait(
+        &self,
+        index: u64,
+        changed: &mut watch::Receiver<u64>,
+    ) -> std::result::Result<(), (Error, bool)> {
         let mut idle = std::time::Duration::ZERO;
         let ends = self.window.ends(index);
         let ended = ended(ends);
         tokio::pin!(ended);
         loop {
             if !self.reachable() {
-                return Err(Error::Class("Missing"));
+                return Err((Error::Class("Missing"), false));
             }
             if idle >= STALL {
-                return Err(Error::Timeout);
+                return Err((Error::Timeout, false));
             }
             tokio::select! {
                 changed = changed.changed() => {
-                    return changed.map_err(|_| Error::Class("Missing"));
+                    return changed.map_err(|_| (Error::Class("Missing"), false));
                 }
                 end = &mut ended => {
-                    return Err(Error::Class(match end {
-                        FetchEnd::Refused => "ObjectMismatch",
-                        FetchEnd::Malformed => "Malformed",
-                        FetchEnd::Unserved => "Missing",
-                    }));
+                    return Err(match end {
+                        FetchEnd::Refused => (Error::Class("Decrypt"), true),
+                        FetchEnd::Malformed => (Error::Class("Malformed"), false),
+                        FetchEnd::Unserved => (Error::Class("Missing"), false),
+                    });
                 }
                 () = self.blobs.space().device.sleep(POLL) => idle += POLL,
             }
@@ -679,6 +714,7 @@ impl BlobReader {
         let engine = self.engine();
         let locator = self.entry.object;
         let mut changed = self.window.follow();
+        let mut renew = true;
         loop {
             changed.borrow_and_update();
             self.check()?;
@@ -711,15 +747,24 @@ impl BlobReader {
                 return Err(Error::Class("Missing"));
             }
             // The chunk the reader stands in, by the size the entry
-            // shows: the header travels with it.
+            // shows: the header travels with it. A request that ended
+            // before this read is made again, once.
             let last = self.entry.size.saturating_sub(1);
             let index = self.position.min(last) / CHUNK_BYTES as u64;
+            if std::mem::take(&mut renew) {
+                self.window.renew();
+            }
             self.window.want(
                 &engine,
                 &[(index..index.saturating_add(1), FetchPriority::Position)],
                 index..index.saturating_add(1).saturating_add(self.read_ahead),
             );
-            self.wait(index, &mut changed).await?;
+            if let Err((error, gave_up)) = self.wait(index, &mut changed).await {
+                // The blob's refusal, if it came meanwhile, decides.
+                self.check()?;
+                self.gave_up = gave_up;
+                return Err(error);
+            }
         }
     }
 
@@ -741,10 +786,16 @@ impl BlobReader {
     /// them in one run, behind it. Everything else is let go. A run takes
     /// one slice more than it has chunks on the HTTP routes, where a
     /// chunk spans two slices, so the chunks ahead are asked for several
-    /// at a time and not one by one.
-    async fn slide(&mut self, index: u64) {
+    /// at a time and not one by one. With `renew`, the requests that the
+    /// space's connections gave up are let go first, so that their chunks
+    /// are asked for again: once for each read, which so makes at most
+    /// one new request for the chunk it waits for.
+    async fn slide(&mut self, index: u64, renew: bool) {
         if self.local || self.file || self.stored_whole {
             return;
+        }
+        if renew {
+            self.window.renew();
         }
         let Some(count) = self.parts.as_ref().map(PartReader::count) else {
             return;
@@ -795,6 +846,7 @@ impl BlobReader {
             return self.file_chunk(index).await;
         }
         let mut changed = self.window.follow();
+        let mut renew = true;
         loop {
             changed.borrow_and_update();
             self.check()?;
@@ -802,8 +854,13 @@ impl BlobReader {
                 if self.local {
                     return Err(Error::Class("Missing"));
                 }
-                self.slide(index).await;
-                self.wait(index, &mut changed).await?;
+                self.slide(index, std::mem::take(&mut renew)).await;
+                if let Err((error, gave_up)) = self.wait(index, &mut changed).await {
+                    // The blob's refusal, if it came meanwhile, decides.
+                    self.check()?;
+                    self.gave_up = gave_up;
+                    return Err(error);
+                }
                 continue;
             };
             let Some(parts) = self.parts.as_mut() else {
@@ -819,7 +876,7 @@ impl BlobReader {
                     self.from_window |= !stored;
                     self.opened = Some((index, plain));
                     self.passed().await;
-                    self.slide(index).await;
+                    self.slide(index, renew).await;
                     return Ok(());
                 }
                 Err(error) => return Err(self.fault(index, stored, error).await),
@@ -968,6 +1025,7 @@ impl Blobs {
             Ok(out)
         }
         .await;
+        let read = read.map_err(|error| reader.of_blob(error));
         reader.close().await?;
         read
     }
@@ -984,7 +1042,8 @@ impl Through {
     /// step passed on the whole.
     pub(super) async fn next(&mut self) -> Result<Option<&[u8]>> {
         let at = self.at;
-        let read = self.reader.piece_at(at, usize::MAX).await?.len();
+        let read = self.reader.piece_at(at, usize::MAX).await.map(<[u8]>::len);
+        let read = read.map_err(|error| self.reader.of_blob(error))?;
         if read == 0 {
             // A read in order ends with every step passed: one that did
             // not gives nothing more, as one that failed them.

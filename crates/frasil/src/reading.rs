@@ -408,6 +408,16 @@ impl Window {
         }
     }
 
+    /// Lets go of the requests the space's connections gave up
+    /// ([`FetchEnd`]): their chunks are asked for again by the next
+    /// [`want`](Self::want) that names them, with a request a connection
+    /// made since, or one that left the chunks unserved, takes.
+    pub(crate) fn renew(&self) {
+        if let Some(held) = lock(&self.watched.inner).windows.get_mut(&self.number) {
+            held.wanted.retain(|_, fetch| fetch.end().is_none());
+        }
+    }
+
     /// Of the chunks `chunks`, those the window holds in memory, and
     /// those it has asked for and still waits for.
     pub(crate) fn state(&self, chunks: Range<u64>) -> (BTreeSet<u64>, BTreeSet<u64>) {

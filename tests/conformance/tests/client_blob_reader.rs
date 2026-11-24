@@ -270,9 +270,10 @@ async fn a_range_fetches_its_own_chunks_alone() {
     scene.close().await;
 }
 
-/// A chunk that arrives wrong fails the read that needs it, and the
-/// chunks that opened stay; the peer is asked no more on that connection,
-/// and another connection serves the chunk.
+/// A chunk that arrives wrong fails the read that needs it, with a class
+/// that is not the blob's refusal, and the chunks that opened stay; the
+/// peer is asked no more on that connection, and another connection
+/// serves the chunk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_bad_chunk_fails_the_read_and_another_connection_serves_it() {
     let scene = scene(Options::new()).await;
@@ -287,7 +288,7 @@ async fn a_bad_chunk_fails_the_read_and_another_connection_serves_it() {
     let piece = read(&mut reader, 5, 100).await.unwrap();
     assert_eq!(piece, scene.slice(5, 100));
     let failed = read(&mut reader, CHUNK + 5, 100).await.unwrap_err();
-    assert_eq!(failed.class_name(), Some("ObjectMismatch"), "{failed:?}");
+    assert_eq!(failed.class_name(), Some("Decrypt"), "{failed:?}");
     // Chunk 0 is still here, and still reads.
     let (state, bytes) = scene.local().await;
     assert_eq!(state, BlobState::Cached);
@@ -299,7 +300,7 @@ async fn a_bad_chunk_fails_the_read_and_another_connection_serves_it() {
     // Not asked of this peer again on this connection.
     scene.faults.clear();
     let failed = read(&mut reader, CHUNK + 5, 100).await.unwrap_err();
-    assert_eq!(failed.class_name(), Some("ObjectMismatch"), "{failed:?}");
+    assert_eq!(failed.class_name(), Some("Decrypt"), "{failed:?}");
     assert!(scene.asked().is_empty());
 
     // Another connection, which serves the chunk right: the read made

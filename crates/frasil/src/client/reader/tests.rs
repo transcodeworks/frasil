@@ -1330,3 +1330,68 @@ async fn a_bad_first_chunk_fails_no_reader() {
         drop(second);
     }
 }
+
+/// Every connection gave the chunk a read waits for up, or left it
+/// unserved: the read fails with a class that is not the refusal of the
+/// blob, the reader does not fail, and the read made again asks again,
+/// with a request of its own that a connection serves.
+#[tokio::test]
+async fn a_read_made_again_asks_again_once_its_request_ended() {
+    use crate::fetch::FetchEnd;
+    for (end, class) in [
+        (FetchEnd::Refused, "Decrypt"),
+        (FetchEnd::Malformed, "Malformed"),
+        (FetchEnd::Unserved, "Missing"),
+    ] {
+        let absent = absent().await;
+        let mut reader = absent
+            .blobs
+            .open_reader(absent.id, &Read::new())
+            .await
+            .unwrap();
+        reader.set_read_ahead(0);
+        absent.read(&mut reader, 0, 10).await;
+        let ids = |absent: &Absent| -> Vec<u64> {
+            let requests = absent.engine.fetches().of(&absent.of);
+            requests.iter().map(|request| request.id).collect()
+        };
+        let mut buf = [0u8; 10];
+        let asked = {
+            let reading = reader.read_at(CHUNK, &mut buf);
+            tokio::pin!(reading);
+            tokio::select! {
+                _ = &mut reading => panic!("nothing arrived yet"),
+                () = absent.asked_for(1) => {}
+            }
+            let asked = ids(&absent);
+            match end {
+                FetchEnd::Unserved => absent._taker.unserved(&absent.locator),
+                end => absent._taker.give_up(&absent.locator, end),
+            }
+            let failed = reading.await.unwrap_err();
+            assert_eq!(failed.class_name(), Some(class));
+            asked
+        };
+        // The same again while nothing else is connected, at once.
+        if end != FetchEnd::Unserved {
+            let failed = reader.read_at(CHUNK, &mut buf).await.unwrap_err();
+            assert_eq!(failed.class_name(), Some(class));
+        }
+        assert_eq!(reader.verified(), Verified::Chunks);
+        assert_eq!(absent.read(&mut reader, 3, 4).await, absent.bytes[3..7]);
+        // Another connection: the read made again asks again.
+        let _second = absent.engine.fetches().attach(absent.of);
+        let read = {
+            let reading = reader.read_at(CHUNK, &mut buf);
+            tokio::pin!(reading);
+            tokio::select! {
+                read = &mut reading => panic!("no new request: {read:?}"),
+                () = soon(|| async { ids(&absent).iter().any(|id| !asked.contains(id)) }) => {}
+            }
+            assert_eq!(absent.send(1).await, Received::Kept);
+            reading.await.unwrap()
+        };
+        assert_eq!(read, 10);
+        assert_eq!(buf[..], absent.bytes[CHUNK as usize..CHUNK as usize + 10]);
+    }
+}
