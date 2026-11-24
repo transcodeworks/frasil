@@ -270,3 +270,54 @@ async fn a_file_is_stored_once_and_referenced_across_a_library() {
     bob.close().await.unwrap();
     peer.shutdown().await;
 }
+
+/// A reference's bytes are stored in the space that stores the file:
+/// keeping the blob through the reference keeps them there, and dropping
+/// it through the reference drops them there, so that the two undo each
+/// other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reference_keeps_and_drops_the_bytes_where_they_are_stored() {
+    use frasil::{BlobState, Read};
+    let peer = peer().await;
+    let alice = device(1).await;
+    let bank = alice.create_space().await.unwrap();
+    let show = alice.create_space().await.unwrap();
+    alice.connect(&peer.origin).await.unwrap();
+    let file: Vec<u8> = (0..FILE_BYTES).map(|i| (i % 251) as u8).collect();
+    let bank_blobs = bank.create_blobs().unwrap();
+    let stored = within(bank_blobs.put(Some("opening.mp4"), &file))
+        .await
+        .unwrap();
+    durable(&alice, &bank).await;
+    let show_blobs = show.create_blobs().unwrap();
+    let referenced = within(show_blobs.reference_from(&bank_blobs, stored))
+        .await
+        .unwrap();
+    durable(&alice, &show).await;
+    // The peer holds the bytes: they are the cache's on this device.
+    within(async {
+        while bank_blobs.local(stored).await.unwrap().state != BlobState::Cached {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+
+    within(show_blobs.keep(referenced, |_, _| {}))
+        .await
+        .unwrap();
+    let state = |blobs: frasil::Blobs, id| async move { blobs.local(id).await.unwrap().state };
+    assert_eq!(state(show_blobs.clone(), referenced).await, BlobState::Kept);
+    assert_eq!(state(bank_blobs.clone(), stored).await, BlobState::Kept);
+
+    show_blobs.drop_local(referenced).await.unwrap();
+    assert_eq!(
+        state(show_blobs.clone(), referenced).await,
+        BlobState::Absent
+    );
+    assert_eq!(state(bank_blobs.clone(), stored).await, BlobState::Absent);
+    // A read through the reference fetches them again.
+    let read = within(show_blobs.get(referenced, &Read::new()))
+        .await
+        .unwrap();
+    assert_eq!(read, Some(file));
+}

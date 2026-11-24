@@ -275,7 +275,10 @@ for a file the person wants with no connection. A blob that cannot be
 fetched now stays marked, and the device fetches it by itself once a peer or
 a member that holds it is connected. `blobs.drop_local(id)` drops what the
 device stores of a blob, kept or cached, and the blob is absent. Nothing
-changes for anyone else, and the stream still lists it.
+changes for anyone else, and the stream still lists it. A reference to a
+file of another space has its bytes where that space stores them: `keep`
+through the reference keeps them there, and `drop_local` through it drops
+them there, so the file's own blob stands as the reference does.
 
 **What is never evicted.** Kept blobs; a blob this device put, until an
 always-on peer holds its bytes; what Frasil stores for itself, such as

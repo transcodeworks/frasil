@@ -250,7 +250,10 @@ impl Blobs {
     /// background. `on_progress(bytes, Some(size))` follows the fetch. A
     /// blob the device holds already is kept from now on, and one that
     /// cannot be fetched now stays marked: the device fetches it by itself
-    /// once a peer or a member that holds it is connected.
+    /// once a peer or a member that holds it is connected. A reference
+    /// whose bytes the device holds in the space that stores the file is
+    /// kept there, and [`Blobs::drop_local`] through the reference drops
+    /// them there.
     ///
     /// In a space whose blobs the application holds as files, this is
     /// [`Blobs::materialise`] with an empty hint.
@@ -293,11 +296,16 @@ impl Blobs {
         Ok(())
     }
 
-    /// Drops what this device stores of a blob, kept or cached, in this
-    /// space: the blob is absent here, and a read fetches it again from a
-    /// peer or a member that holds it. Nothing changes for anyone else,
-    /// and the stream still lists the blob. Dropping a blob the device
-    /// holds nothing of changes nothing.
+    /// Drops what this device stores of a blob, kept or cached: the blob
+    /// is absent here, and a read fetches it again from a peer or a member
+    /// that holds it. Nothing changes for anyone else, and the stream
+    /// still lists the blob. Dropping a blob the device holds nothing of
+    /// changes nothing.
+    ///
+    /// A reference's bytes are dropped in this space and in the space that
+    /// stores the file, when this device holds that space: where
+    /// [`Blobs::keep`] through the reference keeps them, and where the
+    /// file's own blob then stands absent too.
     ///
     /// In a space whose blobs the application holds as files, this is
     /// [`Blobs::release`]: the device forgets the file, which stays the
@@ -318,9 +326,24 @@ impl Blobs {
     pub async fn drop_local(&self, id: BlobId) -> Result<()> {
         let entry = self.entry(id).await?;
         let engine = self.space().device.engine();
-        engine
-            .drop_local_object(self.space().id().event(), &entry.object)
-            .await
+        let space = self.space().id().event();
+        // A reference's bytes may be stored in its source, where `keep`
+        // through the reference keeps them: they are dropped there too,
+        // so that the two undo each other.
+        if let Some(reference) = &entry.reference
+            && EventId(reference.source) != space
+        {
+            match engine
+                .drop_local_object(EventId(reference.source), &entry.object)
+                .await
+            {
+                // A device that does not hold the source stores nothing
+                // there.
+                Ok(()) | Err(Error::UnknownSpace) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        engine.drop_local_object(space, &entry.object).await
     }
 
     /// Where a blob stands on this device: kept, cached or absent, and how
