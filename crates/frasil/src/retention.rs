@@ -864,7 +864,18 @@ impl Engine {
             (Some(Retention::Cached { .. }), false) => {
                 let large = Self::stored_total(&state, &space, locator, None)
                     .is_some_and(|total| total > self.blob_cache());
+                let beside = state
+                    .retained
+                    .entries
+                    .get(&(space, id))
+                    .is_some_and(|entry| entry.passing);
                 state.retained.set_passing(&(space, id), large);
+                // Taken into the cache: its bytes count from now on, and
+                // other objects make room for them. The read that asks
+                // uses it, so it is not the one to go.
+                if beside && !large {
+                    self.evict_in(&mut state, 0, &BTreeSet::new()).await?;
+                }
                 return Ok(());
             }
             (Some(Retention::Kept), _)

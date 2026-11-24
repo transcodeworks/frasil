@@ -903,9 +903,11 @@ once it ends, and an object larger than the whole budget, which is every
 object under a budget of zero. Such an object has a record of state 2, so
 that after a crash it is the cache's to drop. While a read uses it, its
 bytes count against no budget and the device drops no other object to make
-room for it; once no read uses it, the device drops it. A read that leaves
-its object in the cache and uses such an object takes it into the cache,
-unless it is larger than the whole budget. What a device stores beyond its
+room for it; once no read uses it, the device drops it, whichever read
+fetched it. A read that leaves its object in the cache and uses such an
+object takes it into the cache, unless it is larger than the whole budget,
+and the device then drops other cached objects as before a write, so that
+the cache stays within the budget. What a device stores beyond its
 budget is therefore only what running reads hold. A device that finds, in
 its cache, an object larger than the whole budget drops it before any
 object that fits.

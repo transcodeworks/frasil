@@ -104,15 +104,18 @@ pub struct BlobLocal {
 /// dropped.
 pub(super) struct Reading {
     blobs: Blobs,
-    /// Whether this read set out to fetch the blob: the cache is looked at
-    /// once it ends.
-    fetched: bool,
+    /// Whether the cache was looked at since the read's uses ended. Every
+    /// read's end looks at it, whether the read fetched the blob or found
+    /// it here: it may be the last to use a blob that another read
+    /// fetched to store nothing.
+    settled: bool,
     uses: Vec<InUse>,
 }
 
 impl Reading {
-    /// The read ended: what it fetched to store nothing is dropped unless
-    /// another read uses it, and the cache is back within its budget.
+    /// The read ended: a blob fetched to store nothing, by this read or
+    /// by another, is dropped unless a read still uses it, and the cache
+    /// is back within its budget.
     ///
     /// # Errors
     ///
@@ -120,12 +123,10 @@ impl Reading {
     pub(super) async fn done(mut self) -> Result<()> {
         let engine = self.blobs.space().device.engine().clone();
         self.uses.clear();
-        if self.fetched {
-            // Noted only once the cache was looked at: a read cancelled
-            // while it waits here is dropped, and looks at it then.
-            engine.evict().await?;
-            self.fetched = false;
-        }
+        // Noted only once the cache was looked at: a read cancelled
+        // while it waits here is dropped, and looks at it then.
+        engine.evict().await?;
+        self.settled = true;
         Ok(())
     }
 }
@@ -133,8 +134,9 @@ impl Reading {
 /// A read dropped before it was [`done`](Reading::done), as when its
 /// future is cancelled part way through a fetch or a read, or while it
 /// ends: its uses end here, and the device looks at its cache at once, on
-/// a task of its own, since nothing can wait in a drop. What the read
-/// fetched to store nothing is dropped then, as if the read had ended.
+/// a task of its own, since nothing can wait in a drop. A blob fetched to
+/// store nothing that no read uses any more is dropped then, as if the
+/// read had ended.
 ///
 /// Nothing here panics. Where no task can be started, as on a thread with
 /// no runtime of a device that was given none, the cache is looked at the
@@ -144,7 +146,7 @@ impl Reading {
 impl Drop for Reading {
     fn drop(&mut self) {
         self.uses.clear();
-        if self.fetched {
+        if !self.settled {
             let device = &self.blobs.space().device;
             let engine = device.engine().clone();
             let _ = device.try_spawn(Box::pin(async move {
@@ -196,7 +198,7 @@ impl Blobs {
         // answers stays.
         let mut reading = Reading {
             blobs: self.clone(),
-            fetched: false,
+            settled: false,
             uses: vec![engine.use_object(space, &locator)],
         };
         if let Some(reference) = &entry.reference {
@@ -206,7 +208,8 @@ impl Blobs {
         }
         if let Some(holder) = self.holder(entry).await {
             // A blob another read fetched to store nothing is the cache's
-            // once a read that would leave it there reads it.
+            // once a read that would leave it there reads it, and the
+            // device makes room for it then.
             if read.keep || !read.uncached {
                 engine.retain(holder, &locator, read.keep).await?;
             }
@@ -214,6 +217,7 @@ impl Blobs {
             return Ok(Some(reading));
         }
         if read.local {
+            reading.done().await?;
             return Ok(None);
         }
         let held = engine.object_policy(&space).await == crate::held::ObjectPolicy::Held;
@@ -235,7 +239,6 @@ impl Blobs {
             };
             reading.uses.push(engine.want_object(space, &locator, want));
         }
-        reading.fetched = true;
         let fetched = self
             .fetched(
                 space,
@@ -444,7 +447,7 @@ mod tests {
         blobs.drop_local(id).await.unwrap();
         let reading = Reading {
             blobs: blobs.clone(),
-            fetched: true,
+            settled: false,
             uses: vec![
                 engine.use_object(of, &locator),
                 engine.want_object(of, &locator, Want::Pass),
