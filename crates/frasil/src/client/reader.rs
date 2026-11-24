@@ -868,6 +868,16 @@ impl BlobReader {
     /// Makes the reader hold the object's header, checked: steps 1 to 3
     /// and 5 of units.md, 3.3. Fetched with the chunk the reader stands
     /// in when the device does not hold it.
+    ///
+    /// A header the device holds that names a state it holds no key of,
+    /// where the blob's entry names one it holds, is not the header the
+    /// entry's writer sealed under, and nothing has opened under it: the
+    /// reader does not end with `Sealed` for as long as the device holds
+    /// it. It lets go of what its windows hold under it, and asks for the
+    /// chunk it stands in again, once for each read: a chunk that opens
+    /// then takes the place of what the store holds under that header
+    /// ([`Engine::receive_part`](crate::device::Engine)), and a party
+    /// that sends that header again is given up.
     async fn header(&mut self) -> Result<()> {
         if self.parts.is_some() {
             return Ok(());
@@ -877,6 +887,8 @@ impl BlobReader {
         let mut changed = self.window.follow();
         let mut renew = true;
         let mut stall = self.stall();
+        // The header let go by this read, which it reads by no more.
+        let mut unusable: Option<Vec<u8>> = None;
         loop {
             changed.borrow_and_update();
             self.check()?;
@@ -886,7 +898,10 @@ impl BlobReader {
                 self.file |= holding.file;
                 header = header.or(holding.header);
             }
-            if let Some(header) = header.or_else(|| self.window.header()) {
+            let header = header
+                .or_else(|| self.window.header())
+                .filter(|header| unusable.as_ref() != Some(header));
+            if let Some(header) = header {
                 let parts = match &self.reference {
                     None => {
                         let key = engine.content_key_for(&self.space, &header).await;
@@ -900,13 +915,28 @@ impl BlobReader {
                     Some((source, key)) => {
                         PartReader::new(&header, source, Opening::ObjectKey(key), &locator)
                     }
-                }?;
-                self.epoch = self.window.epoch();
-                self.parts = Some(parts);
-                return Ok(());
+                };
+                match parts {
+                    Ok(parts) => {
+                        self.epoch = self.window.epoch();
+                        self.parts = Some(parts);
+                        return Ok(());
+                    }
+                    Err(Error::Class("Sealed"))
+                        if unusable.is_none() && self.may_let_go().await =>
+                    {
+                        self.window.disown();
+                        unusable = Some(header);
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             if self.local || self.file {
-                return Err(Error::Class("Missing"));
+                return Err(Error::Class(if unusable.is_some() {
+                    "Sealed"
+                } else {
+                    "Missing"
+                }));
             }
             // The chunk the reader stands in, by the size the entry
             // shows: the header travels with it. A request that ended
@@ -925,6 +955,11 @@ impl BlobReader {
             if std::mem::take(&mut renew) {
                 self.window.renew();
             }
+            // Asked for again though the store holds it under the header
+            // let go.
+            if unusable.is_some() {
+                self.window.distrust(index);
+            }
             self.window.want(
                 &engine,
                 &[(index..index.saturating_add(1), FetchPriority::Position)],
@@ -934,9 +969,29 @@ impl BlobReader {
                 // The blob's refusal, if it came meanwhile, decides.
                 self.check()?;
                 self.gave_up = gave_up;
-                return Err(error);
+                // Nothing connected could send another header.
+                return Err(match error {
+                    Error::Class("Missing") if unusable.is_some() => Error::Class("Sealed"),
+                    error => error,
+                });
             }
         }
+    }
+
+    /// Whether a header the device holds that names a state it holds no
+    /// key of is let go: the reader fetches, nothing has opened under the
+    /// header, and the blob's entry names a state whose key the device
+    /// holds, so that a header that opens is admitted in its place and no
+    /// other is ([`Engine::receive_part`](crate::device::Engine)).
+    async fn may_let_go(&self) -> bool {
+        if self.local || self.file || self.window.proved() {
+            return false;
+        }
+        let key = &self.entry.key;
+        self.engine()
+            .read(&self.space, |replica| replica.object_key(key).is_some())
+            .await
+            .unwrap_or(false)
     }
 
     /// The sealed chunk at `index`, from what the device stores or from

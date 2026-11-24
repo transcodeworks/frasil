@@ -18,6 +18,7 @@ use std::time::Duration;
 mod arrival;
 mod faults;
 mod keys;
+mod sealed;
 
 const CHUNK: u64 = CHUNK_BYTES as u64;
 

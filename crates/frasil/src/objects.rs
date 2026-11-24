@@ -477,12 +477,20 @@ enum Check {
 /// (adapter-blobs.md, 4 Security considerations, "A reference hands one
 /// key"): a chunk that opens under one is opened, and one that opens
 /// under none of them is not judged ([`Fit::Unjudged`]).
+///
+/// `named` says that the blob entries that name the object all name a
+/// state whose key the replica holds ([`names_held_states`]). A header
+/// that names another state, which the replica holds no key of, is then
+/// not the object's by its own entries: the part fails, so that a part
+/// is taken unopened only where the device has no key it could expect to
+/// open it with.
 fn fits_object(
     replica: &Replica,
     space: &EventId,
     part: &ObjectPart,
     held: Option<&[u8]>,
     openings: &[crate::reading::ObjectOpening],
+    named: bool,
 ) -> Fit {
     let checks = |bytes: &[u8]| -> Check {
         let Ok(header) = frasil_units::objects::Header::read(bytes) else {
@@ -503,14 +511,19 @@ fn fits_object(
         if !check(space, None) {
             return Check::Fails;
         }
-        if openings.is_empty() {
-            return Check::Unopened;
-        }
         if openings
             .iter()
             .any(|opening| check(&opening.source, Some(&opening.key)))
         {
-            Check::Opens
+            return Check::Opens;
+        }
+        // The entries name a state whose key the replica holds, and the
+        // header another: not the header of the object they name.
+        if named {
+            return Check::Fails;
+        }
+        if openings.is_empty() {
+            Check::Unopened
         } else {
             Check::Unjudged
         }
@@ -537,6 +550,41 @@ fn fits_object(
             Check::Unjudged => Fit::Unjudged,
         },
     }
+}
+
+/// Whether the current entries of the replica's blob streams that name an
+/// object, one at least, all name as its key reference a state whose key
+/// the replica holds (adapter-blobs.md, 2.1 Content, the entry's key): the
+/// device then expects to open the object's chunks as they arrive. `false`
+/// where an entry names a state it holds no key of, as a reference to
+/// another space's object does, and for an object no entry names.
+#[cfg(feature = "adapter-blobs")]
+fn names_held_states(replica: &Replica, locator: &Locator) -> bool {
+    use frasil_units::runtime::Stream;
+    let mut named = false;
+    let entries = replica
+        .streams()
+        .filter(|(_, adapter)| *adapter == frasil_adapter_blobs::TYPE)
+        .filter_map(|(id, _)| replica.stream(id))
+        .filter_map(|stream| {
+            stream
+                .as_any()
+                .downcast_ref::<Stream<frasil_adapter_blobs::Blobs>>()
+        })
+        .flat_map(|blobs| blobs.state().current())
+        .filter(|(_, entry)| entry.object == *locator);
+    for (_, entry) in entries {
+        if replica.object_key(&entry.key).is_none() {
+            return false;
+        }
+        named = true;
+    }
+    named
+}
+
+#[cfg(not(feature = "adapter-blobs"))]
+fn names_held_states(_: &Replica, _: &Locator) -> bool {
+    false
 }
 
 /// Reads chunks of an object back from the `object` table, by index:
@@ -1607,6 +1655,7 @@ impl Engine {
     /// | --- | --- | --- | --- | --- |
     /// | none | carries no header | [`Received::Headerless`] | nothing | asked again |
     /// | any | fails under the header it carries | [`Received::BadChunk`] | nothing | given up |
+    /// | any | its header names a state the device holds no key of, and the object's entries one it holds | [`Received::BadChunk`] | nothing | given up |
     /// | opened | no header, fails under the one held | [`Received::BadChunk`] | nothing | given up |
     /// | opened | another header, nothing opens it | [`Received::BadChunk`] | nothing | given up |
     /// | opened | another header, opens | [`Received::Refused`] | what is held | given up |
@@ -1664,7 +1713,8 @@ impl Engine {
                 .or_else(|| receive.map(|(header, _)| header))
                 .or_else(|| self.readers().header(&key));
             let openings = self.readers().openings(&key);
-            let fits = fits_object(replica, &space, &part, held.as_deref(), &openings);
+            let named = names_held_states(replica, &part.locator);
+            let fits = fits_object(replica, &space, &part, held.as_deref(), &openings, named);
             (fits, received)
         };
         let opened = match fits {
