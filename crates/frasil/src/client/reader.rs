@@ -29,13 +29,13 @@
 //!
 //! [`Verified::Whole`] is about the bytes the reader gave. A reader that
 //! holds its chunks in memory lets go of those it leaves, and fetches a
-//! chunk again when it is read again, from whichever party serves it. It
-//! keeps the SHA-256 of each chunk it gave from memory, 32 bytes a chunk,
-//! and takes at that place only the same bytes again: other bytes are not
-//! given, the reader fails with `ObjectMismatch`, and the application is
-//! told. So a reader that seeks back after it became whole stays whole,
-//! and the pass in order counts the chunks that were given. A reader that
-//! reads from the device's store reads the same stored chunk each time.
+//! chunk again when it is read again, from whichever party serves it; and
+//! a chunk read from the device's store may leave it while the reader is
+//! open. The reader keeps the SHA-256 of each chunk it gave, 32 bytes a
+//! chunk, and takes at that place only the same bytes again: other bytes
+//! are not given, the reader fails with `ObjectMismatch`, and the
+//! application is told. So a reader that seeks back after it became whole
+//! stays whole, and the pass in order counts the chunks that were given.
 //!
 //! **Where fetched chunks go.** As the [`Read`] says. By default into the
 //! device's cache, as parts of a cached blob, and with
@@ -541,10 +541,9 @@ impl BlobReader {
     /// [`Verified::Whole`] once the reader has read the blob in order from
     /// its first byte to its last, or once the device holds the blob whole
     /// in its store and every step ran on it there. A reader stays whole
-    /// across seeks: a chunk it reads again from its own memory must be
-    /// the bytes it gave at that place before, or the reader fails with
-    /// `ObjectMismatch` and is whole no longer. One that reads from the
-    /// store reads the same stored chunk each time.
+    /// across seeks: a chunk it reads again must be the bytes it gave at
+    /// that place before, or the reader fails with `ObjectMismatch` and
+    /// is whole no longer.
     pub fn verified(&self) -> Verified {
         if self.failed.is_some() {
             return Verified::Chunks;
@@ -568,8 +567,8 @@ impl BlobReader {
 
     /// How many sealed bytes the reader holds in memory, of chunks it
     /// fetched to store nothing: at most `(read_ahead + 1) × 1,048,576`.
-    /// Beside them it keeps 32 bytes for each chunk it gave from memory,
-    /// to know it again.
+    /// Beside them it keeps 32 bytes for each chunk it gave, to know it
+    /// again.
     pub fn window_bytes(&self) -> usize {
         self.window.holds().0
     }
@@ -736,28 +735,27 @@ impl BlobReader {
     /// reader that stores nothing does: for a blob that cannot fit the
     /// cache by its header, though its entry showed one that could. What
     /// the device stored of it for this reader, beside the cache, goes,
-    /// unless another read means it for the cache; the chunk that was
-    /// given from there is known again by its sealed bytes.
+    /// unless another read means it for the cache or another reader
+    /// still uses it: then it stays until the last of them ends. A chunk
+    /// that was given from there and comes again through the reader's
+    /// memory is known by its sealed bytes, as any chunk given is.
     async fn fall_back(&mut self) -> Result<()> {
         self.caches = false;
         let engine = self.engine();
         let locator = self.entry.object;
-        if let Some((index, _)) = &self.opened
-            && let Some((sealed, Some(_))) = self.sealed(*index).await?
-            && let Some(parts) = self.parts.as_mut()
-        {
-            parts.remember(*index, &sealed);
-        }
+        // What it asked for the store is asked for again for its memory.
+        self.window.cancel();
         self.window.pass();
         // The uses that hold the object, without the one that meant its
         // parts for the cache: taken before the old ones go.
-        let uses = self
+        let uses: Vec<_> = self
             .holders
             .iter()
             .map(|holder| engine.use_object(*holder, &locator))
             .collect();
         self.reading = Some(Reading::holding(self.blobs.clone(), uses));
-        engine.let_go_beside(self.space, &locator).await
+        // One of them is of the object in this space.
+        engine.let_go_beside(self.space, &locator, 1).await
     }
 
     /// Fails if the reader failed for good, or its blob was refused.

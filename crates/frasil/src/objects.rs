@@ -1823,7 +1823,9 @@ impl Engine {
     /// as before. Its open readers fail if a chunk of it had opened in
     /// one of them: the bytes given are then not known to be the
     /// object's. Where none had, the readers gave nothing, and start over
-    /// with what arrives next. Nothing is done to an object the device
+    /// with what arrives next. So too for the readers of references to
+    /// the object in other spaces, which read what this space stores of
+    /// it. Nothing is done to an object the device
     /// holds whole whose bytes hash to its locator
     /// ([`Dropping::Doubted`](crate::retention::Dropping)).
     ///
@@ -1841,9 +1843,15 @@ impl Engine {
         if !self.may_drop(state, &space, &id, doubted) {
             return Ok(());
         }
-        if !self.readers().disown(&(space, id)) {
-            self.readers()
-                .refuse(&space, locator, "ObjectMismatch", false);
+        // Its readers, and those of the references to it in other
+        // spaces, which read what this space stores of it.
+        let mut read = vec![(space, id)];
+        read.extend(self.readers().referencing(&space, &id));
+        for key in read {
+            if !self.readers().disown(&key) {
+                self.readers()
+                    .refuse(&key.0, locator, "ObjectMismatch", false);
+            }
         }
         self.drop_stored(state, space, &id, false, doubted)
             .await

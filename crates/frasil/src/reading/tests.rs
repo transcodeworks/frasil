@@ -57,6 +57,11 @@ fn any_chunk_opens_first() {
         assert_eq!(opened, plain[from..(from + CHUNK_BYTES).min(plain.len())]);
         assert!(!reader.is_whole());
     }
+    // The bytes given there before open again, from wherever.
+    let mut again = self::reader(&object);
+    again.open(1, &object.chunks[1].sealed, true).unwrap();
+    again.open(1, &object.chunks[1].sealed, false).unwrap();
+    assert_eq!(again.fault(), None);
 }
 
 /// A chunk opens only at its own place in its own object: one of another
@@ -269,8 +274,8 @@ fn an_empty_object_is_read_whole_by_its_one_chunk() {
 }
 
 /// A chunk returned from memory is known again by its sealed bytes: the
-/// same bytes open again, other bytes that a holder of the key sealed at
-/// that place do not, and a chunk read from the store is not remembered.
+/// same bytes open again, and other bytes that a holder of the key sealed
+/// at that place do not, wherever they are read from.
 #[test]
 fn a_chunk_given_from_memory_must_come_again_as_the_same_bytes() {
     let object = object(0);
@@ -299,8 +304,44 @@ fn a_chunk_given_from_memory_must_come_again_as_the_same_bytes() {
         );
         assert_eq!(reader.fault(), Some(WholeFault::Given));
     }
-    // Read from the store alone, a chunk is the store's each time.
-    let mut storing = self::reader(&object);
-    storing.open(1, &object.chunks[1].sealed, true).unwrap();
-    assert_eq!(storing.open(1, &other, true).unwrap(), vec![9; CHUNK_BYTES]);
+}
+
+/// A chunk returned from what the device stores is known again by its
+/// sealed bytes too: once the store let it go, other bytes that a holder
+/// of the key sealed at that place are not returned, and the reader is
+/// whole no longer.
+#[test]
+fn a_chunk_given_from_the_store_must_come_again_as_the_same_bytes() {
+    let object = object(0);
+    let keys = ObjectKeys::of(&KEY);
+    let id: [u8; 32] = object.locator[..32].try_into().unwrap();
+    let size = plaintext(0).len() as u64;
+    let other = seal_chunk(
+        &SPACE,
+        &keys,
+        &keys.object_key(&id),
+        &id,
+        size,
+        1,
+        &vec![9; CHUNK_BYTES],
+    )
+    .sealed;
+    let mut reader = reader(&object);
+    for (index, chunk) in object.chunks.iter().enumerate() {
+        reader.open(index as u64, &chunk.sealed, true).unwrap();
+    }
+    assert!(reader.is_whole());
+    for stored in [false, true] {
+        assert_eq!(
+            class(reader.open(1, &other, stored)),
+            Some("ObjectMismatch")
+        );
+        assert_eq!(reader.fault(), Some(WholeFault::Given));
+        assert!(!reader.is_whole());
+    }
+    // The bytes given there before open again, from wherever.
+    let mut again = self::reader(&object);
+    again.open(1, &object.chunks[1].sealed, true).unwrap();
+    again.open(1, &object.chunks[1].sealed, false).unwrap();
+    assert_eq!(again.fault(), None);
 }

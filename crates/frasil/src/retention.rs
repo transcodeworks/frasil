@@ -975,20 +975,37 @@ impl Engine {
     /// Drops what the device stores of a cached object it holds beside
     /// the cache, with its record, for a reader that found the object
     /// larger than the whole budget and reads the rest of it through its
-    /// own memory: unless a read still means its parts for the cache, or
-    /// the object is one the device does not drop by itself for another
-    /// reason than its use.
+    /// own memory. Nothing is dropped while a read still means its parts
+    /// for the cache, while anything but that reader uses the object or
+    /// asks for chunks of it for the store, or where the object is one
+    /// the device does not drop by itself for another reason than its
+    /// use: what an open reader reads from the store is not removed under
+    /// it, and goes once the last of them ends ([`evict_in`](Self::evict_in)).
+    /// `own` is how many uses of the object the reader holds itself.
     ///
     /// # Errors
     ///
     /// The store's.
-    pub(crate) async fn let_go_beside(&self, space: EventId, locator: &Locator) -> Result<()> {
+    pub(crate) async fn let_go_beside(
+        &self,
+        space: EventId,
+        locator: &Locator,
+        own: usize,
+    ) -> Result<()> {
         let mut state = self.lock().await;
         let key = (space, object_id(locator));
         let beside = state.retained.entries.get(&key).is_some_and(|entry| {
             entry.passing && matches!(entry.retention, Retention::Cached { .. })
         });
         if !beside || self.keeps_all_blobs() || self.wanted(&key) == Some(Want::Cache) {
+            return Ok(());
+        }
+        let used = self
+            .uses()
+            .count()
+            .get(&key)
+            .map_or(0, |using| using.hold + using.cache + using.pass);
+        if used > own || self.fetches().stores(&space, locator) {
             return Ok(());
         }
         Self::refresh_staying(&mut state, &space);

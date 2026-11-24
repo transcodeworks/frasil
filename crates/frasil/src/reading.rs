@@ -424,6 +424,24 @@ impl Readers {
         true
     }
 
+    /// The objects of other spaces whose open readers read a reference
+    /// to this object of `source`: they read what `source` stores of it
+    /// too (adapter-blobs.md, 3.5 Fetching).
+    pub(crate) fn referencing(&self, source: &EventId, id: &[u8; 32]) -> Vec<Key> {
+        lock(&self.objects)
+            .iter()
+            .filter(|((space, object), _)| space != source && object == id)
+            .filter(|(_, watched)| {
+                lock(&watched.inner).windows.values().any(|held| {
+                    held.opening
+                        .as_ref()
+                        .is_some_and(|opening| opening.source == *source)
+                })
+            })
+            .map(|(key, _)| *key)
+            .collect()
+    }
+
     /// Whether an object was refused while it had readers and the
     /// application was not told yet: `true` once, for the caller that
     /// then tells it.
@@ -808,9 +826,9 @@ pub(crate) enum WholeFault {
     Bytes,
     /// Step 7, once step 0 passed: the object is not what its ID names.
     Object,
-    /// A chunk the reader gave from memory came again as other bytes: at
-    /// most one of the two is the object's, so step 0 cannot pass on what
-    /// was given. Nothing is concluded about the object.
+    /// A chunk the reader gave came again as other bytes: at most one of
+    /// the two is the object's, so step 0 cannot pass on what was given.
+    /// Nothing is concluded about the object.
     Given,
 }
 
@@ -822,12 +840,14 @@ pub(crate) enum WholeFault {
 /// bytes are hashed for step 0 and their plaintext for step 7, and both
 /// run before the last chunk is returned.
 ///
-/// A chunk that was not read from what the device stores may be let go
-/// and come again, from any party. The reader keeps the SHA-256 of each
-/// such chunk's sealed bytes, 32 bytes a chunk, and a chunk opened again
-/// at that place must be the same bytes: so the bytes the pass in order
-/// hashed are the bytes returned, whatever was read before, between or
-/// after ([`WholeFault::Given`]).
+/// A chunk may come again as other bytes: one held in memory is let go
+/// and fetched again, from any party, and one read from the store may
+/// leave it, with what the device drops of the object or with a reader
+/// that goes on through its own memory. The reader keeps the SHA-256 of
+/// the sealed bytes of each chunk it returned, 32 bytes a chunk, and a
+/// chunk opened again at that place must be the same bytes: so the bytes
+/// the pass in order hashed are the bytes returned, whatever was read
+/// before, between or after ([`WholeFault::Given`]).
 pub(crate) struct PartReader {
     locator: Locator,
     /// Opens any chunk.
@@ -846,8 +866,8 @@ pub(crate) struct PartReader {
     /// object's key sealed a chunk under, and its size, which every
     /// chunk's associated data binds, is that holder's.
     opened: bool,
-    /// The digest of the sealed bytes of each chunk returned that was not
-    /// read from what the device stores.
+    /// The digest of the sealed bytes of each chunk returned, from
+    /// memory or from what the device stores.
     given: BTreeMap<u64, [u8; 32]>,
     /// The key reference the header names.
     key_reference: Vec<u8>,
@@ -904,15 +924,6 @@ impl PartReader {
         })
     }
 
-    /// Notes a chunk returned from what the device stored, which is about
-    /// to go from the store: it is known again by its sealed bytes, as a
-    /// chunk returned from memory is.
-    pub(crate) fn remember(&mut self, index: u64, sealed: &[u8]) {
-        self.given
-            .entry(index)
-            .or_insert_with(|| frasil_crypto::primitives::sha256(&[sealed]));
-    }
-
     /// Whether a chunk has opened under the header. Until one has, the
     /// header's size is only what the party that sent the header says:
     /// steps 1 to 3 bind the header's object ID to the locator and
@@ -966,21 +977,16 @@ impl PartReader {
     /// ends with a fault, or the chunk is not the one returned at that
     /// place before ([`fault`](Self::fault)).
     pub(crate) fn open(&mut self, index: u64, sealed: &[u8], stored: bool) -> Result<Vec<u8>> {
-        // The chunk returned at this place before, from memory, is the
-        // one that counts: other bytes are not returned, and not hashed.
-        let digest = (!stored || self.given.contains_key(&index))
-            .then(|| frasil_crypto::primitives::sha256(&[sealed]));
-        if let Some(digest) = &digest
-            && self.given.get(&index).is_some_and(|given| given != digest)
-        {
+        // The chunk returned at this place before is the one that
+        // counts: other bytes are not returned, and not hashed.
+        let digest = frasil_crypto::primitives::sha256(&[sealed]);
+        if self.given.get(&index).is_some_and(|given| *given != digest) {
             self.fault = Some(WholeFault::Given);
             self.whole = false;
             return Err(Error::Class("ObjectMismatch"));
         }
         let plain = self.open_checked(index, sealed, stored)?;
-        if let Some(digest) = digest.filter(|_| !stored) {
-            self.given.insert(index, digest);
-        }
+        self.given.insert(index, digest);
         Ok(plain)
     }
 
