@@ -41,12 +41,14 @@
 //! A read says what it wants of an object it fetches when it starts to use
 //! it ([`Engine::want_object`]), and the device records the object as
 //! cached when its first part arrives ([`Engine::admit`]): a read that
-//! fetches nothing writes nothing. An object fetched for a read that is to
-//! store nothing, and one larger than the whole budget, is held beside the
-//! cache: its bytes count against no budget and make no other object go,
-//! and it is dropped by the eviction pass that follows the last read that
-//! used it. What the device holds beyond its budget is therefore only what
-//! running reads hold.
+//! fetches nothing writes nothing. A reader that is to store nothing takes
+//! the chunks that arrive for it into its own memory, and the device
+//! records and stores nothing of them ([`Engine::passes`]). An object
+//! whose header names more than the whole budget, fetched for a read that
+//! caches, is held beside the cache: its bytes count against no budget and
+//! make no other object go, and it is dropped by the eviction pass that
+//! follows the last read that used it. What the device holds beyond its
+//! budget is therefore only what running reads hold.
 //!
 //! An object goes whole or not at all: its `retention` record and every
 //! part are deleted in one commit, and the device then forgets what it
@@ -726,7 +728,7 @@ impl Engine {
     /// What the reads that use an object want of the parts that arrive for
     /// it: the cache, if any of them does; else to store nothing after;
     /// `None` when no read fetches it.
-    fn wanted(&self, key: &Key) -> Option<Want> {
+    pub(crate) fn wanted(&self, key: &Key) -> Option<Want> {
         let count = self.uses().count();
         let using = count.get(key)?;
         if using.cache > 0 {
@@ -876,6 +878,11 @@ impl Engine {
         header: Option<&[u8]>,
     ) -> Result<bool> {
         let key = (space, object_id(locator));
+        // What arrives for readers that store nothing, and for nothing
+        // else, is theirs: no record, and no part in the store.
+        if self.passes(state, &space, locator) {
+            return Ok(false);
+        }
         if self.keeps_all_blobs() || self.is_held_space(state, &space) {
             return Ok(true);
         }
@@ -913,11 +920,7 @@ impl Engine {
         if state.held.asked_for(&space, locator) {
             return Ok(true);
         }
-        let requested = self
-            .fetches()
-            .of(&space)
-            .iter()
-            .any(|request| request.locator[..32] == key.1[..]);
+        let requested = self.fetches().stores(&space, locator);
         if !crate::objects::fetched_on_read(replica, locator)
             && (!requested || crate::objects::fetched_by_itself(replica, locator))
         {

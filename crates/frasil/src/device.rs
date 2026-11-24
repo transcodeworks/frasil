@@ -208,6 +208,9 @@ pub(crate) struct State {
     /// Which stored objects are kept and which cached, with the bytes each
     /// holds (at-rest.md, "Retention").
     pub(crate) retained: crate::retention::Retained,
+    /// The open readers of the device's objects, which hear of the parts
+    /// kept.
+    pub(crate) readers: Arc<crate::reading::Readers>,
 }
 
 /// Every key the device holds, by its hash: its ring, then each list's
@@ -318,6 +321,9 @@ struct Shared {
     /// The requests for chunks of objects made of this device and still
     /// wanted, which its connections serve.
     fetches: Arc<crate::fetch::Requests>,
+    /// The open readers of the device's objects, and the chunks held in
+    /// memory for those that store nothing.
+    readers: Arc<crate::reading::Readers>,
     /// Detected loss, as it is reported (units.md, 3.13 "Detected loss").
     losses: broadcast::Sender<Loss>,
     /// Spaces a restored device may sign in again, as each becomes so
@@ -483,6 +489,7 @@ impl Engine {
         // (units.md, 3.15 Partial replicas): the load resolves each space
         // as one.
         let streams_only = cfg!(feature = "partial-replicas") && platform.streams_only;
+        let readers: Arc<crate::reading::Readers> = Arc::default();
         let device = Self {
             shared: Arc::new(Shared {
                 erasure_settling: Mutex::new(()),
@@ -508,6 +515,7 @@ impl Engine {
                 checkpoint_policy: std::sync::Mutex::default(),
                 arrivals,
                 withdrawn: std::sync::Mutex::new(BTreeSet::new()),
+                readers: readers.clone(),
                 verified: std::sync::Mutex::new(BTreeMap::new()),
                 content_hashes: std::sync::Mutex::new(BTreeMap::new()),
                 providers: std::sync::Mutex::new(crate::held::Providers::default()),
@@ -550,6 +558,7 @@ impl Engine {
                     guests: crate::guests::GuestState::default(),
                     held: crate::held::HeldObjects::default(),
                     retained: crate::retention::Retained::default(),
+                    readers,
                 }),
                 notices,
                 fetches: Arc::default(),
@@ -1272,6 +1281,11 @@ impl Engine {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert((space, locator), hash);
+    }
+
+    /// The open readers of the device's objects.
+    pub(crate) fn shared_readers(&self) -> &Arc<crate::reading::Readers> {
+        &self.shared.readers
     }
 
     /// The objects that reads are using.
@@ -3785,7 +3799,11 @@ impl Engine {
             return Ok((Taken::Dropped, wants));
         }
         match self.receive_part(space, part).await? {
-            Received::Refused => {
+            // A chunk that does not open under the header held: the
+            // header this side sent with its answer was compared with it
+            // as it arrived, so the fault is the chunk's, and what the
+            // device holds stays.
+            Received::Refused | Received::BadChunk => {
                 // Not asked of this side again; every other connection
                 // of the space asks for it, and who asked for its chunks
                 // hears of it once none of them will try.
@@ -3870,9 +3888,22 @@ impl Engine {
         let replica = state.replicas.get(space);
         let in_order = self.receives_in_order(&state, space, locator);
         let receive = Self::receive_progress(&state, space, locator).map(|(chunks, _)| chunks);
+        // Of an object fetched for readers that store nothing, the
+        // header is the one their windows hold, and a chunk none of them
+        // waits for is not asked for.
+        let passes = self.passes(&state, space, locator);
+        let key = (*space, crate::replica::object_id(locator));
         let count = replica
             .and_then(|replica| replica.object_chunk_count(locator))
-            .or(receive.map(|(_, count)| count));
+            .or(receive.map(|(_, count)| count))
+            .or_else(|| {
+                let header = self.readers().header(&key).filter(|_| passes)?;
+                let size = frasil_units::objects::Header::read(&header).ok()?.size;
+                Some(frasil_units::objects::chunk_count(
+                    size,
+                    frasil_units::limits::CHUNK_BYTES as u64,
+                ))
+            });
         let written = receive.map_or(0, |(written, _)| written);
         let fetches = &self.shared.fetches;
         let skip = |index: u64| {
@@ -3884,6 +3915,7 @@ impl Engine {
             replica.is_some_and(|replica| replica.holds_chunk(locator, index))
                 || index < written
                 || !(named || wanted)
+                || (passes && !self.readers().needs(&key, index))
         };
         ask(count, &skip, in_order)
     }

@@ -19,7 +19,9 @@
 //! A fetch changes nothing of what is checked: every chunk passes
 //! [`Engine::receive_part`](crate::device::Engine) before it is kept, and
 //! an object these chunks make whole is checked against its locator's
-//! digest there.
+//! digest there. A request made for a reader that stores nothing brings
+//! chunks for that reader's window alone (`reading.rs`): they pass the
+//! same checks, and the device stores none of them.
 
 use frasil_adapter::Locator;
 use frasil_events::EventId;
@@ -105,7 +107,10 @@ impl Cancel {
 pub enum FetchEnd {
     /// A chunk the other side sent failed its checks (units.md, 3.3
     /// Reading an object), or the object, once whole, did not hash to its
-    /// locator: what the device held of the object was dropped.
+    /// locator. What the device held of the object was dropped, unless
+    /// only that chunk failed to open under a header that chunks the
+    /// device holds open under: those stay, and the chunk is asked of
+    /// another party.
     Refused,
     /// The stored bytes the other side sent do not read as the object's
     /// header gives them (transport.md, "Objects over HTTP"): what the
@@ -132,6 +137,10 @@ pub(crate) struct Request {
     pub chunks: Range<u64>,
     pub priority: FetchPriority,
     pub cancel: Cancel,
+    /// Whether the chunks it brings are the store's. A request of a reader
+    /// that stores nothing is not: its chunks go to the reader's window,
+    /// and the device does not mean to hold the object for it.
+    pub stores: bool,
     /// How a connection gave the request up, for its [`Fetch`].
     pub ended: Arc<watch::Sender<Option<FetchEnd>>>,
 }
@@ -151,6 +160,7 @@ impl Request {
             chunks: 0..u64::MAX,
             priority: FetchPriority::Background,
             cancel: Cancel::new(),
+            stores: true,
             ended: Arc::new(watch::channel(None).0),
         }
     }
@@ -291,6 +301,19 @@ impl Requests {
         chunks: Range<u64>,
         priority: FetchPriority,
     ) -> Fetch {
+        self.add_for(space, locator, chunks, priority, true)
+    }
+
+    /// [`add`](Self::add), saying whether the chunks the request brings
+    /// are the store's (`stores`) or a reader's window's.
+    pub(crate) fn add_for(
+        self: &Arc<Self>,
+        space: EventId,
+        locator: Locator,
+        chunks: Range<u64>,
+        priority: FetchPriority,
+        stores: bool,
+    ) -> Fetch {
         let cancel = Cancel::new();
         let (id, ended) = {
             let mut live = self.live();
@@ -306,6 +329,7 @@ impl Requests {
                     chunks,
                     priority,
                     cancel: cancel.clone(),
+                    stores,
                     ended: ended.clone(),
                 },
             );
@@ -406,6 +430,17 @@ impl Requests {
             request.space == *space
                 && request.locator == *locator
                 && request.chunks.contains(&index)
+                && !request.cancel.is_cancelled()
+        })
+    }
+
+    /// Whether a request still wanted for an object means its chunks for
+    /// the store.
+    pub(crate) fn stores(&self, space: &EventId, locator: &Locator) -> bool {
+        self.live().requests.values().any(|request| {
+            request.space == *space
+                && request.locator[..32] == locator[..32]
+                && request.stores
                 && !request.cancel.is_cancelled()
         })
     }
@@ -563,6 +598,12 @@ impl Fetch {
     /// here.
     pub fn end(&self) -> Option<FetchEnd> {
         *self.ended.borrow()
+    }
+
+    /// Follows the request's end: the receiver changes when the space's
+    /// connections give the request up.
+    pub(crate) fn follow_end(&self) -> watch::Receiver<Option<FetchEnd>> {
+        self.ended.subscribe()
     }
 
     /// Ready once the space's connections gave the request up, with why
@@ -1209,6 +1250,7 @@ mod tests {
             chunks: 0..1,
             priority,
             cancel: Cancel::new(),
+            stores: true,
             ended: Arc::new(tokio::sync::watch::channel(None).0),
         }
     }

@@ -4820,6 +4820,39 @@ struct SliceTask {
 
 #[cfg(any(feature = "server", feature = "server-socket"))]
 impl SliceTask {
+    /// Whether the header the peer serves, in slice 0 of the object's
+    /// stored bytes, is another one than the device holds. `false` when
+    /// the slice cannot be had: the peer is then asked no further on this
+    /// connection, and what is held stays.
+    async fn peer_header_differs(&self, space: &EventId, locator: &Locator) -> bool {
+        let held = self
+            .device
+            .read(space, |replica| {
+                replica.object_header(locator).map(<[u8]>::to_vec)
+            })
+            .await
+            .ok()
+            .flatten();
+        let Some(held) = held else {
+            return false;
+        };
+        let abort = crate::fetch::Cancel::new();
+        let Ok(slice) = self
+            .routes
+            .get(&self.token, space, locator, 0, &abort)
+            .await
+        else {
+            return false;
+        };
+        let served = slice
+            .get(..4)
+            .and_then(|length| length.try_into().ok())
+            .map(u32::from_be_bytes)
+            .and_then(|length| usize::try_from(length).ok())
+            .and_then(|length| slice.get(4..4usize.saturating_add(length)));
+        served != Some(held.as_slice())
+    }
+
     async fn run(&mut self) -> SliceFetch {
         use crate::objects::{Received, SliceReader};
         let (space, locator) = (self.request.space, self.request.locator);
@@ -4902,6 +4935,18 @@ impl SliceTask {
                     Ok(Received::Kept) => self.kept = true,
                     Ok(Received::Whole) => return SliceFetch::Done,
                     Ok(Received::Refused) => return SliceFetch::Refused,
+                    // The chunk does not open under the header held. A
+                    // peer whose own header is another one sends chunks
+                    // of other stored bytes: what is held under the
+                    // header held goes, as for any header that differs.
+                    Ok(Received::BadChunk) => {
+                        if self.peer_header_differs(&space, &locator).await
+                            && let Err(error) = self.device.drop_fetched(space, &locator).await
+                        {
+                            return SliceFetch::Failed(error);
+                        }
+                        return SliceFetch::Refused;
+                    }
                     // What the device held of the object went meanwhile,
                     // or the receive of it through a provider does not
                     // take this chunk: a later fetch starts from where

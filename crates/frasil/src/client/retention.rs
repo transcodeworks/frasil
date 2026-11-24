@@ -9,13 +9,16 @@
 //! it, [`Blobs::drop_local`] makes one absent, and [`Blobs::local`] tells
 //! where one stands.
 //!
-//! A read fetches the blob whole before it gives any of it, so every check
-//! of units.md, 3.3 Reading an object runs as for any stored object: each
-//! chunk as it arrives, the locator's digest once the object is whole, and
-//! the rest when it is read. A read that is to store nothing holds the
-//! blob in the device's store while it runs, beside the cache, where it
-//! counts against no budget and evicts nothing, and the blob is dropped
-//! when the read ends. So is a blob larger than the whole budget.
+//! A read of a blob the device does not hold whole goes through a reader
+//! ([`Blobs::open_reader`]), which fetches the chunks it reads and puts
+//! them where the read says: the cache, as parts of a cached blob; the
+//! store, kept; or, for a read that is to store nothing and for a blob too
+//! large for the whole budget, the reader's own memory. [`Blobs::get`],
+//! [`Blobs::get_stream`] and [`Blobs::content_hash`] read in order from
+//! the first byte, so every check of units.md, 3.3 Reading an object has
+//! run when they reach the last chunk. In a space whose blobs the
+//! application holds as files, a read fetches the blob whole first, into
+//! a file.
 
 use super::blob_stream::Reporter;
 use super::{BlobId, Blobs};
@@ -66,9 +69,10 @@ impl Read {
         self
     }
 
-    /// Stores nothing of a blob the read fetches once the read ends. The
-    /// blob is held in the device's store while the read runs. A blob the
-    /// device held before stays as it was.
+    /// Stores nothing of a blob the read fetches: its chunks pass through
+    /// memory, a few at a time. A blob the device held before, whole or in
+    /// part, stays as it was, and what the read fetches of one held in
+    /// part joins that part.
     #[must_use]
     pub fn uncached(mut self) -> Self {
         self.uncached = true;
@@ -82,6 +86,21 @@ impl Read {
     pub fn local(mut self) -> Self {
         self.local = true;
         self
+    }
+
+    /// Whether the read keeps the blob.
+    pub(super) fn keeps(&self) -> bool {
+        self.keep
+    }
+
+    /// Whether the read stores nothing of what it fetches.
+    pub(super) fn stores_nothing(&self) -> bool {
+        self.uncached
+    }
+
+    /// Whether the read fetches nothing.
+    pub(super) fn is_local(&self) -> bool {
+        self.local
     }
 }
 
@@ -102,6 +121,7 @@ pub struct BlobLocal {
 /// A blob made ready for a read, or being fetched for one: the device
 /// drops nothing of it until the read is [`done`](Reading::done), or is
 /// dropped.
+#[derive(Debug)]
 pub(super) struct Reading {
     blobs: Blobs,
     /// Whether the cache was looked at since the read's uses ended. Every
@@ -113,6 +133,15 @@ pub(super) struct Reading {
 }
 
 impl Reading {
+    /// A read that uses objects until it is [`done`](Reading::done).
+    pub(super) fn holding(blobs: Blobs, uses: Vec<InUse>) -> Self {
+        Self {
+            blobs,
+            settled: false,
+            uses,
+        }
+    }
+
     /// The read ended: a blob fetched to store nothing, by this read or
     /// by another, is dropped unless a read still uses it, and the cache
     /// is back within its budget.
@@ -159,7 +188,7 @@ impl Drop for Reading {
 impl Blobs {
     /// The space whose replica holds an entry's object whole: this space,
     /// or for a reference its source.
-    async fn holder(&self, entry: &Entry) -> Option<EventId> {
+    pub(super) async fn holder(&self, entry: &Entry) -> Option<EventId> {
         let engine = self.space().device.engine();
         let mut spaces = vec![self.space().id().event()];
         spaces.extend(entry.reference.as_ref().map(|r| EventId(r.source)));

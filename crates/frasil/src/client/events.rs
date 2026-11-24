@@ -111,6 +111,21 @@ pub enum Event {
         /// The member that made it.
         member: super::MemberId,
     },
+    /// A blob failed a whole-object check while a
+    /// [`BlobReader`](super::BlobReader) of it was open (units.md, 3.3
+    /// Reading an object, steps 0 and 7; adapter-blobs.md, 4 Security
+    /// considerations): bytes the reader gave may not be the blob's. Every
+    /// open reader of the blob fails with `ObjectMismatch`, and what the
+    /// device cached of it is dropped. Reported once for each refusal.
+    #[cfg(feature = "adapter-blobs")]
+    ObjectRefused {
+        /// The space.
+        space: SpaceId,
+        /// The blob stream.
+        stream: StreamId,
+        /// The blob.
+        blob: super::BlobId,
+    },
     /// A held blob's file changed or is gone, so this device no longer
     /// holds the blob (at-rest.md, "Held objects"): the record of it is
     /// gone, the blob stays fetchable from peers and members, and the

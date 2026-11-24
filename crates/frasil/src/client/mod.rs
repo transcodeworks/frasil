@@ -81,6 +81,8 @@ mod live;
 #[cfg(feature = "iroh")]
 mod local_admission;
 mod membership;
+#[cfg(feature = "adapter-blobs")]
+mod reader;
 #[cfg(all(feature = "adapter-loro", not(target_arch = "wasm32")))]
 mod rebase;
 #[cfg(feature = "adapter-blobs")]
@@ -151,6 +153,8 @@ pub use new_device::JoiningPerson;
 pub use observe::{Observation, Observed, Status};
 #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
 pub use peers::{Peer, PeerStatus};
+#[cfg(feature = "adapter-blobs")]
+pub use reader::{BlobReader, MAX_READ_AHEAD, READ_AHEAD, Verified};
 #[cfg(feature = "adapter-blobs")]
 pub use reads::BlobStatus;
 pub use reads::Receipt;

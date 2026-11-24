@@ -140,8 +140,12 @@
 //!   read leaves what it fetched in a cache whose budget
 //!   [`Options::blob_cache`] sets, 256 MiB by default, and the device
 //!   evicts the blob read longest ago when the budget is full. Each read
-//!   takes a [`Read`], which keeps the blob, stores nothing of it once the
-//!   read ends, or fetches nothing. [`Blobs::keep`] fetches and keeps a
+//!   takes a [`Read`], which keeps the blob, stores nothing of it, or
+//!   fetches nothing. [`Blobs::open_reader`] gives a [`BlobReader`], which
+//!   reads any range of a blob that is not all here and fetches only the
+//!   chunks it needs, as a media player does; [`BlobReader::verified`]
+//!   says whether the checks that need the whole blob have run
+//!   ([`Verified`]). [`Blobs::keep`] fetches and keeps a
 //!   blob without reading it, [`Blobs::drop_local`] makes one absent, and
 //!   [`Options::keep_all_blobs`] makes a device hold every blob, for use
 //!   with no connection.
@@ -311,6 +315,7 @@ mod peer;
 mod persons;
 mod platform;
 mod public_keys;
+mod reading;
 mod recovery;
 #[cfg(feature = "ext-recovery-agent")]
 mod recovery_agent;
@@ -392,7 +397,9 @@ pub use client::{
 #[cfg(feature = "adapter-blobs")]
 pub use client::{Blob, Blobs, PutVersion};
 #[cfg(feature = "adapter-blobs")]
-pub use client::{BlobCacheUsage, BlobLocal, BlobState, Read};
+pub use client::{
+    BlobCacheUsage, BlobLocal, BlobReader, BlobState, MAX_READ_AHEAD, READ_AHEAD, Read, Verified,
+};
 #[cfg(feature = "adapter-blobs")]
 pub use client::{BlobChange, BlobChanges};
 #[cfg(feature = "adapter-loro")]

@@ -2501,6 +2501,13 @@ impl Replica {
             .is_some_and(|object| object.has_chunk(index) || object.is_whole())
     }
 
+    /// Whether the device holds a chunk of an object sealed, in memory or
+    /// in the store.
+    pub(crate) fn holds_sealed_chunk(&self, locator: &Locator, index: u64) -> bool {
+        self.held_object(locator)
+            .is_some_and(|object| !object.held && object.has_chunk(index))
+    }
+
     /// Whether the device holds any chunk of an object sealed, in memory
     /// or in the store.
     pub(crate) fn holds_chunks(&self, locator: &Locator) -> bool {

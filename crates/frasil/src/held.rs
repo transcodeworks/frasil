@@ -1993,6 +1993,11 @@ impl Engine {
         {
             return true;
         }
+        // A blob fetched only for readers that store nothing becomes no
+        // file: its chunks are theirs.
+        if self.passes(state, space, locator) {
+            return false;
+        }
         state
             .replicas
             .get(space)
