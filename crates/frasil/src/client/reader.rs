@@ -1313,9 +1313,10 @@ pub(super) struct Through {
 }
 
 impl Through {
-    /// The next piece of the blob: `None` after its last byte, once every
-    /// step passed on the whole.
-    pub(super) async fn next(&mut self) -> Result<Option<&[u8]>> {
+    /// The next piece of the blob, with the blob's size as its header
+    /// gives it, which the chunk that opened binds: `None` after its last
+    /// byte, once every step passed on the whole.
+    pub(super) async fn next(&mut self) -> Result<Option<(u64, &[u8])>> {
         let at = self.at;
         let read = self.reader.piece_at(at, usize::MAX).await.map(<[u8]>::len);
         let read = read.map_err(|error| self.reader.of_blob(error))?;
@@ -1329,9 +1330,10 @@ impl Through {
             };
         }
         self.at += read as u64;
+        let size = self.reader.size().unwrap_or(self.at);
         Ok(self.reader.opened.as_ref().map(|(index, plain)| {
             let within = usize::try_from(at - index * CHUNK_BYTES as u64).unwrap_or(0);
-            &plain[within.min(plain.len())..]
+            (size, &plain[within.min(plain.len())..])
         }))
     }
 

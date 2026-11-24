@@ -183,15 +183,15 @@ impl Blobs {
             reported: None,
         };
         let entry = self.entry(id).await?;
-        let size = entry.size;
         // A blob that is not whole here is read through a reader, in
         // order: each chunk is written as it arrives and opens, and the
-        // last one once every step passed on the whole.
+        // last one once every step passed on the whole. The size reported
+        // is the header's, which each chunk that opens binds.
         if self.reads_through(id, &entry, read).await {
             let mut through = self.read_through(id, entry, read).await?;
             let written = async {
                 let mut written = 0u64;
-                while let Some(chunk) = through.next().await? {
+                while let Some((size, chunk)) = through.next().await? {
                     for piece in chunk.chunks(PIECE) {
                         write_all(&mut writer, piece).await?;
                         written += piece.len() as u64;
@@ -200,36 +200,55 @@ impl Blobs {
                 }
                 poll_fn(|cx| Pin::new(&mut writer).poll_flush(cx))
                     .await
-                    .map_err(|error| io(&error))
+                    .map_err(|error| io(&error))?;
+                Ok(written)
             }
             .await;
-            through.end(written).await?;
-            progress.report(size, Some(size));
+            let written = through.end(written).await?;
+            progress.report(written, Some(written));
             return Ok(());
         }
         let reading = self
             .ready(&entry, read, &mut progress)
             .await?
             .ok_or(Error::Class("Missing"))?;
-        let written = async {
+        // Held whole: the size its header gives, which the checks that
+        // run before any plaintext is given bind.
+        let size = self.stored_size(&entry).await;
+        let written: Result<u64> = async {
             let mut written = 0u64;
             let mut chunks = self.plain(&entry, 0..u64::MAX).await?;
             while let Some((_, chunk)) = chunks.next().await? {
                 for piece in chunk.chunks(PIECE) {
                     write_all(&mut writer, piece).await?;
                     written += piece.len() as u64;
-                    progress.report(written, Some(size));
+                    progress.report(written, Some(size.max(written)));
                 }
             }
             poll_fn(|cx| Pin::new(&mut writer).poll_flush(cx))
                 .await
-                .map_err(|error| io(&error))
+                .map_err(|error| io(&error))?;
+            Ok(written)
         }
         .await;
         reading.done().await?;
-        written?;
-        progress.report(size, Some(size));
+        let written = written?;
+        progress.report(written, Some(written));
         Ok(())
+    }
+
+    /// The size the header of a blob's object gives, where the device
+    /// holds the object, and else the size its entry shows. The header's
+    /// is what a read goes by: the checks that run before any plaintext
+    /// of a blob held whole is given bind it (units.md, 3.3 Reading an
+    /// object), and the entry's is only what its writer wrote.
+    async fn stored_size(&self, entry: &frasil_adapter_blobs::Entry) -> u64 {
+        let engine = self.space().device.engine();
+        match self.holder(entry).await {
+            Some(holder) => engine.object_size(&holder, &entry.object).await,
+            None => None,
+        }
+        .unwrap_or(entry.size)
     }
 
     /// The SHA-256 of a blob's plaintext, a stable hash of its content for
@@ -258,7 +277,7 @@ impl Blobs {
             };
             let hashed = async {
                 let mut hasher = frasil_crypto::primitives::Sha256Hasher::new();
-                while let Some(chunk) = through.next().await? {
+                while let Some((_, chunk)) = through.next().await? {
                     hasher.update(chunk);
                 }
                 Ok(hasher.finish())
@@ -361,16 +380,17 @@ impl Blobs {
                 Err(error) => Err(error),
             };
         }
-        let end = offset.saturating_add(len).min(entry.size);
-        if offset >= end {
-            return Ok(Some(Vec::new()));
-        }
         let reading = match self.ready(&entry, read, &mut Reporter::silent()).await {
             Ok(Some(reading)) => reading,
             Ok(None) | Err(Error::Class("Missing")) => return Ok(None),
             Err(error) => return Err(error),
         };
-        let range = self.range_of(&entry, offset, end).await;
+        // Cut at the size the header gives, as a read through a reader
+        // is, and not at the size the entry shows.
+        let end = offset
+            .saturating_add(len)
+            .min(self.stored_size(&entry).await);
+        let range = self.range_of(&entry, offset, end.max(offset)).await;
         reading.done().await?;
         range
     }
@@ -396,7 +416,8 @@ impl Blobs {
     }
 
     /// The bytes of an entry from `offset` to `end`, from the chunks the
-    /// device holds.
+    /// device holds. Every check has run on the whole blob before any is
+    /// given, and before an empty range says where the blob ends.
     async fn range_of(
         &self,
         entry: &frasil_adapter_blobs::Entry,
@@ -404,7 +425,11 @@ impl Blobs {
         end: u64,
     ) -> Result<Option<Vec<u8>>> {
         let chunk = frasil_units::limits::CHUNK_BYTES as u64;
-        let chunks = offset / chunk..end.div_ceil(chunk);
+        let chunks = if offset < end {
+            offset / chunk..end.div_ceil(chunk)
+        } else {
+            0..0
+        };
         let mut plain = match self.plain(entry, chunks).await {
             Ok(plain) => plain,
             Err(Error::Class("Missing")) => return Ok(None),

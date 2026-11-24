@@ -19,6 +19,7 @@ mod arrival;
 mod faults;
 mod keys;
 mod sealed;
+mod sizes;
 mod whole;
 
 const CHUNK: u64 = CHUNK_BYTES as u64;

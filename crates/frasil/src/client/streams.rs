@@ -892,7 +892,7 @@ mod blobs {
                 let mut through = self.read_through(id, entry, read).await?;
                 let read = async {
                     let mut bytes = Vec::new();
-                    while let Some(chunk) = through.next().await? {
+                    while let Some((_, chunk)) = through.next().await? {
                         bytes.extend_from_slice(chunk);
                     }
                     Ok(bytes)
