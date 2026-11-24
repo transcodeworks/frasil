@@ -138,7 +138,7 @@ impl Retained {
         let passing = matches!(retention, Retention::Cached { .. })
             && self.entries.get(&key).is_some_and(|entry| entry.passing);
         self.remove(&key);
-        if retention == Retention::Put {
+        if matches!(retention, Retention::Put { .. }) {
             self.puts.insert(key, puts.unwrap_or_default());
         }
         self.reads += 1;
@@ -257,7 +257,7 @@ impl Retained {
             .filter(|(_, entry)| entry.counts())
             .filter_map(|(key, entry)| match entry.retention {
                 Retention::Cached { read } => Some((read, entry.order, *key)),
-                Retention::Kept | Retention::Put => None,
+                Retention::Kept | Retention::Put { .. } => None,
             })
             .collect();
         cached.sort_unstable();
@@ -834,7 +834,7 @@ impl Engine {
                 state.retained.set_passing(&(space, id), large);
                 return Ok(());
             }
-            (Some(Retention::Kept), _) | (Some(Retention::Put), false) => return Ok(()),
+            (Some(Retention::Kept), _) | (Some(Retention::Put { .. }), false) => return Ok(()),
             (_, true) => Retention::Kept,
             // Parts with no record: kept.
             (None, false) if holds || self.keeps_all_blobs() => return Ok(()),
@@ -863,7 +863,7 @@ impl Engine {
             return Ok(());
         }
         let first = match state.retained.get(&key) {
-            Some(Retention::Put) => false,
+            Some(Retention::Put { .. }) => false,
             Some(_) => return Ok(()),
             None => {
                 let stored = state.replicas.get(&space).is_some_and(|replica| {
@@ -872,7 +872,8 @@ impl Engine {
                 if !stored {
                     return Ok(());
                 }
-                self.record(state, space, key.1, Retention::Put).await?;
+                self.record(state, space, key.1, Retention::Put { keep: false })
+                    .await?;
                 true
             }
         };
@@ -907,7 +908,7 @@ impl Engine {
         let mut state = self.lock().await;
         let key = (space, object_id(locator));
         match state.retained.get(&key) {
-            Some(Retention::Put) => {
+            Some(Retention::Put { .. }) => {
                 state.retained.puts.entry(key).or_default().at_peer = true;
             }
             // Taken before its unit is written, by a put that holds it.
@@ -1254,8 +1255,10 @@ impl Engine {
         // An object this device put that no peer is known to hold: the
         // peer of the space is about to take it. With no always-on peer
         // no party is bound to, and the application decides.
-        if state.retained.get(&(space, object_id(locator))) == Some(Retention::Put)
-            && self.has_peer(&mut state, &space).await
+        if matches!(
+            state.retained.get(&(space, object_id(locator))),
+            Some(Retention::Put { .. })
+        ) && self.has_peer(&mut state, &space).await
         {
             return Err(Error::NotAllowed(
                 "this device put the blob, and no peer holds it yet",
@@ -1311,7 +1314,7 @@ impl Engine {
     /// object is fetched by the device itself while it is not whole.
     pub(crate) fn keeps_object(state: &State, space: &EventId, locator: &Locator) -> bool {
         match state.retained.get(&(*space, object_id(locator))) {
-            Some(Retention::Kept | Retention::Put) => true,
+            Some(Retention::Kept | Retention::Put { .. }) => true,
             Some(Retention::Cached { .. }) => false,
             None => state
                 .replicas

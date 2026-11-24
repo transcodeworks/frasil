@@ -215,6 +215,9 @@ D_HELD, D_MISSING = 1, 2
 # it caches within its budget, or one it put that no always-on peer is known
 # to hold (at-rest.md, "Retention").
 R_KEPT, R_CACHED, R_PUT = 1, 2, 3
+# How long a peer's answer that it holds an object counts, in seconds of the
+# device's timeline: under the least `orphan_grace` a peer may run with.
+PUT_ANSWER = 1800
 # The last read of a cached object is the timeline's T rounded down to this.
 READ_STEP = 3600
 BODY_DERIVED, BODY_HANDED = 1, 2
@@ -575,10 +578,12 @@ def read_value(table: int, item: bytes, value: bytes, log_id: bytes | None):
             raise SpecError("Malformed")
         return m
     if table == T_RETENTION:
-        m = _map(value, {1, 2}, {1})
-        # Key 2, the last read, exactly with state 2.
+        m = _map(value, {1, 2, 3}, {1})
+        # Key 2, the last read, exactly with state 2; key 3, that the
+        # application asked to keep the object, only with state 3, and 1.
         if not (m[1] in (R_KEPT, R_CACHED, R_PUT) and (2 in m) == (m[1] == R_CACHED)
-                and (2 not in m or is_uint(m[2]))):
+                and (2 not in m or is_uint(m[2]))
+                and (3 not in m or (m[1] == R_PUT and is_uint(m[3]) and m[3] == 1))):
             raise SpecError("Malformed")
         return m
     if table == T_PEERS:
@@ -630,12 +635,57 @@ def read_value(table: int, item: bytes, value: bytes, log_id: bytes | None):
     raise SpecError("Malformed")
 
 
-def retention_value(state: int, read: int | None = None) -> bytes:
-    """A `retention` record's value (at-rest.md, "Tables"): the state, and
-    for a cached object the timeline's T of its last read, rounded down."""
+def retention_value(state: int, read: int | None = None, keep: bool = False) -> bytes:
+    """A `retention` record's value (at-rest.md, "Tables"): the state, for a
+    cached object the timeline's T of its last read, rounded down, and for
+    a put one whether the application asked to keep it."""
     if state == R_CACHED:
         return cbor({1: state, 2: read - read % READ_STEP})
+    if state == R_PUT and keep:
+        return cbor({1: state, 3: 1})
     return cbor({1: state})
+
+
+def retention_after(record: dict | None, parts: bool, change: str, now: int = 0,
+                    peer: bool = True) -> dict | None:
+    """An object's opened `retention` value after one change (at-rest.md,
+    "Retention", recording, an object the device put, and dropping):
+    `record` is its value before or None, `parts` whether the device held
+    parts of it before. `change` is "put", the device seals the object;
+    "keep", the application asks to keep it; "held", an always-on peer
+    holds it and a unit that names it (`released`); "drop", the application
+    drops it, in a space with an always-on peer or, with `peer` false,
+    without one. A drop that is refused raises NotAllowed. What is true of
+    every object, such as that one in use is not dropped, is not here."""
+    state = None if record is None else record[1]
+    kept = state == R_KEPT or (state is None and parts) or (state == R_PUT and 3 in record)
+    if change == "put":
+        if state == R_PUT:
+            return record
+        return {1: R_PUT, 3: 1} if kept else {1: R_PUT}
+    if change == "keep":
+        return {1: R_PUT, 3: 1} if state == R_PUT else {1: R_KEPT}
+    if change == "held":
+        if state != R_PUT:
+            return record
+        return {1: R_KEPT} if kept else {1: R_CACHED, 2: now - now % READ_STEP}
+    if change == "drop":
+        if state == R_PUT and peer:
+            raise SpecError("NotAllowed")
+        return None
+    raise ValueError(change)
+
+
+def released(answers: dict, acknowledged: dict, names: set, now: int) -> bool:
+    """Whether an object of state 3 leaves it (at-rest.md, "Retention", an
+    object the device put): some always-on peer answered that it holds the
+    object no more than PUT_ANSWER ago, and the heads that same peer last
+    acknowledged have a unit that names the object in their past. `answers`
+    maps a peer to the timeline's T of its latest answer, `acknowledged` a
+    peer to the events in the past of the heads it last acknowledged, and
+    `names` are the units that name the object."""
+    return any(now - at <= PUT_ANSWER and names & acknowledged.get(peer, set())
+               for peer, at in answers.items())
 
 
 def evictable(records: dict, own: set, pending: set, in_use: set) -> list:
@@ -1319,6 +1369,11 @@ def at_rest_vectors(persons: dict | None = None) -> dict:
         label="retention/put",
         note="state 3: kept until an always-on peer holds the object and has "
              "acknowledged a unit that names it, then cached")
+    add("an object this device put, which the application asked to keep", T_RETENTION,
+        example("at-rest/space/put-kept-object"), retention_value(R_PUT, keep=True), space,
+        label="retention/put-kept",
+        note="state 3 with key 3: kept until an always-on peer holds the object and has "
+             "acknowledged a unit that names it, and kept by a record of state 1 from then on")
     add("a checkpoint's record object key, handed by a snapshot", T_KEY,
         bytes([K_RECORD]) + kept, bytes([BODY_HANDED]) + example("at-rest/space/record-key"),
         space, label="key/record",
@@ -1439,6 +1494,18 @@ def at_rest_vectors(persons: dict | None = None) -> dict:
             ("a cached object's retention record without a last read", T_RETENTION,
              cbor({1: R_CACHED}), "retention-cached-unread",
              "key 2 is present exactly with state 2"),
+            ("a kept object's retention record with key 3", T_RETENTION,
+             cbor({1: R_KEPT, 3: 1}), "retention-kept-keep",
+             "key 3 is present only with state 3"),
+            ("a cached object's retention record with key 3", T_RETENTION,
+             cbor({1: R_CACHED, 2: 86400, 3: 1}), "retention-cached-keep",
+             "key 3 is present only with state 3"),
+            ("a put object's retention record with a key 3 of 0", T_RETENTION,
+             cbor({1: R_PUT, 3: 0}), "retention-put-keep-0",
+             "key 3, when present, is the unsigned integer 1"),
+            ("a put object's retention record with a key 3 of 2", T_RETENTION,
+             cbor({1: R_PUT, 3: 2}), "retention-put-keep-2",
+             "key 3, when present, is the unsigned integer 1"),
             ("a retention record with no state", T_RETENTION, cbor({2: 86400}),
              "retention-stateless", "key 1 is present")):
         item = b"" if table == T_STATE else unit_id if table == T_EVENT \
@@ -1850,6 +1917,10 @@ def self_test() -> None:
         "a kept object's retention record with a last read": "Malformed",
         "a put object's retention record with a last read": "Malformed",
         "a cached object's retention record without a last read": "Malformed",
+        "a kept object's retention record with key 3": "Malformed",
+        "a cached object's retention record with key 3": "Malformed",
+        "a put object's retention record with a key 3 of 0": "Malformed",
+        "a put object's retention record with a key 3 of 2": "Malformed",
         "a retention record with no state": "Malformed",
         "a retention record whose item is not an object ID": "Malformed",
         "a claim naming another space": "Malformed",
@@ -1882,7 +1953,9 @@ def self_test() -> None:
                         "a cached object whose last read is no multiple of 3,600":
                             {"1": R_CACHED, "2": 90401},
                         "an object this device put, which no peer is known to hold":
-                            {"1": R_PUT}}
+                            {"1": R_PUT},
+                        "an object this device put, which the application asked to keep":
+                            {"1": R_PUT, "3": 1}}
     old, new, kept, legacy, own, put, used, sole = (bytes([i]) * 32 for i in range(8))
     cached = lambda t: read_value(T_RETENTION, old, retention_value(R_CACHED, t), bytes(32))
     records = {new: cached(90400), old: cached(7300), legacy: None, own: cached(0),
@@ -1890,6 +1963,37 @@ def self_test() -> None:
                put: cached(1), used: cached(2),
                sole: read_value(T_RETENTION, sole, retention_value(R_PUT), bytes(32))}
     assert evictable(records, {own}, {put}, {used}) == [old, new]
+    both = read_value(T_RETENTION, sole, retention_value(R_PUT, keep=True), bytes(32))
+    assert evictable({sole: both, old: cached(7300)}, set(), set(), set()) == [old]
+    # A put never takes "kept" away, and keeping never takes "put" away.
+    put_, kept_, at = {1: R_PUT}, {1: R_KEPT}, {1: R_CACHED, 2: 7200}
+    assert retention_after(None, False, "put") == put_
+    assert retention_after(None, True, "put") == both == {1: R_PUT, 3: 1}
+    assert retention_after(kept_, True, "put") == both
+    assert retention_after(at, True, "put") == put_
+    assert retention_after(put_, True, "put") == put_
+    assert retention_after(both, True, "put") == both
+    assert retention_after(put_, True, "keep") == both
+    assert retention_after(both, True, "keep") == both
+    assert retention_after(at, True, "keep") == kept_ == retention_after(None, False, "keep")
+    assert retention_after(put_, True, "held", 7300) == at
+    assert retention_after(both, True, "held", 7300) == kept_
+    assert retention_after(kept_, True, "held", 7300) == kept_
+    for record in (put_, both):
+        try:
+            retention_after(record, True, "drop")
+            raise AssertionError("an object no peer holds was dropped")
+        except SpecError as refused:
+            assert str(refused) == "NotAllowed"
+        assert retention_after(record, True, "drop", peer=False) is None
+    assert retention_after(kept_, True, "drop") is None
+    # Only the peer that holds the object releases it, while its answer counts.
+    unit, a_, b_ = b"u" * 32, b"a", b"b"
+    assert released({a_: 100}, {a_: {unit}}, {unit}, 100 + PUT_ANSWER)
+    assert not released({a_: 100}, {a_: {unit}}, {unit}, 101 + PUT_ANSWER)
+    assert not released({a_: 100}, {b_: {unit}}, {unit}, 100)
+    assert not released({a_: 100}, {a_: set()}, {unit}, 100)
+    assert not released({}, {a_: {unit}}, {unit}, 100)
     assert not item_ok(T_PSEUDONYM, slot_reference(bytes(32), MAX_SLOT_INDEX, bytes(32)))
     assert item_ok(T_PSEUDONYM, slot_reference(bytes(32), MAX_SLOT_INDEX - 1, bytes(32)))
     assert not item_ok(T_PSEUDONYM, cbor([bytes(32), 0]))

@@ -406,7 +406,10 @@ async fn a_blob_this_device_put_stays_until_a_peer_holds_it() {
         engine.retention_of(&space, &locator).await.0,
         BlobState::Kept
     );
-    assert_eq!(records(&engine, space).await[0].1, Retention::Put);
+    assert_eq!(
+        records(&engine, space).await[0].1,
+        Retention::Put { keep: false }
+    );
     assert!(engine.outbox(&space).await.contains(&unit));
 
     engine.set_blob_cache(0);
@@ -711,7 +714,10 @@ async fn a_members_acknowledgement_never_releases_a_blob_this_device_put() {
     engine.acknowledge(space, peer, &[unit]).await.unwrap();
     engine.evict().await.unwrap();
     assert!(holds(&engine, space, &locator).await);
-    assert_eq!(records(&engine, space).await[0].1, Retention::Put);
+    assert_eq!(
+        records(&engine, space).await[0].1,
+        Retention::Put { keep: false }
+    );
     assert_eq!(
         engine.retention_of(&space, &locator).await.0,
         BlobState::Kept
