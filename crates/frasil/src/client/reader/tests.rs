@@ -1680,3 +1680,98 @@ async fn a_chunk_sent_again_does_not_hold_a_read_open() {
         "the read is held open: {read:?}"
     );
 }
+
+/// A blob of this device's space, absent here, whose entry shows `size`
+/// and not the size of its object.
+async fn mislabelled(size: u64) -> Absent {
+    use frasil_adapter_blobs::Entry;
+    let device = Device::open(Storage::Memory, &[1; 32]).await.unwrap();
+    let engine = device.engine().clone();
+    let space = device.create_space().await.unwrap();
+    let of = space.id().event();
+    let blobs = space.create_blobs().unwrap();
+    let bytes = bytes();
+    let (locator, key, parts) = engine.seal_parts(of, &bytes).await.unwrap();
+    let handle = [4; 16];
+    let entry = Entry {
+        object: locator,
+        key,
+        size,
+        media_type: None,
+        name: None,
+        reference: None,
+    };
+    engine
+        .put_entry(of, blobs.opening(), handle, entry)
+        .await
+        .unwrap();
+    let heads: Vec<_> = engine.outbox(&of).await.into_iter().collect();
+    engine
+        .acknowledge(of, Acknowledger::Member([8; 32]), &heads)
+        .await
+        .unwrap();
+    let header = parts[0].header.clone();
+    let parts = parts
+        .into_iter()
+        .map(|part| ObjectPart {
+            header: header.clone(),
+            ..part
+        })
+        .collect();
+    let taker = engine.fetches().attach(of);
+    Absent {
+        device,
+        engine,
+        space,
+        of,
+        blobs,
+        id: BlobId::from_bytes(handle),
+        locator,
+        bytes,
+        parts,
+        _taker: taker,
+    }
+}
+
+/// An entry whose size is not its object's: the reader reads by the
+/// header, whose size a chunk that opened binds, and tells the
+/// application once that the entry differs. An entry that agrees is not
+/// reported.
+#[tokio::test]
+async fn an_entry_whose_size_is_not_the_headers_is_reported() {
+    /// How many times the application was told that an entry differs.
+    async fn told(events: &mut crate::Events) -> usize {
+        let mut told = 0;
+        while let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(100), events.next()).await
+        {
+            told += usize::from(matches!(event, Event::EntryMismatch { .. }));
+        }
+        told
+    }
+    let absent = mislabelled(CHUNK + 7).await;
+    let mut events = absent.device.events();
+    let mut reader = absent
+        .blobs
+        .open_reader(absent.id, &Read::new())
+        .await
+        .unwrap();
+    reader.set_read_ahead(0);
+    // Past the end the entry shows, and before the blob's.
+    let offset = 3 * CHUNK + 5;
+    let piece = absent.read(&mut reader, offset, 10).await;
+    assert_eq!(piece, absent.bytes[offset as usize..offset as usize + 10]);
+    assert_eq!(reader.size(), Some(absent.bytes.len() as u64));
+    absent.read(&mut reader, 5, 10).await;
+    assert_eq!(told(&mut events).await, 1);
+
+    let agreeing = self::absent().await;
+    let mut events = agreeing.device.events();
+    let mut reader = agreeing
+        .blobs
+        .open_reader(agreeing.id, &Read::new())
+        .await
+        .unwrap();
+    agreeing.read(&mut reader, 5, 10).await;
+    assert_eq!(told(&mut events).await, 0);
+}

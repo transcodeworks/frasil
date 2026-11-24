@@ -666,6 +666,8 @@ pub(crate) struct PartReader {
     /// The digest of the sealed bytes of each chunk returned that was not
     /// read from what the device stores.
     given: BTreeMap<u64, [u8; 32]>,
+    /// The key reference the header names.
+    key_reference: Vec<u8>,
 }
 
 impl core::fmt::Debug for PartReader {
@@ -702,7 +704,12 @@ impl PartReader {
             ),
         };
         let hasher = frasil_units::objects::stored_bytes_hasher(header).map_err(Error::class)?;
+        let key_reference = Header::read(header)
+            .map_err(Error::class)?
+            .key_reference
+            .to_vec();
         Ok(Self {
+            key_reference,
             locator: *locator,
             any: any.map_err(Error::class)?,
             pass: Some((pass.map_err(Error::class)?, hasher, 0)),
@@ -725,6 +732,11 @@ impl PartReader {
     /// The plaintext's length, from the header.
     pub(crate) fn size(&self) -> u64 {
         self.any.size()
+    }
+
+    /// The key reference the header names.
+    pub(crate) fn key_reference(&self) -> &[u8] {
+        &self.key_reference
     }
 
     /// The object's chunk count.

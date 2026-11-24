@@ -139,6 +139,9 @@ pub struct BlobReader {
     /// Whether the last read failed because every connection of the
     /// space gave its chunk up, for bytes that failed their checks.
     gave_up: bool,
+    /// Whether the entry was compared with the header a chunk opened
+    /// under.
+    compared: bool,
     /// The window's count of headers let go when `parts` was made
     /// ([`Window::epoch`]).
     epoch: u64,
@@ -309,6 +312,7 @@ impl Blobs {
             file_whole: false,
             failed: None,
             gave_up: false,
+            compared: false,
             epoch: 0,
             _alive,
             entry,
@@ -635,6 +639,18 @@ impl BlobReader {
             };
             let (size, count) = (parts.size(), parts.count());
             if parts.has_opened() || self.file_whole {
+                // An entry whose key or size is not the header's is
+                // reported (adapter-blobs.md, 3.5 Fetching), once the
+                // header's own are known to be its sealer's.
+                if !std::mem::replace(&mut self.compared, true)
+                    && (size != self.entry.size || parts.key_reference() != self.entry.key)
+                {
+                    self.blobs.space().device.report(Event::EntryMismatch {
+                        space: self.blobs.space().id(),
+                        stream: self.blobs.id(),
+                        blob: self.id,
+                    });
+                }
                 return Ok(size);
             }
             let standing = self.position / CHUNK_BYTES as u64;

@@ -133,6 +133,23 @@ pub enum Event {
         /// The blob.
         blob: super::BlobId,
     },
+    /// A blob's entry names another key reference or another size than
+    /// the header of its object (adapter-blobs.md, 3.5 Fetching; 4
+    /// Security considerations, "A wrong entry"). The header decides what
+    /// is read: [`BlobReader::size`](super::BlobReader::size) is its
+    /// size, and what [`Blob`](super::Blob) shows of the entry is only
+    /// what its writer wrote. Reported by a
+    /// [`BlobReader`](super::BlobReader), once, when a chunk has opened
+    /// under the header, which binds the header's size.
+    #[cfg(feature = "adapter-blobs")]
+    EntryMismatch {
+        /// The space.
+        space: SpaceId,
+        /// The blob stream.
+        stream: StreamId,
+        /// The blob.
+        blob: super::BlobId,
+    },
     /// A held blob's file changed or is gone, so this device no longer
     /// holds the blob (at-rest.md, "Held objects"): the record of it is
     /// gone, the blob stays fetchable from peers and members, and the
