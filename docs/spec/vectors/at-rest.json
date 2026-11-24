@@ -1029,6 +1029,24 @@
       "note": "state 2: the timeline's T of the last read, 90,400, rounded down to a multiple of 3,600"
     },
     {
+      "name": "a cached object whose last read is no multiple of 3,600",
+      "table": 34,
+      "table_name": "retention",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "item": "5f231c666722d1a1694408179ce075c86acc9d96dc8ced74d2250f4ddd8d27a0",
+      "value": "a20102021a00016121",
+      "opened": {
+        "1": 2,
+        "2": 90401
+      },
+      "address": "64679c30bfabf30f9ae6377aa7b8306e220e5c19feb7138d57dc26aea0a414edc8",
+      "plaintext": "000000205f231c666722d1a1694408179ce075c86acc9d96dc8ced74d2250f4ddd8d27a0a20102021a00016121",
+      "aad": "66726173696c2f61742d726573742f7265636f72642f76310164679c30bfabf30f9ae6377aa7b8306e220e5c19feb7138d57dc26aea0a414edc8",
+      "nonce": "e74260be1807199d7cefb55478eb5c93e1741fa81e854930",
+      "record": "01e74260be1807199d7cefb55478eb5c93e1741fa81e8549301d583ef42a257c2b68284a2039a0d69bbe78456ea9fe78e5c45c0996e86264cc84b66d99246bc715c52604f337b3036ab362a49d59e042012707a89457",
+      "note": "a reader accepts any unsigned integer in key 2: the rounding is the writer's"
+    },
+    {
       "name": "an object this device put, which no peer is known to hold",
       "table": 34,
       "table_name": "retention",
@@ -1430,6 +1448,15 @@
       "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
       "error": "Malformed",
       "reason": "key 1 is present"
+    },
+    {
+      "name": "a retention record whose item is not an object ID",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e222e79273effb6446a1da06fc269e43d6e",
+      "record": "01fa7bf85b7d673e984f4b1c896b82a662541f61518bb45d02f54382369a817b1aa7bec15dd08b8969db39533192145a4c015d9abe6af25dff9ae699b7319c7adae882957390d94b57b0650585eaf5",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "the item is an object ID, 32 bytes"
     },
     {
       "name": "a claim naming another space",

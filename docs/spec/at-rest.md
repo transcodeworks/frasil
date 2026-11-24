@@ -363,7 +363,9 @@ three states it is in:
 - **Key 2** orders the cache: the device drops first the cached object it
   read longest ago. It is the timeline's `T`, which survives a restart,
   rounded down to a multiple of 3,600, so that reading an object writes
-  its record at most once an hour.
+  its record at most once an hour. The rounding is the writer's: a reader
+  accepts any unsigned integer in key 2, a multiple of 3,600 or not, and
+  orders by it as it stands.
 - **A record of state 1 or 3 with no part** says that the device means to
   keep an object it does not hold whole yet: it fetches the object by
   itself, as it fetches Frasil's own. A record of state 2 with no part says
@@ -877,6 +879,15 @@ what the other client fetched has no record and is kept, an object whose
 record still stands is as its record says, and a record of state 2 whose
 object has no part left is deleted.
 
+The rule holds for an object the other client held only part of, as a
+client that fetched objects when the application asked may have left one:
+its parts have no record, so the object is kept, and a device fetches by
+itself the rest of an object it keeps (section 2.9). On its first open
+such a store therefore grows to hold each of these objects whole, outside
+the budget, until the application drops them. A client MUST NOT guess that
+a part with no record was meant for a cache: nothing at rest says so, and
+dropping it could drop a copy the application relies on.
+
 ### 3.11 Error classes
 
 Besides [overview.md](overview.md)'s `Malformed`, `UnsupportedVersion` and
@@ -994,7 +1005,8 @@ finds it held or not held; neither fails.
   with its administering devices (key 9); `dropped` records
   of origin 1,
   with and without a height, and of origin 2; a `retention` record of each
-  state. `record_refusals`: twenty-five
+  state, and one of state 2 whose last read is no multiple of 3,600.
+  `record_refusals`: twenty-six
   records refused by section 3.2, each with the log key it is opened
   under, among them a moved record, another log's key or scope, an item
   that is not the address's, a claim naming another space, `dropped`
@@ -1003,7 +1015,8 @@ finds it held or not held; neither fails.
   both keys 7 and 8, an attribution out of order, and an empty label,
   a `state` record whose key 9 is not alone, and `retention` records of
   an unknown state, of state 1 with a last read, of state 2 without one,
-  of state 3 with a last read, and with no state.
+  of state 3 with a last read, with no state, and with an item that is
+  not 32 bytes.
 - `mark`: a mark, and four refusals, each with the mark and the device ID
   it is opened with.
 - `continuity`: section 3.5's nine outcomes, from agreeing head and mark to

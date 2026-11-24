@@ -318,7 +318,12 @@ must read everything with no connection. Nothing is evicted then, and
 once.
 
 **A store from an earlier version** holds blobs with no state recorded. They
-are kept: opening it with a budget evicts nothing it held.
+are kept: opening it with a budget evicts nothing it held. That includes a
+blob the earlier version had fetched only part of, as a device that fetched
+blobs on demand may have left one: the part is kept, and since a device
+fetches the rest of a blob it keeps, such blobs are fetched whole after the
+first open, outside the budget. Call `drop_local` for those the application
+does not want kept; a read then fetches them into the cache.
 
 **Spaces whose blobs the application holds as files** (`held`) have no
 cache: a file is the application's to keep or delete. A blob a read fetches

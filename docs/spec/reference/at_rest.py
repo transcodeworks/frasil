@@ -1310,6 +1310,10 @@ def at_rest_vectors(persons: dict | None = None) -> dict:
         space, label="retention/cached",
         note="state 2: the timeline's T of the last read, 90,400, rounded down to a "
              "multiple of 3,600")
+    add("a cached object whose last read is no multiple of 3,600", T_RETENTION,
+        example("at-rest/space/cached-unrounded"), cbor({1: R_CACHED, 2: 90401}), space,
+        label="retention/unrounded",
+        note="a reader accepts any unsigned integer in key 2: the rounding is the writer's")
     add("an object this device put, which no peer is known to hold", T_RETENTION,
         example("at-rest/space/put-object"), retention_value(R_PUT), space,
         label="retention/put",
@@ -1441,6 +1445,10 @@ def at_rest_vectors(persons: dict | None = None) -> dict:
             else example(f"at-rest/space/dropped/{label}")
         bad = store.seal(table, item, value, space, f"refused/{label}")
         refuse(name, bad["address"], bad["record"], space, reason)
+    short = store.seal(T_RETENTION, example("at-rest/space/dropped/retention-item")[:31],
+                       retention_value(R_KEPT), space, "refused/retention-item")
+    refuse("a retention record whose item is not an object ID", short["address"],
+           short["record"], space, "the item is an object ID, 32 bytes")
     refuse("a claim naming another space", claim["address"], wrong_space["record"], space,
            "the value's space ID is the log's")
     refuse("a device-wide record sealed under a log key", addr_h, head_under_log["record"],
@@ -1843,6 +1851,7 @@ def self_test() -> None:
         "a put object's retention record with a last read": "Malformed",
         "a cached object's retention record without a last read": "Malformed",
         "a retention record with no state": "Malformed",
+        "a retention record whose item is not an object ID": "Malformed",
         "a claim naming another space": "Malformed",
         "a device-wide record sealed under a log key": "Decrypt",
     }, errors
@@ -1870,6 +1879,8 @@ def self_test() -> None:
     retained = {r["name"]: r["opened"] for r in a["records"] if r["table"] == T_RETENTION}
     assert retained == {"an object the application keeps": {"1": R_KEPT},
                         "a cached object, with its last read": {"1": R_CACHED, "2": 90000},
+                        "a cached object whose last read is no multiple of 3,600":
+                            {"1": R_CACHED, "2": 90401},
                         "an object this device put, which no peer is known to hold":
                             {"1": R_PUT}}
     old, new, kept, legacy, own, put, used, sole = (bytes([i]) * 32 for i in range(8))
