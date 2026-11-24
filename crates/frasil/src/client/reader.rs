@@ -117,6 +117,9 @@ pub struct BlobReader {
     /// The chunk opened last, with its index.
     opened: Option<(u64, Vec<u8>)>,
     position: u64,
+    /// The chunk the reader last asked from: a read in the chunk after
+    /// it goes on, and one anywhere else is a jump.
+    standing: Option<u64>,
     read_ahead: u64,
     /// Whether the device holds the object whole, so that nothing is
     /// fetched.
@@ -285,6 +288,7 @@ impl Blobs {
             parts: None,
             opened: None,
             position: 0,
+            standing: None,
             read_ahead: READ_AHEAD,
             stored_whole: false,
             from_window: false,
@@ -432,19 +436,33 @@ impl BlobReader {
         self.position
     }
 
-    /// Moves to `position`: the next [`read`](Self::read) reads there, and
-    /// what was asked for and is neither there nor in the chunks after it
-    /// is cancelled.
+    /// Moves to `position`: the next [`read`](Self::read) reads there.
+    /// Unless that is in the chunk the reader stands in or the one after
+    /// it, everything the reader asked for is cancelled, and the next
+    /// read asks from there: the chunk it lands in ahead of everything
+    /// else, then the chunks after it. A [`read_at`](Self::read_at)
+    /// elsewhere than the reader stands does the same.
     pub fn seek(&mut self, position: u64) {
         self.position = position;
+        let index = position / CHUNK_BYTES as u64;
+        if self.jumps(index) {
+            self.window.cancel();
+            self.standing = Some(index);
+        }
         if let Some(parts) = &self.parts {
-            let index = position / CHUNK_BYTES as u64;
             let end = index
                 .saturating_add(1)
                 .saturating_add(self.read_ahead)
                 .min(parts.count());
             self.window.want(&self.engine(), &[], index..end.max(index));
         }
+    }
+
+    /// Whether a read in chunk `index` leaves where the reader stands: it
+    /// is neither in the chunk it last asked from nor in the one after.
+    fn jumps(&self, index: u64) -> bool {
+        self.standing
+            .is_some_and(|at| index != at && index != at.saturating_add(1))
     }
 
     /// How many chunks the reader fetches ahead of where it reads.
@@ -781,9 +799,14 @@ impl BlobReader {
     }
 
     /// Asks for the chunk at `index`, when the reader has neither it nor
-    /// asked for it, ahead of everything else; and, once fewer than half
-    /// the chunks read ahead are here or on their way, for the rest of
-    /// them in one run, behind it. Everything else is let go. A run takes
+    /// asked for it ahead of everything else, ahead of everything else:
+    /// so too when it was asked for only as read-ahead, which a
+    /// connection may not have reached yet. Once fewer than half the
+    /// chunks read ahead are here or on their way, it asks for the rest
+    /// of them in one run, behind it. Everything else is let go, and a
+    /// read that jumps cancels what was asked for before, so that the
+    /// connections fetch nothing the reader left behind before the chunk
+    /// it waits for. A run takes
     /// one slice more than it has chunks on the HTTP routes, where a
     /// chunk spans two slices, so the chunks ahead are asked for several
     /// at a time and not one by one. With `renew`, the requests that the
@@ -797,6 +820,10 @@ impl BlobReader {
         if renew {
             self.window.renew();
         }
+        if self.jumps(index) {
+            self.window.cancel();
+        }
+        self.standing = Some(index);
         let Some(count) = self.parts.as_ref().map(PartReader::count) else {
             return;
         };
@@ -820,9 +847,12 @@ impl BlobReader {
         }
         let (held, asked) = self.window.state(hold.clone());
         here.extend(held);
-        let coming = |at: &u64| here.contains(at) || asked.contains(at);
+        let coming = |at: &u64| here.contains(at) || asked.contains_key(at);
         let mut runs = Vec::new();
-        if !coming(&index) && index < end {
+        if !here.contains(&index)
+            && asked.get(&index) != Some(&FetchPriority::Position)
+            && index < end
+        {
             runs.push((index..index + 1, FetchPriority::Position));
         }
         // The chunks after it that are here or on their way, in a row.

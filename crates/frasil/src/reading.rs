@@ -133,10 +133,10 @@ struct Held {
     passing: bool,
     /// The most chunks it holds in memory.
     limit: usize,
-    /// The chunks asked for and not arrived, each with its request: one
-    /// request for a run of chunks, which ends once none of them is
-    /// wanted any more.
-    wanted: BTreeMap<u64, Arc<Fetch>>,
+    /// The chunks asked for and not arrived, each with its request and
+    /// the priority it was asked at: one request for a run of chunks,
+    /// which ends once none of them is wanted any more.
+    wanted: BTreeMap<u64, (Arc<Fetch>, FetchPriority)>,
     /// The sealed chunks that arrived, of an object the device does not
     /// store.
     chunks: BTreeMap<u64, Arc<Vec<u8>>>,
@@ -363,7 +363,10 @@ impl Window {
 
     /// Sets what the window wants. Each run of `runs` is asked for, at
     /// its priority, with one request for those of its chunks that the
-    /// window neither holds nor has asked for. The window holds in memory
+    /// window neither holds nor has asked for at that priority or a more
+    /// urgent one: a chunk asked for as read-ahead that a read comes to
+    /// wait for gets a request of its own, ahead of everything else, and
+    /// leaves the run it was in. The window holds in memory
     /// only chunks in `hold`, at most as many as `hold` names, and waits
     /// only for chunks in `hold`: what a seek leaves behind is dropped,
     /// and a request none of whose chunks is still waited for is
@@ -389,7 +392,8 @@ impl Window {
         for (run, priority) in runs {
             let new: Vec<u64> = (run.start.max(hold.start)..run.end.min(hold.end))
                 .filter(|index| {
-                    !held.chunks.contains_key(index) && !held.wanted.contains_key(index)
+                    !held.chunks.contains_key(index)
+                        && held.wanted.get(index).is_none_or(|(_, at)| at > priority)
                 })
                 .collect();
             let (Some(first), Some(last)) = (new.first(), new.last()) else {
@@ -403,7 +407,7 @@ impl Window {
                 !self.passing,
             ));
             for index in new {
-                held.wanted.insert(index, fetch.clone());
+                held.wanted.insert(index, (fetch.clone(), *priority));
             }
         }
     }
@@ -414,13 +418,24 @@ impl Window {
     /// made since, or one that left the chunks unserved, takes.
     pub(crate) fn renew(&self) {
         if let Some(held) = lock(&self.watched.inner).windows.get_mut(&self.number) {
-            held.wanted.retain(|_, fetch| fetch.end().is_none());
+            held.wanted.retain(|_, (fetch, _)| fetch.end().is_none());
+        }
+    }
+
+    /// Cancels every request the window made: what it holds stays.
+    pub(crate) fn cancel(&self) {
+        if let Some(held) = lock(&self.watched.inner).windows.get_mut(&self.number) {
+            held.wanted.clear();
         }
     }
 
     /// Of the chunks `chunks`, those the window holds in memory, and
-    /// those it has asked for and still waits for.
-    pub(crate) fn state(&self, chunks: Range<u64>) -> (BTreeSet<u64>, BTreeSet<u64>) {
+    /// those it has asked for and still waits for, each with the
+    /// priority it was asked at.
+    pub(crate) fn state(
+        &self,
+        chunks: Range<u64>,
+    ) -> (BTreeSet<u64>, BTreeMap<u64, FetchPriority>) {
         let inner = lock(&self.watched.inner);
         inner
             .windows
@@ -433,7 +448,7 @@ impl Window {
                         .collect(),
                     held.wanted
                         .range(chunks.clone())
-                        .map(|(at, _)| *at)
+                        .map(|(at, (_, priority))| (*at, *priority))
                         .collect(),
                 )
             })
@@ -507,7 +522,7 @@ impl Window {
             .get(&self.number)?
             .wanted
             .get(&index)
-            .map(|fetch| fetch.follow_end())
+            .map(|(fetch, _)| fetch.follow_end())
     }
 
     /// The sealed bytes the window holds in memory, and how many requests

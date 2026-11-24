@@ -1395,3 +1395,111 @@ async fn a_read_made_again_asks_again_once_its_request_ended() {
         assert_eq!(buf[..], absent.bytes[CHUNK as usize..CHUNK as usize + 10]);
     }
 }
+
+/// Eleven chunks and a bit.
+fn long() -> Vec<u8> {
+    (0..CHUNK_BYTES * 11 + 1000)
+        .map(|i| (i % 251) as u8)
+        .collect()
+}
+
+/// Reads ten bytes at the start of chunk `index` once that chunk alone
+/// was sent.
+async fn read_chunk(absent: &Absent, reader: &mut BlobReader, index: u64) {
+    let mut buf = [0u8; 10];
+    let reading = reader.read_at(index * CHUNK, &mut buf);
+    tokio::pin!(reading);
+    tokio::select! {
+        _ = &mut reading => panic!("nothing arrived yet"),
+        () = absent.asked_for(index) => {}
+    }
+    absent.send(index as usize).await;
+    assert_eq!(reading.await.unwrap(), 10);
+}
+
+/// A reader stands in a chunk with the chunks after it on their way, and
+/// seeks forward to one of them: that chunk is asked for ahead of
+/// everything else, the chunks it left behind are asked for no longer,
+/// and the read-ahead goes on from where it landed.
+#[tokio::test]
+async fn a_seek_within_the_read_ahead_asks_for_where_it_lands_first() {
+    for (read, seeks) in [
+        (Read::new(), false),
+        (Read::new(), true),
+        (Read::new().keep(), false),
+        (Read::new().uncached(), false),
+    ] {
+        let absent = absent_with(Options::new(), long()).await;
+        let mut reader = absent.blobs.open_reader(absent.id, &read).await.unwrap();
+        read_chunk(&absent, &mut reader, 0).await;
+        // The run after it, of which one chunk arrived.
+        let run: Vec<_> = (1..=8).map(|at| (at, FetchPriority::ReadAhead)).collect();
+        assert_eq!(absent.asked(), run);
+        absent.send(1).await;
+        if seeks {
+            reader.seek(7 * CHUNK + 3);
+            assert!(absent.asked().is_empty(), "{:?}", absent.asked());
+        }
+        let mut buf = [0u8; 10];
+        {
+            let reading = reader.read_at(7 * CHUNK + 3, &mut buf);
+            tokio::pin!(reading);
+            let landed = tokio::time::timeout(Duration::from_secs(2), async {
+                while !absent.asked().contains(&(7, FetchPriority::Position)) {
+                    tokio::select! {
+                        _ = &mut reading => panic!("nothing arrived yet"),
+                        () = tokio::time::sleep(Duration::from_millis(5)) => {}
+                    }
+                }
+            })
+            .await;
+            assert!(landed.is_ok(), "{:?}", absent.asked());
+            let mut next = vec![(7, FetchPriority::Position)];
+            next.extend((8..=11).map(|at| (at, FetchPriority::ReadAhead)));
+            assert_eq!(absent.asked(), next);
+            absent.send(7).await;
+            assert_eq!(reading.await.unwrap(), 10);
+        }
+        let from = 7 * CHUNK as usize + 3;
+        assert_eq!(buf[..], absent.bytes[from..from + 10]);
+    }
+}
+
+/// A read that comes to wait for a chunk asked for only as read-ahead
+/// asks for it ahead of everything else, and the rest of the run stays
+/// as it was asked.
+#[tokio::test]
+async fn a_read_that_waits_for_a_chunk_read_ahead_asks_for_it_first() {
+    let absent = absent_with(Options::new(), long()).await;
+    let mut reader = absent
+        .blobs
+        .open_reader(absent.id, &Read::new())
+        .await
+        .unwrap();
+    read_chunk(&absent, &mut reader, 0).await;
+    let id_of = |index: u64| {
+        let requests = absent.engine.fetches().of(&absent.of);
+        let request = requests
+            .iter()
+            .find(|request| request.chunks.contains(&index));
+        request.map(|request| request.id)
+    };
+    let run = id_of(2);
+    assert_eq!(absent.asked()[0], (1, FetchPriority::ReadAhead));
+    let mut buf = [0u8; 10];
+    let reading = reader.read_at(CHUNK, &mut buf);
+    tokio::pin!(reading);
+    let raised = tokio::time::timeout(Duration::from_secs(2), async {
+        while !absent.asked().contains(&(1, FetchPriority::Position)) {
+            tokio::select! {
+                _ = &mut reading => panic!("nothing arrived yet"),
+                () = tokio::time::sleep(Duration::from_millis(5)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(raised.is_ok(), "{:?}", absent.asked());
+    assert_eq!(id_of(2), run);
+    absent.send(1).await;
+    assert_eq!(reading.await.unwrap(), 10);
+}
