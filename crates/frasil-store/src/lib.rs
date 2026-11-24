@@ -15,7 +15,8 @@
 //!   a log key, scope tags, item tags and addresses (at-rest.md, "Keys,
 //!   addresses and records", "Application keys").
 //! - [`tables`]: the tables, each table's item rule, and each table's value
-//!   (at-rest.md, "Tables", "The head, events and keys", "Held objects").
+//!   (at-rest.md, "Tables", "The head, events and keys", "Held objects",
+//!   "Retention").
 //! - [`record`]: sealing a record and opening one (at-rest.md, "Opening a
 //!   record").
 //! - [`continuity`](mod@continuity): the mark, the restore modes,

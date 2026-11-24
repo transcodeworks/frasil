@@ -191,6 +191,7 @@ T_ACK, T_LISTING, T_STATE, T_PSEUDONYM = 0x14, 0x15, 0x16, 0x17
 T_INVITE, T_CLAIM, T_REPLAY, T_VOUCHED, T_ENDPOINT, T_HOST = 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x20
 T_HELD, T_PEERS, T_ANNOUNCED = 0x1D, 0x1E, 0x1F
 T_DROPPED = 0x21
+T_RETENTION = 0x22
 TABLES = {
     T_HEAD: ("head", DEVICE), T_LOG: ("log", DEVICE), T_TIMELINE: ("timeline", DEVICE),
     T_EPOCH: ("epoch", DEVICE), T_NEXT_ENDPOINT: ("next_endpoint", DEVICE),
@@ -203,12 +204,18 @@ TABLES = {
     T_ENDPOINT: ("endpoint", LOG), T_HELD: ("held", LOG), T_PEERS: ("peers", LOG),
     T_ANNOUNCED: ("announced", LOG),
     T_HOST: ("host", LOG), T_DROPPED: ("dropped", LOG),
+    T_RETENTION: ("retention", LOG),
 }
 LOG_SPACE, LOG_LIST = 1, 2
 K_ROTATION, K_STATE, K_BODY, K_GAP, K_RECORD = 1, 2, 3, 4, 5
 # dropped: an event the device held and dropped, or a parent a peer answered
 # Missing for (roster.md, "Forgetting, and starting from a checkpoint").
 D_HELD, D_MISSING = 1, 2
+# retention: an object the device keeps until the application drops it, or
+# one it caches within its budget (at-rest.md, "Retention").
+R_KEPT, R_CACHED = 1, 2
+# The last read of a cached object is the timeline's T rounded down to this.
+READ_STEP = 3600
 BODY_DERIVED, BODY_HANDED = 1, 2
 S_VALID, S_REFUSED, S_PENDING, S_HELD, S_AWAITING_KEY, S_ALONE = 1, 2, 3, 4, 5, 6
 F_VERIFIED, F_PROVISIONAL = 0x01, 0x02
@@ -320,7 +327,8 @@ def item_ok(table: int, item: bytes) -> bool:
     if table in (T_HEAD, T_TIMELINE, T_EPOCH, T_NEXT_ENDPOINT, T_STATE, T_PEERS):
         return item == b""
     if table in (T_LOG, T_EVENT, T_ACK, T_LISTING, T_REPLAY, T_INVITE, T_CLAIM, T_VOUCHED,
-                 T_ENDPOINT, T_HELD, T_ANNOUNCED, T_DEPOSIT_KEYS, T_DROPPED):
+                 T_ENDPOINT, T_HELD, T_ANNOUNCED, T_DEPOSIT_KEYS, T_DROPPED,
+                 T_RETENTION):
         return len(item) == 32
     if table == T_TOKEN:
         return len(item) == 64
@@ -565,6 +573,13 @@ def read_value(table: int, item: bytes, value: bytes, log_id: bytes | None):
                 and is_bytes(m[3]) and 1 <= len(m[3]) <= MAX_HELD_STAMP):
             raise SpecError("Malformed")
         return m
+    if table == T_RETENTION:
+        m = _map(value, {1, 2}, {1})
+        # Key 2, the last read, exactly with state 2.
+        if not (m[1] in (R_KEPT, R_CACHED) and (2 in m) == (m[1] == R_CACHED)
+                and (2 not in m or is_uint(m[2]))):
+            raise SpecError("Malformed")
+        return m
     if table == T_PEERS:
         m = _map(value, {1, 2}, set())
         if not m:
@@ -612,6 +627,26 @@ def read_value(table: int, item: bytes, value: bytes, log_id: bytes | None):
         _check_reading(m[4])
         return m
     raise SpecError("Malformed")
+
+
+def retention_value(state: int, read: int | None = None) -> bytes:
+    """A `retention` record's value (at-rest.md, "Tables"): the state, and
+    for a cached object the timeline's T of its last read, rounded down."""
+    if state == R_CACHED:
+        return cbor({1: state, 2: read - read % READ_STEP})
+    return cbor({1: state})
+
+
+def evictable(records: dict, own: set, pending: set, in_use: set) -> list:
+    """The objects a device may drop for its budget, the first to go first
+    (at-rest.md, "Retention"): `records` maps each object that has parts to
+    its opened `retention` value or None; `own` are Frasil's own objects,
+    `pending` those of this device's units not yet durable, `in_use` those
+    a read or a transfer is using."""
+    return [oid for _, oid in sorted(
+        (m[2], oid) for oid, m in records.items()
+        if m is not None and m[1] == R_CACHED
+        and oid not in own and oid not in pending and oid not in in_use)]
 
 
 def held_value(token: bytes, size: int, stamp: bytes) -> bytes:
@@ -1266,6 +1301,14 @@ def at_rest_vectors(persons: dict | None = None) -> dict:
     add("a parent a peer answered Missing for, at a newcomer", T_DROPPED,
         example("at-rest/space/missing"), cbor({1: D_MISSING}), space, label="dropped/missing",
         note="roster.md, \"Starting from a checkpoint\": counted as dropped")
+    add("an object the application keeps", T_RETENTION, obj["id"],
+        retention_value(R_KEPT), space, label="retention/kept",
+        note="at-rest.md, \"Retention\": state 1, never dropped by the device itself")
+    add("a cached object, with its last read", T_RETENTION,
+        example("at-rest/space/cached-object"), retention_value(R_CACHED, 86400 + 4000),
+        space, label="retention/cached",
+        note="state 2: the timeline's T of the last read, 90,400, rounded down to a "
+             "multiple of 3,600")
     add("a checkpoint's record object key, handed by a snapshot", T_KEY,
         bytes([K_RECORD]) + kept, bytes([BODY_HANDED]) + example("at-rest/space/record-key"),
         space, label="key/record",
@@ -1374,7 +1417,17 @@ def at_rest_vectors(persons: dict | None = None) -> dict:
              cbor({1: D_MISSING, 3: 41}), "missing-height",
              "key 3 is a dropped parent's height, from 1, and only with origin 1"),
             ("a dropped record with height 0", T_DROPPED, cbor({1: D_HELD, 2: 1, 3: 0}),
-             "height-0", "key 3 is a dropped parent's height, from 1, and only with origin 1")):
+             "height-0", "key 3 is a dropped parent's height, from 1, and only with origin 1"),
+            ("a retention record of an unknown state", T_RETENTION, cbor({1: 3, 2: 86400}),
+             "retention-state", "state 1 is kept and state 2 cached"),
+            ("a kept object's retention record with a last read", T_RETENTION,
+             cbor({1: R_KEPT, 2: 86400}), "retention-kept-read",
+             "key 2 is present exactly with state 2"),
+            ("a cached object's retention record without a last read", T_RETENTION,
+             cbor({1: R_CACHED}), "retention-cached-unread",
+             "key 2 is present exactly with state 2"),
+            ("a retention record with no state", T_RETENTION, cbor({2: 86400}),
+             "retention-stateless", "key 1 is present")):
         item = b"" if table == T_STATE else unit_id if table == T_EVENT \
             else example(f"at-rest/space/dropped/{label}")
         bad = store.seal(table, item, value, space, f"refused/{label}")
@@ -1776,6 +1829,10 @@ def self_test() -> None:
         "an erasing state beside another key": "Malformed",
         "a dropped record of origin 2 with a height": "Malformed",
         "a dropped record with height 0": "Malformed",
+        "a retention record of an unknown state": "Malformed",
+        "a kept object's retention record with a last read": "Malformed",
+        "a cached object's retention record without a last read": "Malformed",
+        "a retention record with no state": "Malformed",
         "a claim naming another space": "Malformed",
         "a device-wide record sealed under a log key": "Decrypt",
     }, errors
@@ -1798,6 +1855,17 @@ def self_test() -> None:
     # An empty object's one chunk is 40 bytes, and a part of that size parses.
     assert read_value(T_OBJECT, bytes(32) + (1).to_bytes(4, "big"), bytes(SEALED_CHUNK_MIN),
                       None) == bytes(SEALED_CHUNK_MIN)
+    # Retention: only a cached object is dropped for the budget, the one read
+    # longest ago first; no record means kept.
+    retained = {r["name"]: r["opened"] for r in a["records"] if r["table"] == T_RETENTION}
+    assert retained == {"an object the application keeps": {"1": R_KEPT},
+                        "a cached object, with its last read": {"1": R_CACHED, "2": 90000}}
+    old, new, kept, legacy, own, put, used = (bytes([i]) * 32 for i in range(7))
+    cached = lambda t: read_value(T_RETENTION, old, retention_value(R_CACHED, t), bytes(32))
+    records = {new: cached(90400), old: cached(7300), legacy: None, own: cached(0),
+               kept: read_value(T_RETENTION, kept, retention_value(R_KEPT), bytes(32)),
+               put: cached(1), used: cached(2)}
+    assert evictable(records, {own}, {put}, {used}) == [old, new]
     assert not item_ok(T_PSEUDONYM, slot_reference(bytes(32), MAX_SLOT_INDEX, bytes(32)))
     assert item_ok(T_PSEUDONYM, slot_reference(bytes(32), MAX_SLOT_INDEX - 1, bytes(32)))
     assert not item_ok(T_PSEUDONYM, cbor([bytes(32), 0]))

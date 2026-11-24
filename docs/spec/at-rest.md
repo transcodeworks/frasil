@@ -5,7 +5,8 @@ This document specifies what a Frasil client keeps on its device and how it
 is sealed: the sealed device keys, the store of sealed records and its
 tables, the rules for committing, restore detection, keys for the
 application's own data, objects the application holds in place of their
-sealed chunks, and what is never written. It depends on
+sealed chunks, which stored objects the device may drop to stay within a
+budget, and what is never written. It depends on
 [overview.md](overview.md) for conventions and the timeline,
 [crypto.md](crypto.md) for primitives and labels, [events.md](events.md)
 for logs and chains, [identity.md](identity.md) for the person ID and a
@@ -158,6 +159,7 @@ aad       = "frasil/at-rest/record/v1" || u8(1) || address
 | `0x1f` | `announced` | log | a member's device ID (32) | 32 bytes: the next member endpoint key that member announced in the space ([ext-next-endpoints.md](ext-next-endpoints.md)); kept only beside an `endpoint` record of the same member |
 | `0x20` | `host` | log | 1 to 256 bytes | what a device that hosts the space as an always-on peer keeps ([peers.md](peers.md)) |
 | `0x21` | `dropped` | log | event ID (32) | `{1: origin, 2: kind, 3: height}`, key 2 present exactly with origin 1, key 3 only with origin 1: an event of the log that is in the past of its kept checkpoint and that this device does not hold (section 3.4, "Forgetting before a checkpoint"): origin 1, the device held it and dropped it, with its envelope's kind and, in a space's log, when it is a parent of an event the log keeps of that past, its height, from 1 ([events.md](events.md), "Placement and order"); origin 2, a peer answered `Missing` for it when the device fetched it as a parent, at a device that started from a checkpoint ([roster.md](roster.md), section 3.15.6) |
+| `0x22` | `retention` | log | object ID (32) | `{1: state, 2: read}`, key 1 present, key 2 present exactly with state 2: how long this device keeps an object it stores as sealed chunks (section 2.9): state 1, kept until the application drops it; state 2, cached within the device's budget, with the timeline's `T` ([overview.md](overview.md), section 6.3) at which the device last read the object, rounded down to a multiple of 3,600 |
 
 - Every other code is `Malformed`. Device-wide tables appear only under 16
   zero bytes, and log tables only under a log's scope tag. An
@@ -185,6 +187,9 @@ aad       = "frasil/at-rest/record/v1" || u8(1) || address
   record, and no other part. A device holds an object in one form only: a
   `held` record beside a part `i` ≥ 1 of the same object is `Malformed` on
   open, and the parts win.
+- A `retention` record is about an object's sealed chunks. An object that
+  has parts and no `retention` record is kept (section 2.9). A held object
+  has none: one found beside a `held` record is not used.
 
 ### 2.5 The head, events and keys
 
@@ -333,6 +338,51 @@ of it. Such a device MAY hold the plaintext, and cannot serve it. The
 source's members and the peer serve it instead
 ([ext-libraries.md](ext-libraries.md), section 3.9). A member of both
 spaces serves it under the source.
+
+### 2.9 Retention
+
+A replica need not keep an object it can fetch again
+([units.md](units.md), section 3.7). A device MAY therefore store the
+objects of a space's Blobs streams ([adapter-blobs.md](adapter-blobs.md))
+as a cache: it fetches an object when the application reads it, and drops
+whole objects again to stay within a **budget**, a number of stored bytes
+that the application sets for the device. A `retention` record (section
+2.4) says, for one object the device stores as sealed chunks, which of two
+states it is in:
+
+| State | Name | Meaning |
+|---|---|---|
+| 1 | kept | the object stays until the application drops it; the device never drops it by itself |
+| 2 | cached | the object counts against the budget, and the device drops it when the budget is full (section 3.10) |
+
+- **No record means kept.** An object that has parts and no `retention`
+  record is kept. A store that a client without this table wrote holds no
+  such record, so everything in it is kept: a client that knows the table
+  drops nothing that it did not itself record as cached.
+- **Key 2** orders the cache: the device drops first the cached object it
+  read longest ago. It is the timeline's `T`, which survives a restart,
+  rounded down to a multiple of 3,600, so that reading an object writes
+  its record at most once an hour.
+- **A record of state 1 with no part** says that the device means to keep
+  an object it does not hold whole yet: it fetches the object by itself, as
+  it fetches Frasil's own. A record of state 2 with no part says nothing,
+  and the device deletes it.
+- Retention is this device's choice about its own disk, like the policy of
+  section 2.8. It is never synced, nothing on the wire shows it, and
+  another device of the same person may choose otherwise.
+- Frasil's own objects (section 2.8, "The policy"), and the record objects
+  of checkpoints ([roster.md](roster.md), "The record object"), have no
+  `retention` record and are never dropped under it: the device reads them
+  back from its store and cannot run without them.
+- A held object (section 2.8) has no `retention` record either: its
+  plaintext is the application's file, which the application keeps or
+  deletes.
+- The budget is not stored. It is the application's, given each time the
+  device is opened.
+- An application MAY instead have a device hold every object its spaces
+  name, as a client without this table does. Such a device fetches each
+  object by itself, records nothing for the objects it fetches, so that
+  they are kept, and drops none.
 
 ## 3. Procedures
 
@@ -581,7 +631,9 @@ A client MAY keep a log in memory only, as
 `frasil.nothing-at-rest`. Its log key and records are never committed to
 the store, and the head holds no tip and no `log` record of it. After a
 restart the device holds nothing of the log, so it treats the log as
-restored (section 3.6, step 2) before it signs there.
+restored (section 3.6, step 2) before it signs there. What section 2.9
+says of the objects of such a log is kept in memory with them, and the
+budget counts the object bytes the device holds in memory for it.
 
 ### 3.8 What is never written
 
@@ -705,11 +757,11 @@ application's.
   the plaintext ([units.md](units.md), section 3.3, with `k(S)` or, for a
   reference, with the object key), writes it through `create` and
   `finish`, and in one commit puts the `held` record and deletes the chunk
-  records.
+  records and the object's `retention` record, if it has one.
 - To `sealed`: for each `held` record, it seals the chunks again as
   "Serving" does, from chunk 0 to chunk `n − 1`, and in one commit puts
   the chunk records and deletes the `held` record, then calls
-  `forget(token)`. An object found not held is withdrawn as "Serving"
+  `forget(token)`. It puts no `retention` record, so the object is kept. An object found not held is withdrawn as "Serving"
   says, and stays fetchable.
 
 **Rotation.** A held object stays under its original state, as a stored
@@ -718,7 +770,68 @@ secrets in its `key` table, so it can seal the chunks again for as long as
 it is a member. Re-keying after an erasure (section 3.4) seals
 `held` records again like any record.
 
-### 3.10 Error classes
+### 3.10 Retention
+
+**Recording.** A device that fetches an object into its cache commits the
+object's `retention` record of state 2 before, or in the commit of, the
+first part it stores of it, so that a crash between the two leaves no part
+that counts as kept. A device that seals an object itself MAY commit the
+record after the parts: until it does, the object is kept. When the
+application asks to keep an object, the device commits a record of state
+1, replacing one of state 2. A read of a cached object puts its record
+again when key 2 changes.
+
+**What is never dropped.** To stay within its budget a device drops only
+an object whose `retention` record has state 2, and never:
+
+- an object with no record, or with a record of state 1;
+- one of Frasil's own objects, or a checkpoint's record object (section
+  2.9), whatever record it has;
+- an object that a unit names which a signer of this device signed and
+  which is not yet durable ([units.md](units.md), section 3.13): the
+  device may hold its only copy. In a space with no always-on peer a
+  member's acknowledgement makes the unit durable while that member may
+  not hold the object yet, so a device records an object it puts there as
+  kept;
+- an object that a read or a transfer on the device is using.
+
+**Dropping** an object, for the budget or because the application asks,
+is one commit that deletes the object's `retention` record and every
+`object` record of it, the header with the chunks: never some of its parts
+and not others. With them the device forgets everything it found out about
+the stored bytes while it ran, such as that they hash to the object's
+locator ([units.md](units.md), section 3.3, step 0): it never wrote any of
+that (section 3.8), and what it later holds of the object is checked
+again from the start. The application may drop a kept object. It may not
+drop one of Frasil's own objects or one in use, nor, in a space with an
+always-on peer, an object of a unit that is not yet durable, which the
+peer is about to take. In a space with no always-on peer the application
+decides: no party there is bound to take the object.
+
+**After a drop** the device holds nothing of the object and treats it as
+absent by its own choice: it does not fetch the object again by itself,
+and fetches it when the application next reads it, from a peer or member
+that holds it, with every check of [units.md](units.md), section 3.3. An
+object that no other party holds any more, as an older version of a file
+may be ([units.md](units.md), section 3.7), cannot be fetched again: an
+application keeps the objects it must not lose.
+
+**When.** A device drops cached objects, least recently read first by key
+2, before a write that would take its cached bytes past the budget, and
+when it finds them past the budget at upkeep. An object larger than the
+whole budget, and every object under a budget of zero, is dropped once the
+read that fetched it ends.
+
+**A client without this table** never opens a `retention` record: the
+table's code is unknown to it (section 3.2, step 1), it uses no record it
+cannot open and deletes none on its own. It fetches and keeps objects as
+before and leaves the records where they are; they go with the log
+(section 3.4). When a client that knows the table opens the store again,
+what the other client fetched has no record and is kept, an object whose
+record still stands is as its record says, and a record of state 2 whose
+object has no part left is deleted.
+
+### 3.11 Error classes
 
 Besides [overview.md](overview.md)'s `Malformed`, `UnsupportedVersion` and
 `Decrypt`, and [units.md](units.md)'s `ObjectMismatch`:
@@ -739,7 +852,10 @@ finds it held or not held; neither fails.
   keys' header, how many logs and how many records of each table each log
   holds, record lengths, and when records change: that a device holds three
   invites, say, or how many events are not yet durable. It learns no log,
-  event or object ID, peer, name or key.
+  event or object ID, peer, name or key. The `retention` records add how
+  many objects of a log the device recorded as kept or cached, without
+  which is which, and, to one who watches the store change, that some
+  object of the log was read in an hour, not which.
 - **Sealed under the device, not the space,** so old space keys open
   nothing in a stored copy.
 - **Rollback.** The mark catches a rolled-back head. An attacker who rolls
@@ -760,6 +876,7 @@ finds it held or not held; neither fails.
   | `timeline` | The device starts from the older reading. With a wall clock known at that reading and now, the time since counts as time off and the timeline is about where it was. Without one, the timeline goes back by the time between the two readings: a rule that waits on the lower estimate waits longer by that much. The run number repeats one already used, so the upper estimate between a reading of that earlier run and now, with no wall clock on either side, is taken as within one run ([overview.md](overview.md), section 6.4) and can come out short: a rule that stops after a time stops later, by at most the time rolled back. | Nothing |
   | `state` | The log's older base: events that rest on the newer base lack their parents until sync or a snapshot brings them again. An older last completed sync: under [ext-guests.md](ext-guests.md)'s online-only policy the device stops writing sooner, until it syncs. A leave request no longer recorded: a guest writes again under its own write rule, until an administrator ends its grant. The personal space no longer marked: the device finds it again from the space's recovery entries. A claim marked again with its `claim` record present changes nothing; with it gone, the device forgets the log as a claim that never finished. | Nothing |
   | `ack` | The device remembers less of what that peer or member acknowledged: a party that then serves less than it last acknowledged, but no less than the record put back says, is not reported `RolledBack` ([units.md](units.md), section 3.13). Which events are durable comes from the `outbox` records, not from `ack`. | Nothing |
+  | `retention` | The object's older state. A record of state 2 put back over one of state 1 lets the device drop an object the application asked to keep; the object was cached before, so another party served it or took it. A record put back for an object dropped since has no part: state 1 fetches the object again, state 2 is deleted. A record deleted alone leaves its object kept. | Nothing |
 
   Other rolled-back or deleted records lose data in the same way, never
   forge it.
@@ -830,14 +947,17 @@ finds it held or not held; neither fails.
   incarnations expressed again (key 8), and one of an erasure's residue
   with its administering devices (key 9); `dropped` records
   of origin 1,
-  with and without a height, and of origin 2. `record_refusals`: twenty
+  with and without a height, and of origin 2; a `retention` record of each
+  state. `record_refusals`: twenty-four
   records refused by section 3.2, each with the log key it is opened
   under, among them a moved record, another log's key or scope, an item
   that is not the address's, a claim naming another space, `dropped`
   records with a height beside origin 2 and of height 0, `state`
   records whose key 8 is empty or out of order, and `event` records with
   both keys 7 and 8, an attribution out of order, and an empty label,
-  and a `state` record whose key 9 is not alone.
+  a `state` record whose key 9 is not alone, and `retention` records of
+  an unknown state, of state 1 with a last read, of state 2 without one,
+  and with no state.
 - `mark`: a mark, and four refusals, each with the mark and the device ID
   it is opened with.
 - `continuity`: section 3.5's nine outcomes, from agreeing head and mark to
