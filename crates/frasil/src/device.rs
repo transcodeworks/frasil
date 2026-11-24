@@ -1139,7 +1139,10 @@ impl Engine {
     ///
     /// Every chunk is checked as it arrives, as for any fetch (units.md,
     /// 3.3 Reading an object), and kept beside what the device holds of
-    /// the object, which becomes whole once every chunk is here.
+    /// the object, which becomes whole once every chunk is here. A request
+    /// does not keep a blob: the chunks it brings of one the device held
+    /// nothing of are the cache's (at-rest.md, "Retention", recording),
+    /// and the device fetches no other chunk of it by itself.
     pub fn fetch_chunks(
         &self,
         space: EventId,

@@ -6,7 +6,8 @@
 //! corrupted slice keeps nothing. A range of chunks is fetched from any
 //! index, ahead of a download that runs beside the connection; a fetch
 //! that is cancelled stops before its next slice; and a fetch leaves out
-//! the chunks the device holds, wherever they are. A device that holds
+//! the chunks the device holds, wherever they are, and a range fetched is
+//! not completed by the device itself. A device that holds
 //! its blobs as files takes an object in order, whichever chunks are
 //! asked for. A request whose transfer is cut is tried again after a
 //! wait, which only its own progress starts over, and one whose slices
@@ -517,14 +518,52 @@ async fn a_fetch_resumes_over_the_chunks_held_wherever_they_are() {
     drop(link);
     drop(bob);
 
-    // Opened again, it fetches every object the space's units name.
+    // Opened again, to keep every blob: it fetches every object the
+    // space's units name.
     faults.clear();
     let bob = store.reopen().await;
     assert!(holds(&bob, &space, &locator, 4).await);
+    bob.keep_all_blobs();
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
     until(|| async { bob.object(&space, &locator).await.is_ok() }).await;
     assert_eq!(bob.object(&space, &locator).await.unwrap(), big);
     assert_eq!(faults.asked(&locator), vec![0, 1, 2, 3, 5]);
+    link.close();
+    alice_link.close();
+    peer.shutdown().await;
+}
+
+/// A request for chunks brings those chunks and no other: what the
+/// connection does afterwards on account of the space, as when it takes a
+/// unit another device wrote, starts no fetch of the rest of the object.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_range_fetched_is_not_completed_by_the_device_itself() {
+    let peer = spawn_loopback().await.unwrap();
+    let (proxy, faults) = spawn_proxy(&peer.origin).await;
+    let (alice, alice_link, bob, _store, space, locator, _big) =
+        setup_with(&peer.origin, SIX_CHUNKS).await;
+    let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
+    let last = bob.fetch_chunks(space, locator, 5..6, FetchPriority::Position);
+    until(|| async { holds(&bob, &space, &locator, 5).await }).await;
+    assert_eq!(faults.asked(&locator), vec![0, 5]);
+
+    // A unit Alice writes now reaches Bob, whose connection looks again
+    // at what the space lacks.
+    let notes = alice.new_stream("frasil:blobs").unwrap();
+    let (unit, _) = alice
+        .put_blob(space, &notes, Some("note"), b"written meanwhile")
+        .await
+        .unwrap();
+    until(|| async {
+        bob.read(&space, |replica| replica.holds(unit))
+            .await
+            .unwrap()
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(faults.asked(&locator), vec![0, 5]);
+    assert!(!holds(&bob, &space, &locator, 0).await);
+    drop(last);
     link.close();
     alice_link.close();
     peer.shutdown().await;

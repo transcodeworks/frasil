@@ -923,6 +923,50 @@ async fn a_part_that_arrives_after_its_blob_was_dropped_is_not_stored() {
     );
 }
 
+/// A request for chunks of a blob the device holds nothing of does not
+/// keep the blob: its record of state 2 is committed with the first part,
+/// so that the part is the cache's and the device does not fetch the rest
+/// of the blob by itself (at-rest.md, "Retention", recording).
+#[tokio::test]
+async fn a_part_fetched_for_a_request_alone_is_cached_and_the_rest_is_not_fetched() {
+    let medium = Medium::new();
+    let (engine, sealed, space) = medium.device().await;
+    let chunk = frasil_units::limits::CHUNK_BYTES;
+    let stream = engine.new_stream(frasil_adapter_blobs::TYPE).unwrap();
+    let (_, blob) = engine
+        .put_blob(space, &stream, None, &vec![7; 2 * chunk + 1])
+        .await
+        .unwrap();
+    let parts = stored_parts(&engine, space, &blob).await;
+    assert_eq!(parts.len(), 3);
+    engine.drop_local_object(space, &blob).await.unwrap();
+    assert!(records(&engine, space).await.is_empty());
+
+    let fetching = engine.fetch_chunks(space, blob, 0..1, FetchPriority::Position);
+    assert_eq!(
+        engine.receive_part(space, parts[0].clone()).await.unwrap(),
+        Received::Kept
+    );
+    assert!(matches!(
+        record_of(&engine, space, &blob).await,
+        Some(Retention::Cached { .. })
+    ));
+    assert_eq!(
+        engine.retention_of(&space, &blob).await.0,
+        BlobState::Cached
+    );
+    assert!(!engine.missing_objects(&space).await.contains(&blob));
+    // Still the cache's once the request is gone, and after a reopen.
+    drop(fetching);
+    assert!(!engine.missing_objects(&space).await.contains(&blob));
+    let engine = medium.reopen(engine, &sealed).await;
+    assert!(matches!(
+        record_of(&engine, space, &blob).await,
+        Some(Retention::Cached { .. })
+    ));
+    assert!(!engine.missing_objects(&space).await.contains(&blob));
+}
+
 /// While parts of a cached object are being written, outside the device's
 /// lock, nothing drops the object: an eviction then would delete its
 /// record and its earlier parts, and the parts under way would land with

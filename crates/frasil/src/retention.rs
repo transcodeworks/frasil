@@ -729,13 +729,15 @@ impl Engine {
     /// retention (at-rest.md, "Retention", recording). It does when the
     /// object has a record; when the device holds chunks of it, which with
     /// no record are kept; when the device keeps every blob, or the
-    /// application holds the space's objects; when a read fetches it, for
-    /// which a record of state 2 is committed here, before the part; when
-    /// a request for its chunks is still wanted, or the application asked
-    /// for it; or when it is not an object the device fetches only when it
-    /// is read, so that the device fetches it by itself, as it does
-    /// Frasil's own. An object the device dropped, or meant to fetch for a
-    /// read that gave up, is none of these.
+    /// application holds the space's objects; when a read fetches it, or a
+    /// request for its chunks is still wanted ([`Engine::fetch_chunks`]),
+    /// for which a record of state 2 is committed here, before the part:
+    /// with no record the part would be kept, and the device would fetch
+    /// the rest of the object by itself; when the application asked for
+    /// the object; or when it is not an object the device fetches only
+    /// when it is read, so that the device fetches it by itself, as it
+    /// does Frasil's own. An object the device dropped, or meant to fetch
+    /// for a read that gave up, is none of these.
     ///
     /// A cached object is held beside the cache, where its bytes count
     /// against no budget, while only reads that are to store nothing fetch
@@ -787,17 +789,25 @@ impl Engine {
                 .set_passing(&key, large || want == Want::Pass);
             return Ok(true);
         }
-        let asked = state.held.asked_for(&space, locator)
-            || self
-                .fetches()
-                .of(&space)
-                .iter()
-                .any(|request| request.locator[..32] == key.1[..]);
-        Ok(asked
-            || state
-                .replicas
-                .get(&space)
-                .is_none_or(|replica| !crate::objects::fetched_on_read(replica, locator)))
+        if !crate::objects::fetched_on_read(replica, locator)
+            || state.held.asked_for(&space, locator)
+        {
+            return Ok(true);
+        }
+        // A request for chunks asks for those chunks, not to keep the
+        // object: what it brings is the cache's, as a read's is.
+        let requested = self
+            .fetches()
+            .of(&space)
+            .iter()
+            .any(|request| request.locator[..32] == key.1[..]);
+        if requested {
+            let read = self.read_now(state);
+            self.record(state, space, key.1, Retention::Cached { read })
+                .await?;
+            state.retained.set_passing(&key, large);
+        }
+        Ok(requested)
     }
 
     /// Whether the space's objects have no retention on this device: the
