@@ -229,8 +229,9 @@ impl Blobs {
     ///
     /// [`Error::Invalid`] when the stream holds no blob of this ID;
     /// [`Error::NotAllowed`] for a read that [`keep`](Read::keep)s in a
-    /// space this device keeps in memory alone; `ObjectMismatch` for a
-    /// blob that failed its whole-object checks since the device opened;
+    /// space this device keeps in memory alone; `ObjectMismatch`, or the
+    /// class of the fault, for a blob whose stored bytes hash to its
+    /// locator and that failed a later check since the device opened;
     /// the store's.
     pub async fn open_reader(&self, id: BlobId, read: &Read) -> Result<BlobReader> {
         let entry = self.entry(id).await?;
@@ -597,19 +598,26 @@ impl BlobReader {
     /// `Missing` while the device does not hold the chunk and the reader
     /// is [`local`](Read::local), or neither a peer nor a member is
     /// connected, or what is connected does not serve the blob for now;
-    /// [`Error::Timeout`] when nothing the read waits for arrives for
-    /// half a minute; `Decrypt` or `Malformed` for a chunk that does not
-    /// open, and once every connection of the space gave the chunk up
-    /// because what it was sent failed its checks; `Sealed` without the
-    /// blob's key; the store's. After each of these the reader lives on,
-    /// nothing of the failed chunk was given, and the read may be made
-    /// again: it asks again, and a party connected since, or one that
-    /// had not answered, serves it.
+    /// [`Error::Timeout`] when for half a minute nothing the reader asked
+    /// for arrives and the connections that hold its request take no
+    /// other chunk of the space; `Decrypt` or `Malformed` for a chunk
+    /// that does not open, once every connection of the space gave the
+    /// chunk up because what it was sent failed its checks, and, for an
+    /// entry that references a blob of another space, when the object
+    /// key it carries does not open the blob's chunks; `Sealed` without
+    /// the blob's key; the store's. After each of these the reader lives
+    /// on, nothing of the failed chunk was given, nothing the device
+    /// holds was dropped, and the read may be made again: it asks again,
+    /// for a chunk of the store that did not open too, and a party
+    /// connected since, or one that had not answered, serves it.
     ///
     /// `ObjectMismatch` when the blob was refused: it failed a
     /// whole-object check, or bytes this reader gave are in doubt
     /// ([`Event::ObjectRefused`]). The reader has then failed for good,
-    /// and every later read fails the same way.
+    /// and every later read fails the same way. So too, with the class of
+    /// the fault, for a blob the device holds whole whose stored bytes
+    /// hash to its locator and that has a chunk that does not open: the
+    /// fault is the blob's own.
     pub async fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         self.check()?;
         if buf.is_empty() {

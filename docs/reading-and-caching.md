@@ -268,7 +268,9 @@ let bytes = blobs.get(id, &Read::new().local()).await?;    // fetch nothing
 returns `None` when the blob is not here and is not fetched: the read is
 `local`, or neither a peer nor a member of the space is connected, or what
 is connected does not serve the blob for now. A read that must not wait on
-the network is `local`. A read fails with `Timeout` when nothing arrives for
+the network is `local`. A fetch whose last connection goes while it waits
+ends as it would have with nothing connected. A read fails with `Timeout`
+when nothing arrives for
 half a minute, and at once, with `ObjectMismatch` or `Malformed`, when every
 connection of the space gave the blob up because the bytes it was sent
 failed their checks, and none is still being made. A peer or a member that
@@ -413,15 +415,35 @@ reader.close().await?;
   and opens one: the chunk the reader stands in, or the blob's last when it
   stands past the end.
 - A read fails with `Missing` while nothing is connected that could send
-  the chunk, with `Timeout` when none of the chunks the reader asked for
-  arrives for half a minute, and with `Decrypt` or `Malformed` when every
-  connection of the space gave the chunk up because what it was sent failed
-  its checks. Such a read may be made again, and asks again: the reader has
-  not failed, nothing of the failed chunk was given, and what the reader
-  fetched before is still there. Only `ObjectMismatch` is for good (see
-  below). `get`, `get_stream`, `get_range` and `content_hash`, which read
-  through a reader, give `ObjectMismatch` in both cases, as they do for a
-  blob fetched whole.
+  the chunk, with `Timeout` when for half a minute none of the chunks the
+  reader asked for arrives and the connections that hold its request take
+  no other chunk of the space, and with `Decrypt` or `Malformed` when
+  every connection of the space gave the chunk up because what it was sent
+  failed its checks. A read queued behind other readers' chunks on a slow
+  link is therefore not timed out; a party that only sends again what the
+  device already has does not hold a read open. Such a read may be made
+  again, and asks again: the reader has not failed, nothing of the failed
+  chunk was given, and what the reader fetched before is still there. Only
+  a refusal of the blob is for good, with `ObjectMismatch` (see below).
+  `get`, `get_stream`,
+  `get_range` and `content_hash`, which read through a reader, give
+  `ObjectMismatch` in both cases, as they do for a blob fetched whole.
+- A chunk that the device stores and that does not open fails the read
+  with `Decrypt` or `Malformed`, and nothing is dropped for it. Of a blob
+  held in part, the reader reads that chunk from the store no more and
+  the next read asks for it again: a chunk that opens takes its place. Of
+  a blob held whole whose stored bytes are the ones the stream names, the
+  fault is the blob's own: its readers fail for good with that class, and
+  its bytes stay.
+- A read through an entry that references a blob of another space with a
+  wrong object key fails with `Decrypt`, and changes nothing else: nothing
+  the device stores is dropped, in this space or the source, no party is
+  given up, and a reader of an entry with the right key reads the blob.
+- `Sealed` says the device holds no key of the state the blob's header
+  names. Where the entry names a state whose key it holds, a header that
+  names another is not the blob's: the device takes no such header from
+  a party, and a reader that finds one held from before asks again and
+  reads the blob once a chunk that opens arrives.
 - The size the stream's entry shows is what its writer wrote, and the
   header decides what is read. A reader tells the application of an entry
   whose key or size is not the header's with `Event::EntryMismatch`.
@@ -473,23 +495,36 @@ at `Chunks`.
 
 `Whole` is about the bytes the reader gave. A reader that holds its chunks
 in memory fetches a chunk again when it is read again, from whichever party
-serves it then. It keeps the SHA-256 of each chunk it gave from memory, 32
-bytes a chunk, and takes at that place only the same bytes again: so a
-reader that became `Whole` and seeks back stays `Whole`, and a member cannot
-slip other bytes in after the checks. Other bytes at a place already given
-are not given: the reader fails with `ObjectMismatch`, and the application
-is told. A reader that reads from the device's store reads the same stored
-chunk each time.
+serves it then, and a chunk read from the device's store may leave the
+store while the reader is open. The reader keeps the SHA-256 of each chunk
+it gave, 32 bytes a chunk, and takes at that place only the same bytes
+again: so a reader that became `Whole` and seeks back stays `Whole`, and a
+member cannot slip other bytes in after the checks. Other bytes at a place
+already given are not given: the reader fails with `ObjectMismatch`, and
+the application is told.
 
 When a whole-blob check fails, the blob is refused: every open reader of it
-fails with `ObjectMismatch` from then on, `Event::ObjectRefused` names the
-blob, and the device drops what it cached of it. The event is reported by a
+fails with `ObjectMismatch` from then on, and `Event::ObjectRefused` names
+the blob. Stored bytes that are not the ones the stream names are dropped,
+and the blob is fetched again by the next read. Bytes that are the ones the
+stream names, with content that is not what the blob's ID was made from,
+stay where they are: fetching them again would bring the same, and the blob
+is refused for as long as the device is open. The event is reported by a
 task of the device's that follows the blob for each open reader. A device
 whose tasks take no such task (`Options::tasks`) reports it at the next
-call on a reader of the blob, or the next read of it. A chunk that does not
-open as it arrives is no refusal: it is its sender's fault, it is not given,
-that connection asks its sender for no more of the blob, and another party
-is asked. Content that people only
+call on a reader of the blob, or the next read of it.
+
+A chunk that does not open as it arrives is no refusal, and drops nothing
+the device holds. It is its sender's fault where the device can tell: the
+chunk fails under the header it came with, or under the header the device
+holds once a chunk has opened under that one. It is then not given, that
+connection asks its sender for no more of the blob, and another party is
+asked. Where the device cannot tell, because nothing has opened under what
+it holds either, or because only the object key of a reference's entry
+could have opened the chunk, the chunk is not taken, nobody is given up,
+and it is asked for again. Only a chunk that opens under another header
+than the one the device holds makes it drop what it holds of the blob,
+and only a holder of the blob's key can seal one. Content that people only
 watch or listen to can be shown at `Chunks`, since the worst a member can do
 is show a viewer something else than it showed another, and the reader says
 so when it finds out. Content that is acted on, such as a document that is
