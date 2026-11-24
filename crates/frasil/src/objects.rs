@@ -1207,6 +1207,25 @@ pub(crate) fn named_objects(replica: &Replica) -> BTreeSet<Locator> {
     out
 }
 
+/// The objects a replica knows by name: those its units name, the
+/// newcomer's snapshot it awaits and the stream snapshot objects that
+/// names (admission.md, "The newcomer's snapshot"), and the record objects
+/// of the checkpoints it cannot read yet (roster.md, "The record object").
+fn named_to_replica(replica: &Replica) -> BTreeSet<Locator> {
+    let mut named = named_objects(replica);
+    named.extend(replica.awaited_snapshot().copied());
+    named.extend(replica.pending_stream_objects().copied());
+    named.extend(replica.checkpoint_facts().records_wanted());
+    named
+}
+
+/// Whether an object is one the device fetches by itself whatever it
+/// keeps of its blobs: the replica knows it by name, and no blob stream's
+/// entry names it.
+pub(crate) fn fetched_by_itself(replica: &Replica, locator: &Locator) -> bool {
+    named_to_replica(replica).contains(locator) && !fetched_on_read(replica, locator)
+}
+
 /// The objects a blob stream's entries name, past and current, without the
 /// snapshots of those streams, which are Frasil's own.
 #[cfg(feature = "adapter-blobs")]
@@ -2136,14 +2155,7 @@ impl Engine {
         let Some(replica) = state.replicas.get(space) else {
             return Vec::new();
         };
-        let mut named = named_objects(replica);
-        // The newcomer's snapshot, and the stream snapshot objects it names
-        // (admission.md, "The newcomer's snapshot").
-        named.extend(replica.awaited_snapshot().copied());
-        named.extend(replica.pending_stream_objects().copied());
-        // The record objects of the checkpoints the replica cannot read yet
-        // (roster.md, "The record object").
-        named.extend(replica.checkpoint_facts().records_wanted());
+        let mut named = named_to_replica(replica);
         // The objects of the blob streams' current entries, references
         // among them, which a stream loaded from a snapshot names in no
         // unit the device holds.

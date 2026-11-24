@@ -1013,6 +1013,33 @@ async fn a_part_fetched_for_a_request_alone_is_cached_and_the_rest_is_not_fetche
     assert!(!engine.missing_objects(&space).await.contains(&blob));
 }
 
+/// A request may be made for chunks of an object before the device holds
+/// the unit that names it, as a device that learnt the locator elsewhere
+/// makes one: what it brings is the cache's all the same. Stored with no
+/// record, the object would be kept once its unit arrived, and the device
+/// would fetch the rest of it by itself.
+#[tokio::test]
+async fn a_part_fetched_for_a_request_before_a_unit_names_its_object_is_cached() {
+    let medium = Medium::new();
+    let (engine, _, space) = medium.device().await;
+    let chunk = frasil_units::limits::CHUNK_BYTES;
+    let (a, a_parts) = object(&engine, space, b'a', 2 * chunk).await;
+
+    let fetching = engine.fetch_chunks(space, a, 0..1, FetchPriority::Position);
+    assert_eq!(
+        engine
+            .receive_part(space, a_parts[0].clone())
+            .await
+            .unwrap(),
+        Received::Kept
+    );
+    assert!(matches!(
+        record_of(&engine, space, &a).await,
+        Some(Retention::Cached { .. })
+    ));
+    drop(fetching);
+}
+
 /// While parts of a cached object are being written, outside the device's
 /// lock, nothing drops the object: an eviction then would delete its
 /// record and its earlier parts, and the parts under way would land with

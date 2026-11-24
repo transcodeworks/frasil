@@ -736,8 +736,11 @@ impl Engine {
     /// the rest of the object by itself; when the application asked for
     /// the object; or when it is not an object the device fetches only
     /// when it is read, so that the device fetches it by itself, as it
-    /// does Frasil's own. An object the device dropped, or meant to fetch
-    /// for a read that gave up, is none of these.
+    /// does Frasil's own. A request for chunks of an object that no unit
+    /// the device holds names yet is recorded as one for a blob's: with a
+    /// record, an object that proves Frasil's own is fetched and stays
+    /// all the same. An object the device dropped, or meant to fetch for
+    /// a read that gave up, is none of these.
     ///
     /// A cached object is held beside the cache, where its bytes count
     /// against no budget, while only reads that are to store nothing fetch
@@ -789,18 +792,23 @@ impl Engine {
                 .set_passing(&key, large || want == Want::Pass);
             return Ok(true);
         }
-        if !crate::objects::fetched_on_read(replica, locator)
-            || state.held.asked_for(&space, locator)
-        {
+        if state.held.asked_for(&space, locator) {
             return Ok(true);
         }
-        // A request for chunks asks for those chunks, not to keep the
-        // object: what it brings is the cache's, as a read's is.
         let requested = self
             .fetches()
             .of(&space)
             .iter()
             .any(|request| request.locator[..32] == key.1[..]);
+        if !crate::objects::fetched_on_read(replica, locator)
+            && (!requested || crate::objects::fetched_by_itself(replica, locator))
+        {
+            return Ok(true);
+        }
+        // A request for chunks asks for those chunks, not to keep the
+        // object: what it brings is the cache's, as a read's is, and so
+        // is what it brings of an object no unit the device holds names
+        // yet, which may be a blob's.
         if requested {
             let read = self.read_now(state);
             self.record(state, space, key.1, Retention::Cached { read })
