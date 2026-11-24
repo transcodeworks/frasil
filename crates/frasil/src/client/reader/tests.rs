@@ -385,7 +385,7 @@ async fn an_uncached_reader_stores_nothing_and_holds_a_bounded_window() {
     reader.set_read_ahead(1);
     let bound = 2 * SEALED_CHUNK_BYTES;
     // A chunk nobody asked for is not taken.
-    assert_eq!(absent.send(3).await, Received::Left);
+    assert_eq!(absent.send(3).await, Received::Unwanted);
     assert_eq!(reader.window_bytes(), 0);
     let mut most = 0;
     let mut at = 0;
@@ -396,7 +396,7 @@ async fn an_uncached_reader_stores_nothing_and_holds_a_bounded_window() {
         for index in 0..absent.parts.len() {
             let wanted = absent.asked().iter().any(|(at, _)| *at == index as u64);
             if !wanted {
-                assert_eq!(absent.send(index).await, Received::Left);
+                assert_eq!(absent.send(index).await, Received::Unwanted);
             }
         }
         most = most.max(reader.window_bytes());
@@ -1812,4 +1812,28 @@ async fn a_read_past_the_end_of_a_blob_its_entry_overstates_ends() {
         assert_eq!(reader.size(), Some(absent.bytes.len() as u64));
         reader.close().await.unwrap();
     }
+}
+
+/// A reader that stores nothing asked two connections for a chunk: the
+/// second copy is kept nowhere, and is no failure of the connection that
+/// brought it.
+#[tokio::test]
+async fn a_second_copy_of_a_chunk_taken_is_no_failure() {
+    let absent = absent().await;
+    let mut reader = absent
+        .blobs
+        .open_reader(absent.id, &Read::new().uncached())
+        .await
+        .unwrap();
+    reader.set_read_ahead(0);
+    let mut buf = [0u8; 10];
+    let reading = reader.read_at(CHUNK, &mut buf);
+    tokio::pin!(reading);
+    tokio::select! {
+        _ = &mut reading => panic!("nothing arrived yet"),
+        () = absent.asked_for(1) => {}
+    }
+    assert_eq!(absent.send(1).await, Received::Kept);
+    assert_eq!(absent.send(1).await, Received::Unwanted);
+    assert_eq!(reading.await.unwrap(), 10);
 }

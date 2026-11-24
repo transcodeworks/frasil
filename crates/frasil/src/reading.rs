@@ -176,7 +176,7 @@ impl Readers {
     }
 
     /// Whether a reader that stores nothing has a window on the object.
-    fn passing(&self, key: &Key) -> bool {
+    pub(crate) fn passing(&self, key: &Key) -> bool {
         self.watched(key).is_some_and(|watched| {
             lock(&watched.inner)
                 .windows

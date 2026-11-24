@@ -4993,6 +4993,11 @@ impl SliceTask {
                     // take this chunk: a later fetch starts from where
                     // the device stands then.
                     Ok(Received::Headerless | Received::Left) => return SliceFetch::Stopped,
+                    // Nobody waits for the chunk any more: another
+                    // connection brought it first. No failure of this
+                    // fetch, which goes on with what is still lacking and
+                    // is not tried again after a wait.
+                    Ok(Received::Unwanted) => {}
                     Err(error) => return SliceFetch::Failed(error),
                 }
             }

@@ -3849,6 +3849,15 @@ impl Engine {
                 }
                 Ok((Taken::Dropped, wants))
             }
+            // Nobody waits for it any more: arrived, and not kept.
+            Received::Unwanted => {
+                let wants = self
+                    .asking(&space, &locator, Some(named), |count, skip, _| {
+                        session.chunk_arrived(locator, index, count, false, false, skip)
+                    })
+                    .await;
+                Ok((Taken::Dropped, wants))
+            }
             received => {
                 let whole = received == Received::Whole;
                 let wants = self

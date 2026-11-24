@@ -316,6 +316,11 @@ pub(crate) enum Received {
     /// take this chunk ([`HeldPart::Left`](crate::held::HeldPart::Left)).
     /// The chunk is asked for again.
     Left,
+    /// Not kept, and no fault: the device does not mean to store it, and
+    /// of the readers of its object that store nothing none waits for it
+    /// any more. Another connection brought the chunk first. Nothing is
+    /// asked for again because of it.
+    Unwanted,
     /// Refused: what the device held of the object is dropped, and it is
     /// asked of another party.
     Refused,
@@ -357,6 +362,8 @@ struct KeptParts {
     /// through a provider took,
     /// and those of objects the device no longer means to hold.
     left: BTreeSet<(Locator, u64)>,
+    /// Of those, the parts of objects the device does not mean to hold.
+    unmeant: BTreeSet<(Locator, u64)>,
 }
 
 /// What a part another party sent was asked for
@@ -1637,6 +1644,9 @@ impl Engine {
         if kept.left.contains(&(locator, part.index)) {
             return Ok(if self.readers().offer(&space, &part, opened) {
                 Received::Kept
+            } else if kept.unmeant.contains(&(locator, part.index)) && self.readers().passing(&key)
+            {
+                Received::Unwanted
             } else {
                 Received::Left
             });
@@ -1744,6 +1754,7 @@ impl Engine {
     ) -> Result<KeptParts> {
         let checked = source == Source::Checked;
         let mut left = BTreeSet::new();
+        let mut unmeant = BTreeSet::new();
         let (sealed, _writing) = {
             let mut state = self.lock().await;
             self.refresh_held(&mut state);
@@ -1798,6 +1809,7 @@ impl Engine {
                         admitted.push(part);
                     } else {
                         left.insert((part.locator, part.index));
+                        unmeant.insert((part.locator, part.index));
                     }
                 }
                 sealed = admitted;
@@ -1943,7 +1955,11 @@ impl Engine {
         drop(state);
         // A blob whose entry is current now, stored sealed, is held.
         self.hold_named_blobs(space).await?;
-        Ok(KeptParts { dropped, left })
+        Ok(KeptParts {
+            dropped,
+            left,
+            unmeant,
+        })
     }
 
     /// Keeps an object another party handed over whole, by its stored
