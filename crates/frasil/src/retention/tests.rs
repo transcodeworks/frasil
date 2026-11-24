@@ -2120,3 +2120,123 @@ async fn the_blobs_of_a_compacted_blob_stream_are_blobs_still() {
     );
     assert!(!engine.missing_objects(&space).await.contains(&cached));
 }
+
+/// In a space with no always-on peer, no party is bound to take a blob
+/// this device put: the application may drop it, whether or not it asked
+/// to keep it.
+#[tokio::test]
+async fn a_put_blob_in_a_space_with_no_peer_is_the_applications_to_drop() {
+    for keep in [false, true] {
+        let medium = Medium::new();
+        let (engine, sealed, space) = medium.device().await;
+        let stream = engine.new_stream(frasil_adapter_blobs::TYPE).unwrap();
+        let (_, locator) = engine
+            .put_blob(space, &stream, None, &vec![7; SIZE])
+            .await
+            .unwrap();
+        if keep {
+            engine.retain(space, &locator, true).await.unwrap();
+        }
+        assert_eq!(
+            record_of(&engine, space, &locator).await,
+            Some(Retention::Put { keep })
+        );
+        let engine = medium.reopen(engine, &sealed).await;
+        engine.set_blob_cache(0);
+        engine.evict().await.unwrap();
+        assert!(holds(&engine, space, &locator).await);
+        engine.drop_local_object(space, &locator).await.unwrap();
+        assert!(!holds(&engine, space, &locator).await);
+        assert!(records(&engine, space).await.is_empty());
+        assert_eq!(
+            engine.retention_of(&space, &locator).await.0,
+            BlobState::Absent
+        );
+    }
+}
+
+/// A read that is to store nothing leaves an object the device held as it
+/// was: with parts and no record, kept, cached, put, and put and kept.
+/// The read uses the object, fetches what the device lacks of it, and the
+/// cache is looked at when it ends.
+#[tokio::test]
+async fn a_read_that_stores_nothing_leaves_each_held_state_as_it_was() {
+    let medium = Medium::new();
+    let (engine, _, space) = medium.device().await;
+    engine
+        .keep_peer_hints(&space, &["https://peer.example".to_owned()])
+        .await
+        .unwrap();
+    let chunk = frasil_units::limits::CHUNK_BYTES;
+    let stream = engine.new_stream(frasil_adapter_blobs::TYPE).unwrap();
+    // Parts with no record, the object not whole.
+    let (bare, bare_parts) = object(&engine, space, b'b', chunk + 1).await;
+    engine
+        .store_parts(space, &[&bare_parts[0]], false)
+        .await
+        .unwrap();
+    let (kept, kept_parts) = object(&engine, space, b'k', SIZE).await;
+    fetch(&engine, space, &kept, &kept_parts, true).await;
+    let (cached, cached_parts) = object(&engine, space, b'c', SIZE).await;
+    fetch(&engine, space, &cached, &cached_parts, false).await;
+    let (_, put) = engine
+        .put_blob(space, &stream, None, &vec![b'p'; SIZE])
+        .await
+        .unwrap();
+    let (_, both) = engine
+        .put_blob(space, &stream, None, &vec![b'q'; SIZE])
+        .await
+        .unwrap();
+    engine.retain(space, &both, true).await.unwrap();
+    let before = records(&engine, space).await;
+    assert_eq!(record_of(&engine, space, &bare).await, None);
+    assert_eq!(
+        record_of(&engine, space, &kept).await,
+        Some(Retention::Kept)
+    );
+    assert!(matches!(
+        record_of(&engine, space, &cached).await,
+        Some(Retention::Cached { .. })
+    ));
+    assert_eq!(
+        record_of(&engine, space, &put).await,
+        Some(Retention::Put { keep: false })
+    );
+    assert_eq!(
+        record_of(&engine, space, &both).await,
+        Some(Retention::Put { keep: true })
+    );
+    let stored = parts_stored(&engine, space).await;
+
+    // The object the device holds part of is fetched whole by the read.
+    let using = [
+        engine.use_object(space, &bare),
+        engine.want_object(space, &bare, Want::Pass),
+    ];
+    assert_eq!(
+        engine
+            .receive_part(space, bare_parts[1].clone())
+            .await
+            .unwrap(),
+        Received::Whole
+    );
+    drop(using);
+    engine.evict().await.unwrap();
+    // Those it holds whole are used, and noted as read.
+    for locator in [&kept, &cached, &put, &both] {
+        let using = engine.use_object(space, locator);
+        engine.touch(space, locator).await.unwrap();
+        drop(using);
+        engine.evict().await.unwrap();
+    }
+    assert_eq!(records(&engine, space).await, before);
+    assert_eq!(parts_stored(&engine, space).await, stored + 1);
+    for locator in [&bare, &kept, &cached, &put, &both] {
+        assert!(holds(&engine, space, locator).await);
+    }
+    assert_eq!(engine.retention_of(&space, &bare).await.0, BlobState::Kept);
+    assert_eq!(
+        engine.retention_of(&space, &cached).await.0,
+        BlobState::Cached
+    );
+}
