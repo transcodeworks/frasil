@@ -67,6 +67,10 @@ pub(crate) struct Readers {
     /// 1 to 7 that stands): by the space that opens them, with the class.
     /// The locator binds the bytes, so no fetch gives others.
     refused: Mutex<BTreeMap<(EventId, Locator), &'static str>>,
+    /// The objects refused while they had readers, of whose refusal the
+    /// application was not told yet: the first reader of the object to be
+    /// called, the task that follows it, or the next read of it tells.
+    untold: Mutex<BTreeSet<Key>>,
 }
 
 /// What the open readers of one object share.
@@ -101,9 +105,8 @@ struct Inner {
     /// it only tells a reader that holds no header which chunk to ask
     /// for.
     hint: Option<Vec<u8>>,
-    /// Why the object was refused while it had readers, and whether a
-    /// reader has reported it.
-    refusal: Option<(&'static str, bool)>,
+    /// Why the object was refused while it had readers.
+    refusal: Option<&'static str>,
     /// Whether a reader is running the whole-object steps on the stored
     /// object.
     verifying: bool,
@@ -325,7 +328,10 @@ impl Readers {
         };
         {
             let mut inner = lock(&watched.inner);
-            inner.refusal.get_or_insert((class, false));
+            if inner.refusal.is_none() {
+                inner.refusal = Some(class);
+                lock(&self.untold).insert(key);
+            }
             inner.header = None;
             for held in inner.windows.values_mut() {
                 held.chunks.clear();
@@ -357,6 +363,13 @@ impl Readers {
         }
         watched.bump();
         true
+    }
+
+    /// Whether an object was refused while it had readers and the
+    /// application was not told yet: `true` once, for the caller that
+    /// then tells it.
+    pub(crate) fn tell(&self, key: &Key) -> bool {
+        lock(&self.untold).remove(key)
     }
 
     /// Why an object was refused for good since the device opened.
@@ -609,9 +622,8 @@ impl Window {
     /// Why the object was refused while this reader was open, and whether
     /// this is the first reader to hear of it.
     pub(crate) fn refusal(&self) -> Option<(&'static str, bool)> {
-        let mut inner = lock(&self.watched.inner);
-        let (class, reported) = inner.refusal.as_mut()?;
-        Some((*class, !std::mem::replace(reported, true)))
+        let class = lock(&self.watched.inner).refusal?;
+        Some((class, self.readers.tell(&self.key)))
     }
 
     /// Takes the turn to run the whole-object steps on the stored object:

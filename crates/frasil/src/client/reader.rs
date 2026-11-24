@@ -235,6 +235,7 @@ impl Blobs {
         let engine = device.engine().clone();
         let space = self.space().id().event();
         let locator = entry.object;
+        self.tell_refused(id, &entry);
         if let Some(class) = engine.readers().refused(&space, &locator) {
             return Err(Error::Class(class));
         }
@@ -328,6 +329,19 @@ impl Blobs {
     }
 }
 
+impl Blobs {
+    /// Tells the application that a blob was refused while it was read,
+    /// if nothing has told it yet: the readers that were open were not
+    /// called again, and no task followed the object for them.
+    pub(super) fn tell_refused(&self, id: BlobId, entry: &Entry) {
+        let space = self.space().id().event();
+        let key = (space, crate::replica::object_id(&entry.object));
+        if self.space().device.engine().readers().tell(&key) {
+            report(self, id);
+        }
+    }
+}
+
 /// What the task that follows a reader's object needs.
 struct Following {
     blobs: Blobs,
@@ -407,7 +421,9 @@ impl BlobReader {
     /// Starts the task that follows the object, where the device's tasks
     /// take one. Without it, a reader that does not read in order stays
     /// at [`Verified::Chunks`] unless another read ran every step on the
-    /// stored blob.
+    /// stored blob, and a refusal is told to the application by the next
+    /// call on a reader of the blob, or the next read of it
+    /// ([`Blobs::tell_refused`]).
     fn follow_object(&self, gone: oneshot::Receiver<()>) {
         let engine = self.blobs.space().device.engine();
         let following = Following {

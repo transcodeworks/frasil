@@ -1688,6 +1688,13 @@ async fn mislabelled(size: u64) -> Absent {
 }
 
 async fn mislabelled_with(options: Options, size: u64) -> Absent {
+    entered(options, Some(size), false).await
+}
+
+/// A blob of this device's space, absent here, whose entry shows `size`
+/// if one is given, and names, with `misnamed`, a locator whose digest is
+/// not that of the object's stored bytes.
+async fn entered(options: Options, size: Option<u64>, misnamed: bool) -> Absent {
     use frasil_adapter_blobs::Entry;
     let device = Device::open_with(Storage::Memory, &[1; 32], options)
         .await
@@ -1697,7 +1704,14 @@ async fn mislabelled_with(options: Options, size: u64) -> Absent {
     let of = space.id().event();
     let blobs = space.create_blobs().unwrap();
     let bytes = bytes();
-    let (locator, key, parts) = engine.seal_parts(of, &bytes).await.unwrap();
+    let size = size.unwrap_or(bytes.len() as u64);
+    let (mut locator, key, mut parts) = engine.seal_parts(of, &bytes).await.unwrap();
+    if misnamed {
+        locator[63] ^= 1;
+        for part in &mut parts {
+            part.locator = locator;
+        }
+    }
     let handle = [4; 16];
     let entry = Entry {
         object: locator,
@@ -1871,4 +1885,129 @@ async fn a_blob_its_entry_understates_is_not_stored_past_the_budget() {
     assert_eq!(absent.state().await, BlobState::Absent);
     reader.close().await.unwrap();
     assert_eq!(absent.device.blob_cache_usage().await.cached, 0);
+}
+
+/// A device's tasks that take no task of a reader's: no task follows a
+/// reader's object.
+struct NoFollowing(crate::tasks::Tokio);
+
+impl crate::tasks::Tasks for NoFollowing {
+    fn spawn(&self, task: frasil_store::BoxFuture<'static, ()>) {
+        self.0.spawn(task);
+    }
+
+    fn try_spawn(&self, task: frasil_store::BoxFuture<'static, ()>) -> bool {
+        drop(task);
+        false
+    }
+
+    fn sleep(&self, duration: Duration) -> frasil_store::BoxFuture<'static, ()> {
+        self.0.sleep(duration)
+    }
+}
+
+/// Whether the application is told of a refusal of `blob` within a
+/// second.
+async fn refusal_told(events: &mut crate::Events, blob: BlobId) -> bool {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(Event::ObjectRefused { blob: told, .. }) = events.next().await
+                && told == blob
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .is_ok()
+}
+
+/// A blob whose stored bytes do not hash to its locator, read in order
+/// through a reader: every chunk opens and is given but the last, before
+/// which step 0 fails. The reader fails, is not whole, and the
+/// application is told; nothing of the blob stays.
+#[tokio::test]
+async fn a_read_in_order_of_bytes_that_are_not_the_locators_fails_at_the_last_chunk() {
+    for read in [Read::new().uncached(), Read::new()] {
+        let absent = entered(Options::new(), None, true).await;
+        let mut events = absent.device.events();
+        let mut reader = absent.blobs.open_reader(absent.id, &read).await.unwrap();
+        reader.set_read_ahead(0);
+        let mut at = 0;
+        while at < 4 * CHUNK_BYTES {
+            let piece = absent.read(&mut reader, at as u64, CHUNK_BYTES).await;
+            assert_eq!(piece, absent.bytes[at..at + CHUNK_BYTES]);
+            at += piece.len();
+            assert_eq!(reader.verified(), Verified::Chunks);
+        }
+        let last = {
+            let mut buf = [0u8; 10];
+            let reading = reader.read_at(at as u64, &mut buf);
+            tokio::pin!(reading);
+            tokio::select! {
+                _ = &mut reading => panic!("nothing arrived yet"),
+                () = absent.asked_for(4) => {}
+            }
+            absent.send(4).await;
+            reading.await
+        };
+        assert_eq!(last.unwrap_err().class_name(), Some("ObjectMismatch"));
+        assert_eq!(reader.verified(), Verified::Chunks);
+        let again = reader.read_at(0, &mut [0u8; 10]).await.unwrap_err();
+        assert_eq!(again.class_name(), Some("ObjectMismatch"));
+        assert!(refusal_told(&mut events, absent.id).await);
+        assert!(!absent.holds(0).await && !absent.holds(4).await);
+    }
+}
+
+/// Where the device's tasks take no task that follows a reader's object,
+/// and the reader that gave bytes of a blob is not read again after the
+/// blob is refused, the application is told by the next reader of the
+/// blob, or the next read of it.
+#[tokio::test]
+async fn a_refusal_no_task_told_is_told_by_the_next_read() {
+    use crate::tasks::Tokio;
+    for reads in [false, true] {
+        let tasks = std::sync::Arc::new(NoFollowing(Tokio::current()));
+        let absent = absent_with(Options::new().tasks(tasks), bytes()).await;
+        let mut events = absent.device.events();
+        let mut reader = absent
+            .blobs
+            .open_reader(absent.id, &Read::new())
+            .await
+            .unwrap();
+        reader.set_read_ahead(0);
+        absent.read(&mut reader, 0, 10).await;
+        // Another header, under which a holder of the key sealed a chunk.
+        let other = {
+            use frasil_units::objects::{Header, ObjectKeys, seal_chunk};
+            let mut header = Header::read(absent.parts[0].header.as_ref().unwrap()).unwrap();
+            header.size += 1;
+            let key = {
+                let state = absent.engine.lock().await;
+                absent.engine.sealing(&state, &absent.of).unwrap().1
+            };
+            let keys = ObjectKeys::of(&key);
+            let id: [u8; 32] = absent.locator[..32].try_into().unwrap();
+            let plain = &absent.bytes[CHUNK_BYTES..2 * CHUNK_BYTES];
+            let object_key = keys.object_key(&id);
+            let sealed = seal_chunk(&absent.of, &keys, &object_key, &id, header.size, 1, plain);
+            ObjectPart {
+                header: Some(header.encode()),
+                chunk: sealed.sealed,
+                ..absent.parts[1].clone()
+            }
+        };
+        let received = absent.engine.receive_sent(absent.of, other).await.unwrap();
+        assert_eq!(received, Received::Refused);
+        assert!(!refusal_told(&mut events, absent.id).await);
+        drop(reader);
+        if reads {
+            let local = Read::new().local();
+            let _ = absent.blobs.get_range(absent.id, 0, 10, &local).await;
+        } else {
+            let _ = absent.blobs.open_reader(absent.id, &Read::new()).await;
+        }
+        assert!(refusal_told(&mut events, absent.id).await, "{reads}");
+    }
 }

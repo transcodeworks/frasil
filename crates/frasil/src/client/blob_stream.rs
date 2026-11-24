@@ -187,7 +187,7 @@ impl Blobs {
         // A blob that is not whole here is read through a reader, in
         // order: each chunk is written as it arrives and opens, and the
         // last one once every step passed on the whole.
-        if self.reads_through(&entry, read).await {
+        if self.reads_through(id, &entry, read).await {
             let mut through = self.read_through(id, entry, read).await?;
             let written = async {
                 let mut written = 0u64;
@@ -248,7 +248,7 @@ impl Blobs {
         let engine = self.space().device.engine();
         let space = self.space().id().event();
         if engine.content_hash(&space, &entry.object).is_none()
-            && self.reads_through(&entry, read).await
+            && self.reads_through(id, &entry, read).await
         {
             let locator = entry.object;
             let mut through = match self.read_through(id, entry, read).await {
@@ -339,7 +339,7 @@ impl Blobs {
         }
         // A blob that is not whole here is read through a reader, which
         // fetches the chunks of the range alone.
-        if self.reads_through(&entry, read).await {
+        if self.reads_through(id, &entry, read).await {
             return match self.range_through(id, entry, offset, len, read).await {
                 Ok(range) => Ok(Some(range)),
                 Err(Error::Class("Missing")) => Ok(None),
@@ -366,9 +366,13 @@ impl Blobs {
     /// application's to hold as files, where a blob fetched becomes one.
     pub(super) async fn reads_through(
         &self,
+        id: BlobId,
         entry: &frasil_adapter_blobs::Entry,
         read: &Read,
     ) -> bool {
+        // A refusal of the blob that nothing told the application of
+        // yet is told by the next read of it.
+        self.tell_refused(id, entry);
         if read.is_local() || self.holder(entry).await.is_some() {
             return false;
         }

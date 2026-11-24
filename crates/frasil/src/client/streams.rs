@@ -888,7 +888,7 @@ mod blobs {
             let entry = self.entry(id).await?;
             // A blob that is not whole here is read through a reader, in
             // order, and given once every step passed on the whole.
-            if self.reads_through(&entry, read).await {
+            if self.reads_through(id, &entry, read).await {
                 let mut through = self.read_through(id, entry, read).await?;
                 let read = async {
                     let mut bytes = Vec::new();

@@ -120,7 +120,11 @@ pub enum Event {
     /// fails with `ObjectMismatch`, and what the device cached of it is
     /// dropped. So when a part of the blob arrives under another header
     /// than the one the reader gave bytes under, and nothing says which
-    /// of the two is the blob's. Reported once for each refusal. A chunk
+    /// of the two is the blob's. Reported once for each refusal: when it
+    /// happens, by a task of the device's ([`Options::tasks`](crate::Options::tasks)) that
+    /// follows the blob for each open reader; and where the device's
+    /// tasks take no such task, by the next call on a reader of the
+    /// blob, or the next read of it. A chunk
     /// that does not open as it arrives is its sender's fault, and no
     /// refusal: it is not given, no reader fails, and another party is
     /// asked for it.
