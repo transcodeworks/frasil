@@ -1286,7 +1286,7 @@ impl Engine {
         &self,
         space: &EventId,
         locator: &Locator,
-        reference: Option<(EventId, [u8; 32])>,
+        reference: Option<&(EventId, frasil_keys::derive::Secret)>,
     ) -> Result<bool> {
         let fault = match self.plain(space, locator, reference, 0..0).await {
             Ok(crate::objects::Plain::Chunks(_)) => return Ok(true),
@@ -1300,7 +1300,7 @@ impl Engine {
             return Err(Error::Class(fault));
         }
         let mut holders = vec![*space];
-        holders.extend(reference.map(|(source, _)| source));
+        holders.extend(reference.map(|(source, _)| *source));
         // Its bytes hash to the locator: the fault is the object's.
         let mut stands = false;
         for holder in &holders {

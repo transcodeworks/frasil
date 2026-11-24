@@ -1114,14 +1114,14 @@ impl Engine {
         &self,
         space: &EventId,
         locator: &Locator,
-        reference: Option<(EventId, [u8; 32])>,
+        reference: Option<&(EventId, Secret)>,
         chunks: core::ops::Range<u64>,
     ) -> Result<Plain> {
         if reference.is_none() {
             self.hold_named_blobs(*space).await?;
         }
         let mut holders = vec![*space];
-        holders.extend(reference.map(|(source, _)| source));
+        holders.extend(reference.map(|(source, _)| *source));
         let found = {
             let mut state = self.lock().await;
             self.refresh_held(&mut state);
@@ -1138,7 +1138,7 @@ impl Engine {
         };
         let Some((holder, header, key, checked, located)) = found else {
             // An object the application holds, or none held whole.
-            for holder in [Some(*space), reference.map(|(source, _)| source)]
+            for holder in [Some(*space), reference.map(|(source, _)| *source)]
                 .into_iter()
                 .flatten()
             {
@@ -1154,7 +1154,7 @@ impl Engine {
             .size;
         let count =
             frasil_units::objects::chunk_count(size, frasil_units::limits::CHUNK_BYTES as u64);
-        let (opens, opening) = match &reference {
+        let (opens, opening) = match reference {
             None => (
                 *space,
                 frasil_units::objects::Opening::ContentKey(key.as_deref()),

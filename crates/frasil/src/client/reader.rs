@@ -391,7 +391,7 @@ impl Following {
             }
             if whole && self.window.begin_verifying() {
                 let verified = engine
-                    .verify_whole(&self.space, &self.locator, key_of(&self.reference))
+                    .verify_whole(&self.space, &self.locator, self.reference.as_ref())
                     .await;
                 self.window.end_verifying();
                 match verified {
@@ -412,12 +412,6 @@ impl Following {
             }
         }
     }
-}
-
-/// A reference's source and object key, for a call that takes them by
-/// value.
-fn key_of(reference: &Option<(EventId, Secret)>) -> Option<(EventId, [u8; 32])> {
-    reference.as_ref().map(|(source, key)| (*source, **key))
 }
 
 /// Tells the application that a blob was refused while it was read.
@@ -1235,7 +1229,7 @@ impl BlobReader {
             .plain(
                 &self.space,
                 &self.entry.object,
-                key_of(&self.reference),
+                self.reference.as_ref(),
                 index..index.saturating_add(1),
             )
             .await?;

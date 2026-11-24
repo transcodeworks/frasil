@@ -463,14 +463,18 @@ impl Blobs {
         entry: &frasil_adapter_blobs::Entry,
         chunks: core::ops::Range<u64>,
     ) -> Result<Plain> {
-        let reference = entry
-            .reference
-            .as_ref()
-            .map(|reference| (EventId(reference.source), reference.object_key));
+        // The object key stays in a type that is zeroed when it goes.
+        let reference = entry.reference.as_ref().map(|reference| {
+            (
+                EventId(reference.source),
+                frasil_keys::derive::Secret::new(reference.object_key),
+            )
+        });
+        let space = self.space().id().event();
         self.space()
             .device
             .engine()
-            .plain(&self.space().id().event(), &entry.object, reference, chunks)
+            .plain(&space, &entry.object, reference.as_ref(), chunks)
             .await
     }
 
