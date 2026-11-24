@@ -4637,6 +4637,11 @@ impl SliceTask {
             };
             drop(slice);
             for part in parts {
+                // Cancelled while the slice was on its way: none of its
+                // parts is stored for this request.
+                if self.request.cancel.is_cancelled() {
+                    return SliceFetch::Cancelled;
+                }
                 match self.device.receive_part(space, part).await {
                     Ok(Received::Kept) => self.kept = true,
                     Ok(Received::Whole) => return SliceFetch::Done,

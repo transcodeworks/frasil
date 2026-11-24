@@ -783,6 +783,16 @@ seals it again keeps that record. When the application asks to keep an
 object, the device commits a record of state 1, replacing one of state 2
 or 3. A read of a cached object puts its record again when key 2 changes.
 
+A part another party sends is stored only while the device means to hold
+its object, as found in the step that stores it: the object has a
+`retention` record, or parts with none, or the device or the application
+asks for it at that moment. A part that arrives after the device dropped
+the object, or after the read that asked for it gave up with nothing
+stored, is discarded: stored, it would have no record and count as kept,
+and the device would fetch the rest by itself. While parts of an object
+are being written, the device drops nothing of the object, so that no
+write leaves parts whose record or earlier parts went meanwhile.
+
 **An object the device put.** A record of state 3 stands while this device
 may hold the only copy of the object. Whether a unit that names the object
 is durable does not say otherwise: an acknowledgement is about events

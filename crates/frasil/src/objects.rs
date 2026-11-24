@@ -334,8 +334,22 @@ struct KeptParts {
     /// locators.
     dropped: BTreeSet<Locator>,
     /// The parts not kept, by locator and chunk index: those no receive
-    /// through a provider took.
+    /// through a provider took,
+    /// and those of objects the device no longer means to hold.
     left: BTreeSet<(Locator, u64)>,
+}
+
+/// Where parts the device is given to keep come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    /// Another party sent them over a connection: stored only while the
+    /// device means to hold their object ([`Engine::means_to_hold`]).
+    Sent,
+    /// The application gave them, as a space file's objects.
+    Given,
+    /// The parts of whole objects whose stored bytes were found to hash
+    /// to their locators already.
+    Checked,
 }
 
 /// Whether a part fits the object it names ([`fits_object`]).
@@ -1230,6 +1244,13 @@ fn blob_objects(_: &Replica) -> BTreeSet<Locator> {
     BTreeSet::new()
 }
 
+/// Whether an object is one the device fetches only when the application
+/// reads it: a blob stream's entry names it, so no fetch of the device's
+/// own brings it.
+pub(crate) fn fetched_on_read(replica: &Replica, locator: &Locator) -> bool {
+    blob_objects(replica).contains(locator)
+}
+
 impl Engine {
     /// Seals an object under the space's current state and keeps it
     /// (units.md, "Objects"). Equal plaintexts under one state give one
@@ -1377,7 +1398,7 @@ impl Engine {
     /// fails is dropped, and is missing again.
     #[cfg_attr(not(feature = "space-files"), allow(dead_code))]
     pub(crate) async fn keep_parts(&self, space: EventId, parts: &[ObjectPart]) -> Result<()> {
-        Box::pin(self.keep_parts_with(space, parts, false))
+        Box::pin(self.keep_parts_with(space, parts, Source::Given))
             .await
             .map(drop)
     }
@@ -1390,7 +1411,7 @@ impl Engine {
         space: EventId,
         parts: &[ObjectPart],
     ) -> Result<()> {
-        Box::pin(self.keep_parts_with(space, parts, true))
+        Box::pin(self.keep_parts_with(space, parts, Source::Checked))
             .await
             .map(drop)
     }
@@ -1450,8 +1471,8 @@ impl Engine {
             return Ok(Received::Refused);
         }
         let locator = part.locator;
-        let kept =
-            Box::pin(self.keep_parts_with(space, std::slice::from_ref(&part), false)).await?;
+        let kept = Box::pin(self.keep_parts_with(space, std::slice::from_ref(&part), Source::Sent))
+            .await?;
         if kept.dropped.contains(&locator) {
             return Ok(Received::Refused);
         }
@@ -1537,10 +1558,11 @@ impl Engine {
         &self,
         space: EventId,
         parts: &[ObjectPart],
-        checked: bool,
+        source: Source,
     ) -> Result<KeptParts> {
+        let checked = source == Source::Checked;
         let mut left = BTreeSet::new();
-        let sealed = {
+        let (sealed, _writing) = {
             let mut state = self.lock().await;
             self.refresh_held(&mut state);
             // Under `held`, a blob's parts go through the provider instead
@@ -1558,6 +1580,36 @@ impl Engine {
                     }
                 }
             }
+            // A part another party sent is stored only while the device
+            // means to hold its object: one that arrives after the device
+            // dropped the object, as a slice asked for before a read gave
+            // up does, would land with no record and count as kept
+            // (at-rest.md, "Retention", recording). Parts the application
+            // gave, as a space file's, are stored as they are: with no
+            // record, kept.
+            if source == Source::Sent {
+                let mut meant: BTreeMap<Locator, bool> = BTreeMap::new();
+                sealed.retain(|part| {
+                    let means = *meant
+                        .entry(part.locator)
+                        .or_insert_with(|| self.means_to_hold(&state, &space, &part.locator));
+                    if !means {
+                        left.insert((part.locator, part.index));
+                    }
+                    means
+                });
+            }
+            // Taken under the lock that found the device means to hold
+            // them, and held until the parts are noted: nothing drops an
+            // object, its record or its earlier parts, while parts of it
+            // are written outside the lock.
+            let writing: Vec<crate::retention::InUse> = sealed
+                .iter()
+                .map(|part| part.locator)
+                .collect::<BTreeSet<Locator>>()
+                .iter()
+                .map(|locator| self.use_object(space, locator))
+                .collect();
             // Room for what goes to the cache, before it is written
             // (at-rest.md, "Retention", when).
             let cached: Vec<&&ObjectPart> = sealed
@@ -1579,7 +1631,7 @@ impl Engine {
                     .collect();
                 self.evict_in(&mut state, incoming as u64, &writing).await?;
             }
-            sealed
+            (sealed, writing)
         };
         // The chunks are sealed and written while the device goes on.
         self.store_parts(space, &sealed, checked).await?;

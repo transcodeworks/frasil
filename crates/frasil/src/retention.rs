@@ -528,6 +528,43 @@ impl Engine {
         )
     }
 
+    /// Whether the device means to hold an object that another party
+    /// sends parts of, so that a part is stored: it has a record; the
+    /// device holds chunks of it, which with no record are kept; the
+    /// device keeps every blob, or the application holds the space's
+    /// objects; a request for its chunks is still wanted, or the
+    /// application asked for it; or it is not an object the device fetches
+    /// only when it is read, so that the device fetches it by itself, as
+    /// it does Frasil's own. An object the device dropped, or meant to
+    /// fetch for a read that gave up, is none of these.
+    pub(crate) fn means_to_hold(&self, state: &State, space: &EventId, locator: &Locator) -> bool {
+        let id = object_id(locator);
+        if self.keeps_all_blobs()
+            || self.is_held_space(state, space)
+            || state.retained.get(&(*space, id)).is_some()
+        {
+            return true;
+        }
+        let Some(replica) = state.replicas.get(space) else {
+            return true;
+        };
+        let holds = replica
+            .object_locators(&id)
+            .iter()
+            .any(|locator| replica.holds_chunks(locator));
+        if holds
+            || state.held.asked_for(space, locator)
+            || self
+                .fetches()
+                .of(space)
+                .iter()
+                .any(|request| request.locator[..32] == id[..])
+        {
+            return true;
+        }
+        !crate::objects::fetched_on_read(replica, locator)
+    }
+
     /// Whether the space's objects have no retention on this device: the
     /// application holds them as files (at-rest.md, "Held objects").
     fn is_held_space(&self, state: &State, space: &EventId) -> bool {

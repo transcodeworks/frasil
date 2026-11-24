@@ -9,6 +9,7 @@ use super::{BlobState, Stays, object_id};
 use crate::advanced::{AdapterRegistry, Platform};
 use crate::device::Engine;
 use crate::error::Error;
+use crate::fetch::FetchPriority;
 use crate::objects::Received;
 use crate::outbox::Acknowledger;
 use crate::platform::{Clock, ManualClock};
@@ -19,9 +20,70 @@ use frasil_store::tables::Retention;
 use frasil_store::{DeviceBoundSlot, MemorySlot, MemoryStore, Store, Table};
 use std::sync::Arc;
 
+/// A store that can hold one commit back: armed, its next commit says that
+/// it began and waits to be let go, so that a test acts while a write made
+/// outside the device's lock is under way.
+struct Gate {
+    inner: Arc<MemoryStore>,
+    held: std::sync::Mutex<Option<Held>>,
+}
+
+/// What a commit held back signals with and waits for.
+type Held = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+
+impl Gate {
+    /// Holds the next commit back: the first half is ready once it began,
+    /// and sending on the second lets it go.
+    fn hold(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (began, begun) = tokio::sync::oneshot::channel();
+        let (go, gone) = tokio::sync::oneshot::channel();
+        *self.held.lock().unwrap() = Some((began, gone));
+        (begun, go)
+    }
+}
+
+impl Store for Gate {
+    fn get<'a>(
+        &'a self,
+        address: &'a [u8],
+    ) -> frasil_store::BoxFuture<'a, Result<Option<Vec<u8>>, frasil_store::StoreError>> {
+        self.inner.get(address)
+    }
+
+    fn scan<'a>(
+        &'a self,
+        prefix: &'a [u8],
+    ) -> frasil_store::BoxFuture<'a, Result<Vec<(Vec<u8>, Vec<u8>)>, frasil_store::StoreError>>
+    {
+        self.inner.scan(prefix)
+    }
+
+    fn commit<'a>(
+        &'a self,
+        commit: &'a frasil_store::Commit,
+    ) -> frasil_store::BoxFuture<'a, Result<bool, frasil_store::StoreError>> {
+        Box::pin(async move {
+            let held = self.held.lock().unwrap().take();
+            if let Some((began, gone)) = held {
+                let _ = began.send(());
+                let _ = gone.await;
+            }
+            self.inner.commit(commit).await
+        })
+    }
+}
+
 /// A device over a store and a clock that outlive it.
 struct Medium {
-    store: Arc<MemoryStore>,
+    store: Arc<Gate>,
     slot: Arc<MemorySlot>,
     clock: Arc<ManualClock>,
 }
@@ -29,7 +91,10 @@ struct Medium {
 impl Medium {
     fn new() -> Self {
         Self {
-            store: Arc::new(MemoryStore::new()),
+            store: Arc::new(Gate {
+                inner: Arc::new(MemoryStore::new()),
+                held: std::sync::Mutex::new(None),
+            }),
             slot: Arc::new(MemorySlot::new()),
             clock: Arc::new(ManualClock::new(100, Some(1_800_000_000))),
         }
@@ -782,4 +847,119 @@ async fn what_must_stay_is_read_from_the_log_once_and_then_only_what_is_new() {
         engine.must_stay(&mut state, &space, &put),
         Some(Stays::Kept)
     );
+}
+
+/// The parts of an object the device stores, as another party would send
+/// them.
+async fn stored_parts(engine: &Engine, space: EventId, locator: &Locator) -> Vec<ObjectPart> {
+    let mut state = engine.lock().await;
+    let bytes = Engine::stored_bytes(&mut state, &space, locator)
+        .await
+        .unwrap()
+        .unwrap();
+    crate::objects::parts_of(locator, &bytes).unwrap()
+}
+
+/// A part of a blob that arrives after the device dropped the blob, as a
+/// slice asked for before a read gave up does, is not stored: with no
+/// record it would be kept, and the device would then fetch the blob whole
+/// by itself (at-rest.md, "Retention", recording).
+#[tokio::test]
+async fn a_part_that_arrives_after_its_blob_was_dropped_is_not_stored() {
+    let medium = Medium::new();
+    let (engine, _, space) = medium.device().await;
+    let stream = engine.new_stream(frasil_adapter_blobs::TYPE).unwrap();
+    let (_, blob) = engine
+        .put_blob(space, &stream, None, &vec![7; SIZE])
+        .await
+        .unwrap();
+    let parts = stored_parts(&engine, space, &blob).await;
+    // Absent by the device's own choice, and nothing asks for it.
+    engine.drop_local_object(space, &blob).await.unwrap();
+    assert_eq!(
+        engine.retention_of(&space, &blob).await,
+        (BlobState::Absent, 0)
+    );
+
+    for part in &parts {
+        assert_eq!(
+            engine.receive_part(space, part.clone()).await.unwrap(),
+            Received::Left
+        );
+    }
+    assert_eq!(
+        engine.retention_of(&space, &blob).await,
+        (BlobState::Absent, 0)
+    );
+    assert_eq!(parts_stored(&engine, space).await, 0);
+    assert!(records(&engine, space).await.is_empty());
+    assert!(!engine.missing_objects(&space).await.contains(&blob));
+
+    // A request for its chunks says the device means to hold it again.
+    let fetching = engine.fetch_chunks(space, blob, 0..u64::MAX, FetchPriority::Position);
+    engine.retain(space, &blob, false).await.unwrap();
+    let mut last = Received::Kept;
+    for part in &parts {
+        last = engine.receive_part(space, part.clone()).await.unwrap();
+    }
+    assert_eq!(last, Received::Whole);
+    drop(fetching);
+    assert_eq!(
+        engine.retention_of(&space, &blob).await.0,
+        BlobState::Cached
+    );
+}
+
+/// While parts of a cached object are being written, outside the device's
+/// lock, nothing drops the object: an eviction then would delete its
+/// record and its earlier parts, and the parts under way would land with
+/// no record and count as kept.
+#[tokio::test]
+async fn an_object_is_not_dropped_while_its_parts_are_being_written() {
+    let medium = Medium::new();
+    let (engine, _, space) = medium.device().await;
+    let chunk = frasil_units::limits::CHUNK_BYTES;
+    let (a, a_parts) = object(&engine, space, b'a', 2 * chunk + 1).await;
+    assert_eq!(a_parts.len(), 3);
+    engine.retain(space, &a, false).await.unwrap();
+    assert_eq!(
+        engine
+            .receive_part(space, a_parts[0].clone())
+            .await
+            .unwrap(),
+        Received::Kept
+    );
+
+    // The second part's write begins, and is held back in the store.
+    let (begun, go) = medium.store.hold();
+    let writing = {
+        let engine = engine.clone();
+        let part = a_parts[1].clone();
+        tokio::spawn(async move { engine.receive_part(space, part).await.unwrap() })
+    };
+    begun.await.unwrap();
+    // The cache is over its budget meanwhile, and a read of the object
+    // that got nothing gives up.
+    engine.set_blob_cache(0);
+    engine.evict().await.unwrap();
+    assert_eq!(
+        engine.must_stay(&mut *engine.lock().await, &space, &a),
+        Some(Stays::InUse)
+    );
+    go.send(()).unwrap();
+    assert_eq!(writing.await.unwrap(), Received::Kept);
+
+    // Both parts are the cache's, under the record they were fetched
+    // under: none counts as kept.
+    assert!(matches!(
+        records(&engine, space).await[..],
+        [(_, Retention::Cached { .. })]
+    ));
+    // The header and two chunks.
+    assert_eq!(parts_stored(&engine, space).await, 3);
+    assert_eq!(engine.retention_of(&space, &a).await.0, BlobState::Cached);
+    // Nothing writes it any more: the cache may drop it whole.
+    engine.evict().await.unwrap();
+    assert_eq!(parts_stored(&engine, space).await, 0);
+    assert!(records(&engine, space).await.is_empty());
 }
