@@ -2166,6 +2166,7 @@ impl Engine {
         let Some(replica) = state.replicas.get(space) else {
             return Vec::new();
         };
+        #[cfg_attr(not(feature = "adapter-blobs"), allow(unused_mut))]
         let mut named = named_to_replica(replica);
         // The objects of the blob streams' current entries, references
         // among them, which a stream loaded from a snapshot names in no
