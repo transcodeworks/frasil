@@ -191,14 +191,27 @@ withdrawn. The npm package and the Swift and Kotlin bindings report absent
 as missing.
 
 A blob this device put is readable here at once; whether it has left the
-device is a separate question. In Rust, `blobs.is_durable(id)` is `false`
-while the change that put it waits for an always-on peer's
-acknowledgement, which comes only once the peer holds the blob's bytes,
-and `blobs.pending()` lists the stream's blobs still waiting. Both read the
-device's store, so after a reopen they say what the device uploads once it
-connects; an upload a peer holds part of goes on from there. Ask again on
-`Event::PendingChanges`. In a space with no always-on peer, a member's
-acknowledgement counts instead, and the member fetches the bytes after.
+device is a separate question, and it has two halves. In Rust,
+`blobs.is_durable(id)` is `false` while the change that put the blob waits
+for an acknowledgement, and `blobs.pending()` lists the stream's blobs
+still waiting. Both read the device's store, so after a reopen they say
+what the device offers once it connects; an upload a peer holds part of
+goes on from there. Ask again on `Event::PendingChanges`.
+
+Durable is about the change, not the bytes: an acknowledgement covers
+events alone. This device uploads a blob's bytes to a peer before it sends
+the peer the change, so a change a peer acknowledged to this device
+normally has its bytes there. In a space with no always-on peer, or whose
+peer this device has not heard since it opened, a member's acknowledgement
+makes the change durable, and a member fetches a blob's bytes only when it
+reads the blob. An application may conclude from a durable put that
+another device knows of the blob. It may not conclude that anyone else
+holds the bytes, and it must not delete its source file because a put is
+durable. `blobs.local(id)` answers that: a blob this device put is kept
+until an always-on peer has answered that it holds the bytes and has
+acknowledged the change, and cached from then on, unless the application
+asked to keep it. In a space with no always-on peer the blob stays kept,
+and this device's copy may be the only one.
 
 `device.arrivals()` gives each space and each stream the device holds for
 the first time, from the moment it is asked for: `Arrival::Space` once a

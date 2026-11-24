@@ -497,13 +497,31 @@ mod blobs {
 
         /// Whether the change that put a blob is durable, as
         /// [`Space::is_durable`] counts changes: false while this device
-        /// put it and no always-on peer acknowledged that change. A peer
-        /// takes a put's object before its unit, so once true a peer of the
-        /// space holds the blob; in a space with no always-on peer, a
-        /// member's acknowledgement counts instead, and a member fetches
-        /// the bytes after the unit. A blob another device put is durable
-        /// here. The answer outlives a reopen: the device's record of what
-        /// is not yet acknowledged is kept in its store.
+        /// put it and that change still waits for an acknowledgement. A
+        /// blob another device put is durable here. The answer outlives a
+        /// reopen: the device's record of what is not yet acknowledged is
+        /// kept in its store.
+        ///
+        /// It is about the change, not the bytes. An acknowledgement
+        /// covers events alone. This device uploads a blob's bytes to a
+        /// peer before it sends the peer the change, so a change that a
+        /// peer acknowledged to this device normally has its bytes there;
+        /// but in a space with no always-on peer, or whose peer this
+        /// device has not heard since it opened, a member's
+        /// acknowledgement makes the change durable, and a member fetches
+        /// a blob's bytes only when it reads the blob. There a durable
+        /// put says that another device knows of the blob, and nothing of
+        /// who holds its bytes.
+        ///
+        /// An application must not delete its own copy of a file because
+        /// its put is durable. What tells it that another party holds the
+        /// bytes is [`Blobs::local`]: a blob this device put is
+        /// [`BlobState::Kept`](crate::BlobState::Kept) until an always-on
+        /// peer has answered that it holds the bytes and has acknowledged
+        /// the change, and [`BlobState::Cached`](crate::BlobState::Cached)
+        /// from then on, unless the application asked to keep it. In a
+        /// space with no always-on peer it stays kept, and this device's
+        /// copy may be the only one.
         ///
         /// [`Event::PendingChanges`](crate::Event::PendingChanges) tells
         /// when to ask again.
@@ -524,9 +542,11 @@ mod blobs {
         }
 
         /// The blobs of the stream whose put is not durable yet, as
-        /// [`Blobs::is_durable`] says: those this device put and no peer
-        /// has acknowledged, ascending by ID. After a reopen it lists what
-        /// the device uploads once it connects.
+        /// [`Blobs::is_durable`] says: those this device put whose change
+        /// still waits for an acknowledgement, ascending by ID. After a
+        /// reopen it lists what the device offers once it connects, with
+        /// the bytes it uploads to a peer first. A blob that is not listed
+        /// is not thereby held by anyone else: see [`Blobs::is_durable`].
         ///
         /// # Errors
         ///
