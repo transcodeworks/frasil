@@ -3942,7 +3942,10 @@ impl Engine {
             } else {
                 fetches.wants(space, locator, index)
             };
-            replica.is_some_and(|replica| replica.holds_chunk(locator, index))
+            // A chunk held that a reader could not open is asked for
+            // again.
+            (replica.is_some_and(|replica| replica.holds_chunk(locator, index))
+                && !self.readers().distrusts(&key, index))
                 || index < written
                 || !(named || wanted)
                 || (passes && !self.readers().needs(&key, index))

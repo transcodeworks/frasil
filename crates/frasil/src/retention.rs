@@ -465,6 +465,32 @@ pub(crate) enum Stays {
     Kept,
 }
 
+/// Why the device would drop what it stores of an object
+/// ([`Engine::drop_stored`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Dropping {
+    /// To make room, or because no read uses any more what one held
+    /// beside the cache: only an object that nothing makes stay
+    /// ([`Engine::must_stay`]).
+    Evicted,
+    /// A reader goes on through its own memory, and lets go of what was
+    /// stored for it beside the cache: only a cached object, whatever
+    /// uses it.
+    LetGo,
+    /// The application asked: anything but Frasil's own objects and an
+    /// object in use.
+    Asked,
+    /// A check found that the bytes held are not the object's, or cannot
+    /// all be: a part that opens under another header than the one held,
+    /// bytes that do not hash to the locator, a chunk given that came
+    /// again as other bytes. Anything but an object the device holds
+    /// whole whose stored bytes hash to its locator: those are the
+    /// object's, and a fault found in them stands (units.md, 3.3 Reading
+    /// an object). What this device sealed is such an object, so nothing
+    /// it put goes this way.
+    Doubted,
+}
+
 /// How a blob's object stands on a device ([`Engine::retention_of`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -965,13 +991,8 @@ impl Engine {
         if !beside || self.keeps_all_blobs() || self.wanted(&key) == Some(Want::Cache) {
             return Ok(());
         }
-        if matches!(
-            self.must_stay(&mut state, &space, locator),
-            Some(Stays::Own | Stays::Pending | Stays::Kept)
-        ) {
-            return Ok(());
-        }
-        self.drop_stored(&mut state, space, &key.1, true)
+        Self::refresh_staying(&mut state, &space);
+        self.drop_stored(&mut state, space, &key.1, true, Dropping::LetGo)
             .await
             .map(drop)
     }
@@ -1488,12 +1509,44 @@ impl Engine {
         }
     }
 
+    /// Whether the device may drop what it stores of an object, for this
+    /// reason ([`Dropping`]): the one guard every drop passes. It goes by
+    /// what the space's log and outbox said when they were last read
+    /// ([`must_stay`](Self::must_stay) reads them).
+    pub(crate) fn may_drop(
+        &self,
+        state: &State,
+        space: &EventId,
+        id: &[u8; 32],
+        why: Dropping,
+    ) -> bool {
+        match why {
+            Dropping::Evicted => self.stays(state, space, id).is_none(),
+            Dropping::LetGo => !matches!(
+                self.stays(state, space, id),
+                Some(Stays::Own | Stays::Pending | Stays::Kept)
+            ),
+            Dropping::Asked => !matches!(
+                self.stays(state, space, id),
+                Some(Stays::Own | Stays::InUse)
+            ),
+            Dropping::Doubted => !state.replicas.get(space).is_some_and(|replica| {
+                replica
+                    .object_locators(id)
+                    .iter()
+                    .any(|locator| replica.holds_object(locator) && replica.is_checked(locator))
+            }),
+        }
+    }
+
     /// Forgets what the device holds of an object, under every locator it
     /// knows it by, and deletes its parts' records, the header with the
     /// chunks, in one commit; with `record`, its `retention` record too,
     /// so that the device no longer means to hold it. What the device
-    /// found out about the stored bytes goes with them. Whether it held
-    /// anything of it, or a record.
+    /// found out about the stored bytes goes with them. Nothing is done
+    /// where the device may not drop the object for this reason
+    /// ([`may_drop`](Self::may_drop)). Whether it dropped anything of it,
+    /// or a record.
     ///
     /// # Errors
     ///
@@ -1504,7 +1557,11 @@ impl Engine {
         space: EventId,
         id: &[u8; 32],
         record: bool,
+        why: Dropping,
     ) -> Result<bool> {
+        if !self.may_drop(state, &space, id, why) {
+            return Ok(false);
+        }
         let Some(replica) = state.replicas.get(&space) else {
             return Ok(false);
         };
@@ -1603,7 +1660,8 @@ impl Engine {
                 continue;
             }
             if entry.passing || entry.bytes == 0 {
-                self.drop_stored(state, space, &id, true).await?;
+                self.drop_stored(state, space, &id, true, Dropping::Evicted)
+                    .await?;
             } else {
                 state.retained.settle.remove(&(space, id));
             }
@@ -1638,7 +1696,8 @@ impl Engine {
             if self.stays(state, &space, &id).is_some() {
                 continue;
             }
-            self.drop_stored(state, space, &id, true).await?;
+            self.drop_stored(state, space, &id, true, Dropping::Evicted)
+                .await?;
         }
         Ok(())
     }
@@ -1758,9 +1817,15 @@ impl Engine {
                 "this device put the blob, and no peer holds it yet",
             ));
         }
-        self.drop_stored(&mut state, space, &object_id(locator), true)
-            .await
-            .map(drop)
+        self.drop_stored(
+            &mut state,
+            space,
+            &object_id(locator),
+            true,
+            Dropping::Asked,
+        )
+        .await
+        .map(drop)
     }
 
     /// How a blob's object stands in a space on this device, and the

@@ -154,6 +154,10 @@ struct Held {
     /// that waits takes for progress. A chunk that arrives again, or one
     /// the window did not ask for, does not count.
     arrived: u64,
+    /// The chunks the store holds that did not open for the window's
+    /// reader: it reads none of them from the store, and they are asked
+    /// for again, until a part that checks takes their place.
+    distrusted: BTreeSet<u64>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -198,6 +202,29 @@ impl Readers {
                 .values()
                 .any(|held| held.passing && held.wanted.contains_key(&index))
         })
+    }
+
+    /// Whether the store holds this chunk and a reader of the object
+    /// could not open it ([`Window::distrust`]): it is fetched again.
+    pub(crate) fn distrusts(&self, key: &Key, index: u64) -> bool {
+        self.watched(key).is_some_and(|watched| {
+            lock(&watched.inner)
+                .windows
+                .values()
+                .any(|held| held.distrusted.contains(&index))
+        })
+    }
+
+    /// The first chunk among `chunks` that the store holds and a reader
+    /// of the object could not open.
+    pub(crate) fn first_distrusted(&self, key: &Key, chunks: Range<u64>) -> Option<u64> {
+        let watched = self.watched(key)?;
+        let inner = lock(&watched.inner);
+        inner
+            .windows
+            .values()
+            .filter_map(|held| held.distrusted.range(chunks.clone()).next().copied())
+            .min()
     }
 
     /// The first chunk among `chunks` that a window that stores nothing
@@ -338,6 +365,7 @@ impl Readers {
             for held in inner.windows.values_mut() {
                 held.chunks.clear();
                 held.wanted.clear();
+                held.distrusted.clear();
             }
         }
         watched.bump();
@@ -361,6 +389,7 @@ impl Readers {
             inner.epoch += 1;
             for held in inner.windows.values_mut() {
                 held.chunks.clear();
+                held.distrusted.clear();
             }
         }
         watched.bump();
@@ -391,6 +420,8 @@ impl Readers {
                 if held.wanted.remove(index).is_some() {
                     held.arrived += 1;
                 }
+                // A part that checked took its place in the store.
+                held.distrusted.remove(index);
             }
         }
         watched.bump();
@@ -546,6 +577,25 @@ impl Window {
         }
     }
 
+    /// Notes that the chunk the store holds at `index` did not open for
+    /// this window's reader: the reader reads it from the store no more,
+    /// and the chunk is asked for again, in the reader's space, until a
+    /// part that checks is kept there. Nothing is dropped for it.
+    pub(crate) fn distrust(&self, index: u64) {
+        if let Some(held) = lock(&self.watched.inner).windows.get_mut(&self.number) {
+            held.distrusted.insert(index);
+        }
+    }
+
+    /// Whether the chunk the store holds at `index` did not open for this
+    /// window's reader.
+    pub(crate) fn distrusts(&self, index: u64) -> bool {
+        lock(&self.watched.inner)
+            .windows
+            .get(&self.number)
+            .is_some_and(|held| held.distrusted.contains(&index))
+    }
+
     /// The header that arrived with the chunks the windows took.
     pub(crate) fn header(&self) -> Option<Vec<u8>> {
         lock(&self.watched.inner).header.clone()
@@ -569,10 +619,15 @@ impl Window {
         inner.given = true;
     }
 
-    /// Whether a chunk has opened in a reader of the object, this one or
-    /// another, under the header they read by.
-    pub(crate) fn given(&self) -> bool {
-        lock(&self.watched.inner).given
+    /// Whether a chunk has opened under the header the object's readers
+    /// read by, as it arrived or in a reader.
+    pub(crate) fn proved(&self) -> bool {
+        lock(&self.watched.inner).proved
+    }
+
+    /// Whether the object was refused while this reader was open.
+    pub(crate) fn refused(&self) -> bool {
+        lock(&self.watched.inner).refusal.is_some()
     }
 
     /// How many times what was held under a header nothing had opened
@@ -582,10 +637,13 @@ impl Window {
     }
 
     /// Lets go of the header the windows hold and of every chunk that
-    /// arrived under it, unless a chunk has opened under it: nothing was
-    /// given from them, and they are not known to be the object's.
+    /// arrived under it, unless a chunk has opened under it, as it
+    /// arrived or in a reader: nothing says then that they are the
+    /// object's, and nothing was given from them.
     pub(crate) fn disown(&self) {
-        self.readers.disown(&self.key);
+        if !self.proved() {
+            self.readers.disown(&self.key);
+        }
     }
 
     /// A chunk the window holds in memory, if any: the last.
@@ -675,6 +733,24 @@ pub(crate) struct Holding {
     pub whole: bool,
     /// Whether the application holds the plaintext as a file.
     pub file: bool,
+}
+
+/// What a chunk of the store that did not open for a reader says of what
+/// the device stores of its object ([`Engine::stored_fault`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StoredFault {
+    /// The device holds the object whole and its stored bytes hash to its
+    /// locator: they are the object's, and a chunk of them that does not
+    /// open is a fault of the object, or of the key it was opened with
+    /// (units.md, 3.3 Reading an object, a fault at steps 1 to 7 once
+    /// step 0 passed). Nothing is dropped.
+    Stands,
+    /// The device held the object whole, and its stored bytes did not
+    /// hash to its locator: they were dropped.
+    Dropped,
+    /// The device holds part of the object: nothing says yet whether the
+    /// chunk, the header or the key is at fault. Nothing is dropped.
+    Partial,
 }
 
 /// A fault a [`PartReader`] found at the whole-object steps.
@@ -1139,10 +1215,15 @@ impl Engine {
     /// time, unless a read ran them since the object was last kept:
     /// `true` once they passed, `false` while the device does not hold it
     /// whole. An object that fails is refused: its open readers fail
-    /// ([`Readers::refuse`]), and the device drops what it stores of it
-    /// unless it keeps the object. One whose stored bytes hash to the
-    /// locator and that fails a later step is not what its locator names,
-    /// whoever sends it: it is refused for as long as the device is open.
+    /// ([`Readers::refuse`]). One whose stored bytes do not hash to its
+    /// locator is dropped. One whose bytes do, and that fails a later
+    /// step, is not what its locator names, whoever sends it: its bytes
+    /// stay, and it is refused for as long as the device is open.
+    ///
+    /// A chunk that does not open under the object key an entry carries
+    /// is that entry's fault, and nothing else's: nothing is refused, and
+    /// nothing dropped (adapter-blobs.md, 4 Security considerations, "A
+    /// reference hands one key").
     ///
     /// # Errors
     ///
@@ -1162,6 +1243,9 @@ impl Engine {
             Err(Error::Class(class)) => class,
             Err(error) => return Err(error),
         };
+        if reference.is_some() && fault == "Decrypt" {
+            return Err(Error::Class(fault));
+        }
         let mut holders = vec![*space];
         holders.extend(reference.map(|(source, _)| source));
         // Its bytes hash to the locator: the fault is the object's.
@@ -1180,11 +1264,14 @@ impl Engine {
     }
 
     /// Refuses an object a read found a fault in: its open readers fail
-    /// with `class` ([`Readers::refuse`]), and what the device stores of
-    /// it in `holders` is dropped. With `stands`, the fault is the
-    /// object's own, whoever sends it: an object the device keeps then
-    /// stays where it is, since fetching it again brings the same bytes,
-    /// and a cached one goes with its record.
+    /// with `class` ([`Readers::refuse`]). With `stands`, the fault is
+    /// the object's own, whoever sends it, and what the device stores of
+    /// it stays: fetching it again brings the same bytes. Without, what
+    /// was read is not the object's, and what the device stores of it in
+    /// `holders` is dropped, but for an object it holds whole whose bytes
+    /// hash to its locator ([`Dropping::Doubted`]).
+    ///
+    /// [`Dropping::Doubted`]: crate::retention::Dropping
     ///
     /// # Errors
     ///
@@ -1203,39 +1290,53 @@ impl Engine {
             if holder != space {
                 self.readers().refuse(holder, locator, class, stands);
             }
-            let kept = matches!(
-                self.must_stay(&mut state, holder, locator),
-                Some(
-                    crate::retention::Stays::Own
-                        | crate::retention::Stays::Pending
-                        | crate::retention::Stays::Kept
-                )
-            );
-            if !(stands && kept) {
-                self.drop_stored(&mut state, *holder, &object_id(locator), stands && !kept)
+            if !stands {
+                let doubted = crate::retention::Dropping::Doubted;
+                self.drop_stored(&mut state, *holder, &object_id(locator), false, doubted)
                     .await?;
             }
         }
         Ok(())
     }
 
-    /// Drops what the device stores of an object in `holders` under a
-    /// header nothing has opened under: a chunk of it did not open for a
-    /// reader, no reader gave anything of it, and so none fails. It is
-    /// missing again, and fetched again; how the device retains it stays
-    /// as it was.
+    /// What a chunk that a reader read from the store of `holder`, and
+    /// that did not open, says of what is stored there
+    /// ([`StoredFault`]). Of an object held whole, step 0 of units.md,
+    /// 3.3 runs first if it has not since a part was last kept: bytes
+    /// that do not hash to the locator are not the object's, and are
+    /// dropped ([`drop_object`](Self::drop_object)).
     ///
     /// # Errors
     ///
     /// The store's.
-    pub(crate) async fn drop_unopened(&self, holders: &[EventId], locator: &Locator) -> Result<()> {
+    pub(crate) async fn stored_fault(
+        &self,
+        holder: &EventId,
+        locator: &Locator,
+    ) -> Result<StoredFault> {
         let mut state = self.lock().await;
-        for holder in holders {
-            self.readers().disown(&(*holder, object_id(locator)));
-            self.drop_stored(&mut state, *holder, &object_id(locator), false)
-                .await?;
+        let Some(replica) = state.replicas.get(holder) else {
+            return Ok(StoredFault::Partial);
+        };
+        if !replica.holds_object(locator) || replica.is_held(locator) {
+            return Ok(StoredFault::Partial);
         }
-        Ok(())
+        if replica.is_checked(locator) {
+            return Ok(StoredFault::Stands);
+        }
+        match Self::whole_digest(&mut state, holder, locator).await? {
+            Some(true) => {
+                if let Some(replica) = state.replicas.get_mut(holder) {
+                    replica.mark_checked(locator);
+                }
+                Ok(StoredFault::Stands)
+            }
+            Some(false) => {
+                self.drop_object(&mut state, *holder, locator).await?;
+                Ok(StoredFault::Dropped)
+            }
+            None => Ok(StoredFault::Partial),
+        }
     }
 
     /// A chunk of an object the device holds sealed in one space, if any.

@@ -54,7 +54,7 @@ use super::retention::Reading;
 use super::{BlobId, Blobs, Event, Read};
 use crate::error::{Error, Result};
 use crate::fetch::{FetchEnd, FetchPriority};
-use crate::reading::{ObjectOpening, PartReader, WholeFault, Window};
+use crate::reading::{ObjectOpening, PartReader, StoredFault, WholeFault, Window};
 use crate::retention::Want;
 use frasil_adapter::Locator;
 use frasil_adapter_blobs::Entry;
@@ -396,7 +396,8 @@ impl Following {
                 self.window.end_verifying();
                 match verified {
                     // Refused: told at the next turn.
-                    Err(Error::Class(_)) => continue,
+                    Err(Error::Class(_)) if self.window.refused() => continue,
+                    // A fault of the reader's own entry, or the store's.
                     Ok(true) | Err(_) => return,
                     Ok(false) => {}
                 }
@@ -742,7 +743,7 @@ impl BlobReader {
         let engine = self.engine();
         let locator = self.entry.object;
         if let Some((index, _)) = &self.opened
-            && let Some((sealed, true)) = self.sealed(*index).await?
+            && let Some((sealed, Some(_))) = self.sealed(*index).await?
             && let Some(parts) = self.parts.as_mut()
         {
             parts.remember(*index, &sealed);
@@ -933,15 +934,21 @@ impl BlobReader {
     }
 
     /// The sealed chunk at `index`, from what the device stores or from
-    /// the reader's window, and whether it is the store's.
-    async fn sealed(&self, index: u64) -> Result<Option<(Arc<Vec<u8>>, bool)>> {
+    /// the reader's window, and the space whose store it is from. A
+    /// chunk of the store that did not open for this reader before is
+    /// not read from there again ([`Window::distrust`]).
+    async fn sealed(&self, index: u64) -> Result<Option<(Arc<Vec<u8>>, Option<EventId>)>> {
         let engine = self.blobs.space().device.engine();
-        for holder in &self.holders {
-            if let Some((_, chunk)) = engine.held_part(holder, &self.entry.object, index).await? {
-                return Ok(Some((Arc::new(chunk), true)));
+        if !self.window.distrusts(index) {
+            for holder in &self.holders {
+                if let Some((_, chunk)) =
+                    engine.held_part(holder, &self.entry.object, index).await?
+                {
+                    return Ok(Some((Arc::new(chunk), Some(*holder))));
+                }
             }
         }
-        Ok(self.window.chunk(index).map(|chunk| (chunk, false)))
+        Ok(self.window.chunk(index).map(|chunk| (chunk, None)))
     }
 
     /// Asks for the chunk at `index`, when the reader has neither it nor
@@ -987,6 +994,8 @@ impl BlobReader {
             self.stored_whole |= holding.whole || holding.file;
             here.extend(holding.chunks);
         }
+        // A chunk of the store that did not open here is asked for again.
+        here.retain(|at| !self.window.distrusts(*at));
         if self.stored_whole {
             self.window.want(&engine, &[], hold);
             return;
@@ -1027,7 +1036,7 @@ impl BlobReader {
         loop {
             changed.borrow_and_update();
             self.check()?;
-            let Some((sealed, stored)) = self.sealed(index).await? else {
+            let Some((sealed, holder)) = self.sealed(index).await? else {
                 if self.local {
                     return Err(Error::Class("Missing"));
                 }
@@ -1046,18 +1055,18 @@ impl BlobReader {
                 return Err(Error::Class("Missing"));
             };
             let proved = parts.has_opened();
-            match parts.open(index, &sealed, stored) {
+            match parts.open(index, &sealed, holder.is_some()) {
                 Ok(plain) => {
                     if !proved {
                         self.window.gave();
                     }
-                    self.from_window |= !stored;
+                    self.from_window |= holder.is_none();
                     self.opened = Some((index, plain));
                     self.passed().await;
                     self.slide(index, renew).await;
                     return Ok(());
                 }
-                Err(error) => return Err(self.fault(index, stored, error).await),
+                Err(error) => return Err(self.fault(index, holder, error).await),
             }
         }
     }
@@ -1077,8 +1086,27 @@ impl BlobReader {
     }
 
     /// What a chunk that did not open, or a whole-object step that
-    /// failed, does to the reader and to what the device holds.
-    async fn fault(&mut self, index: u64, stored: bool, error: Error) -> Error {
+    /// failed, does to the reader and to what the device holds. `holder`
+    /// is the space whose store the chunk was read from, if it was.
+    ///
+    /// A whole-object step that failed refuses the object: at step 7,
+    /// once step 0 passed, for good, with its bytes left where they are;
+    /// at step 0, with what was read dropped, since it is not the
+    /// object's.
+    ///
+    /// A chunk that did not open drops nothing. From the window, it
+    /// leaves this reader's window, and no other reader's; the header
+    /// goes with it only when nothing has opened under it, in any reader
+    /// or as it arrived. From the store, of an object held whole whose
+    /// bytes hash to its locator, the fault stands: it is the object's,
+    /// and its readers fail for good; or, where the reader opens with the
+    /// object key its entry carries, it may be that key's, and then this
+    /// read fails and nothing else changes. Of an object held in part,
+    /// the chunk is read from the store no more by this reader and asked
+    /// for again ([`Window::distrust`]): a part that opens takes its
+    /// place, or that of everything held, if it comes under another
+    /// header ([`Engine::receive_part`](crate::device::Engine)).
+    async fn fault(&mut self, index: u64, holder: Option<EventId>, error: Error) -> Error {
         let engine = self.engine();
         let locator = self.entry.object;
         match self.parts.as_ref().and_then(PartReader::fault) {
@@ -1102,32 +1130,32 @@ impl BlobReader {
                     )
                     .await;
             }
-            // Nothing has opened under this header, here or in another
-            // reader, so nothing was given under it: the header and what
-            // came under it are not known to be the object's. They go, no
-            // reader fails, and the next read fetches them again.
-            None if !self.window.given() => {
-                if stored {
-                    let _ = engine.drop_unopened(&self.holders, &locator).await;
-                } else {
-                    self.window.disown();
+            None => {
+                match holder {
+                    Some(holder) => match engine.stored_fault(&holder, &locator).await {
+                        Ok(StoredFault::Stands) if self.reference.is_none() => {
+                            let class = error.class_name().unwrap_or("Decrypt");
+                            let _ = engine
+                                .refuse_read(&self.space, &self.holders, &locator, class, true)
+                                .await;
+                        }
+                        // The key the entry carries does not open the
+                        // object: the entry's fault. Or the bytes were
+                        // not the object's, and went.
+                        Ok(StoredFault::Stands | StoredFault::Dropped) => {}
+                        Ok(StoredFault::Partial) | Err(_) => self.window.distrust(index),
+                    },
+                    None => {
+                        self.window.discard(index);
+                        self.window.disown();
+                    }
                 }
-                self.parts = None;
+                // Nothing has opened under this header in this reader:
+                // the next read takes the header the device holds then.
+                if self.parts.as_ref().is_some_and(|parts| !parts.has_opened()) {
+                    self.parts = None;
+                }
             }
-            // A chunk the store holds that does not open is not the
-            // object's: what is held of it goes, and is fetched again.
-            None if stored => {
-                let _ = engine
-                    .refuse_read(
-                        &self.space,
-                        &self.holders,
-                        &locator,
-                        "ObjectMismatch",
-                        false,
-                    )
-                    .await;
-            }
-            None => self.window.discard(index),
         }
         let _ = self.check();
         error

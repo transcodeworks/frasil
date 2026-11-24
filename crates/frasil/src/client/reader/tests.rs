@@ -16,6 +16,7 @@ use frasil_units::limits::{CHUNK_BYTES, SEALED_CHUNK_BYTES};
 use std::time::Duration;
 
 mod arrival;
+mod faults;
 
 const CHUNK: u64 = CHUNK_BYTES as u64;
 
@@ -645,7 +646,8 @@ async fn a_bad_chunk_is_refused_and_the_good_ones_stay() {
 
 /// A chunk of another object, a header of another object, and a chunk
 /// at another index, put in the store past the checks of arrival: the
-/// reader gives none of their bytes.
+/// reader gives none of their bytes, and drops nothing for them. Each is
+/// asked for again, and the chunk that opens takes its place.
 #[tokio::test]
 async fn the_reader_checks_what_the_store_holds() {
     let absent = absent().await;
@@ -678,10 +680,28 @@ async fn the_reader_checks_what_the_store_holds() {
     assert_eq!(reader.read_at(0, &mut buf).await.unwrap(), 10);
     let failed = reader.read_at(CHUNK, &mut buf).await.unwrap_err();
     assert_eq!(failed.class_name(), Some("Decrypt"));
-    // What is held went with it, and the reader fails from then on.
-    assert!(!absent.holds(0).await);
-    let failed = reader.read_at(0, &mut buf).await.unwrap_err();
-    assert_eq!(failed.class_name(), Some("ObjectMismatch"));
+    // Nothing held goes for it, and the reader lives: it reads the chunk
+    // from the store no more, and this one fetches nothing.
+    assert!(absent.holds(0).await && absent.holds(1).await);
+    assert_eq!(reader.read_at(0, &mut buf).await.unwrap(), 10);
+    let failed = reader.read_at(CHUNK, &mut buf).await.unwrap_err();
+    assert_eq!(failed.class_name(), Some("Missing"));
+    drop(reader);
+    // A reader that fetches asks for the chunk again, and reads it once
+    // a chunk that opens took the other's place: so too for the chunk
+    // that sits at another's index.
+    let mut reader = absent
+        .blobs
+        .open_reader(absent.id, &Read::new())
+        .await
+        .unwrap();
+    reader.set_read_ahead(0);
+    for index in [1, 2] {
+        let from = index * CHUNK_BYTES;
+        let piece = read_again(&absent, &mut reader, from as u64, 10).await;
+        assert_eq!(piece, absent.bytes[from..from + 10]);
+    }
+    assert!(absent.holds(0).await);
     drop(reader);
 
     // A header of another object is not even stored under this ID
@@ -698,7 +718,8 @@ async fn the_reader_checks_what_the_store_holds() {
 /// A blob whose plaintext is not what its ID names, read by a reader that
 /// seeks: bytes are given while it is in part, and once the device holds
 /// it whole the last step fails. The reader fails, the application is
-/// told, the blob is dropped, and no reader opens on it again.
+/// told, the blob's bytes stay, since they are the object's, and no
+/// reader opens on it again.
 #[tokio::test]
 async fn a_blob_refused_whole_fails_its_readers_and_tells_the_application() {
     use frasil_units::objects::{Header, ObjectKeys, seal_chunk};
@@ -816,7 +837,9 @@ async fn a_blob_refused_whole_fails_its_readers_and_tells_the_application() {
     let failed = reader.read_at(0, &mut [0u8; 10]).await.unwrap_err();
     assert_eq!(failed.class_name(), Some("ObjectMismatch"));
     assert_eq!(reader.verified(), Verified::Chunks);
-    assert_eq!(blobs.local(blob).await.unwrap().state, BlobState::Absent);
+    // Its bytes hash to its locator, so they are the object's: they
+    // stay, and fetching them again would bring the same.
+    assert_eq!(blobs.local(blob).await.unwrap().state, BlobState::Cached);
     drop(reader);
     // The fault is the object's, whoever sends it.
     let again = blobs.open_reader(blob, &Read::new()).await.unwrap_err();

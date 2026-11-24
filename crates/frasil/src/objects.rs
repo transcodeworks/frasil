@@ -1712,13 +1712,16 @@ impl Engine {
         self.receive_part(space, part, Asked::STORE).await
     }
 
-    /// Forgets an object the device held part of because a check of it
-    /// failed, and deletes its records: it is missing again. How the
-    /// device retains the object stays as it was, so that what another
-    /// party then sends of it is kept or cached as before. Its open
-    /// readers fail if a chunk of it had opened in one of them: the bytes
-    /// given are then not known to be the object's. Where none had, the
-    /// readers gave nothing, and start over with what arrives next.
+    /// Forgets an object the device held part of because a check found
+    /// that what is held is not the object's, and deletes its records: it
+    /// is missing again. How the device retains the object stays as it
+    /// was, so that what another party then sends of it is kept or cached
+    /// as before. Its open readers fail if a chunk of it had opened in
+    /// one of them: the bytes given are then not known to be the
+    /// object's. Where none had, the readers gave nothing, and start over
+    /// with what arrives next. Nothing is done to an object the device
+    /// holds whole whose bytes hash to its locator
+    /// ([`Dropping::Doubted`](crate::retention::Dropping)).
     ///
     /// # Errors
     ///
@@ -1729,14 +1732,16 @@ impl Engine {
         space: EventId,
         locator: &Locator,
     ) -> Result<()> {
-        if !self
-            .readers()
-            .disown(&(space, crate::replica::object_id(locator)))
-        {
+        let id = crate::replica::object_id(locator);
+        let doubted = crate::retention::Dropping::Doubted;
+        if !self.may_drop(state, &space, &id, doubted) {
+            return Ok(());
+        }
+        if !self.readers().disown(&(space, id)) {
             self.readers()
                 .refuse(&space, locator, "ObjectMismatch", false);
         }
-        self.drop_stored(state, space, &crate::replica::object_id(locator), false)
+        self.drop_stored(state, space, &id, false, doubted)
             .await
             .map(drop)
     }
@@ -1744,7 +1749,7 @@ impl Engine {
     /// Whether an object the replica holds whole, sealed, hashes to its
     /// locator (units.md, "Reading an object", step 0), read a few chunks
     /// at a time: `None` when it cannot be read.
-    async fn whole_digest(
+    pub(crate) async fn whole_digest(
         state: &mut crate::device::State,
         space: &EventId,
         locator: &Locator,
@@ -2493,7 +2498,15 @@ impl Engine {
         let Some(header) = replica.object_header(locator) else {
             return (!chunks.is_empty()).then_some((None, chunks.start));
         };
-        let first = replica.first_missing_chunk(locator, chunks)?;
+        // A chunk held that a reader could not open is fetched again
+        // ([`Window::distrust`](crate::reading::Window::distrust)).
+        let key = (*space, crate::replica::object_id(locator));
+        let distrusted = self.readers().first_distrusted(&key, chunks.clone());
+        let missing = replica.first_missing_chunk(locator, chunks);
+        let first = match (missing, distrusted) {
+            (Some(missing), Some(distrusted)) => missing.min(distrusted),
+            (missing, distrusted) => missing.or(distrusted)?,
+        };
         Some((Some(header.to_vec()), first))
     }
 
