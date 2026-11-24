@@ -2050,6 +2050,25 @@ impl Replica {
         )
     }
 
+    /// The indices of an object's chunks the store holds, by its locator
+    /// and its ID, as [`forget_object`](Self::forget_object) returns them,
+    /// with nothing forgotten: `None` when the replica holds nothing of
+    /// it.
+    pub(crate) fn object_stored(&self, locator: &Locator) -> Option<BTreeSet<u64>> {
+        let located = self.objects.get(locator);
+        let unlocated = self.unlocated.get(&object_id(locator));
+        if located.is_none() && unlocated.is_none() {
+            return None;
+        }
+        Some(
+            located
+                .into_iter()
+                .chain(unlocated)
+                .flat_map(|object| object.stored.iter().copied())
+                .collect(),
+        )
+    }
+
     /// Notes that an object's stored bytes hash to its locator.
     pub(crate) fn mark_checked(&mut self, locator: &Locator) {
         if let Some(object) = self.objects.get_mut(locator) {

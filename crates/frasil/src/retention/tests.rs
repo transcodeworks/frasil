@@ -26,6 +26,8 @@ use std::sync::Arc;
 struct Gate {
     inner: Arc<MemoryStore>,
     held: std::sync::Mutex<Option<Held>>,
+    /// Whether the next commit fails, with nothing written.
+    failing: std::sync::atomic::AtomicBool,
 }
 
 /// What a commit held back signals with and waits for.
@@ -71,6 +73,12 @@ impl Store for Gate {
         commit: &'a frasil_store::Commit,
     ) -> frasil_store::BoxFuture<'a, Result<bool, frasil_store::StoreError>> {
         Box::pin(async move {
+            if self
+                .failing
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(frasil_store::StoreError::new("the medium failed"));
+            }
             let held = self.held.lock().unwrap().take();
             if let Some((began, gone)) = held {
                 let _ = began.send(());
@@ -94,6 +102,7 @@ impl Medium {
             store: Arc::new(Gate {
                 inner: Arc::new(MemoryStore::new()),
                 held: std::sync::Mutex::new(None),
+                failing: std::sync::atomic::AtomicBool::new(false),
             }),
             slot: Arc::new(MemorySlot::new()),
             clock: Arc::new(ManualClock::new(100, Some(1_800_000_000))),
@@ -1194,4 +1203,41 @@ async fn a_store_with_no_retention_records_keeps_what_it_holds_whole_or_in_part(
         engine.retention_of(&space, &partial).await,
         (BlobState::Absent, 0)
     );
+}
+
+/// A drop whose commit fails leaves the object as it was, in memory as in
+/// the store: the device goes on holding it, and drops it at the next
+/// pass.
+#[tokio::test]
+async fn a_drop_the_store_refuses_changes_nothing() {
+    let medium = Medium::new();
+    let (engine, _, space) = medium.device().await;
+    let (a, a_parts) = object(&engine, space, b'a', SIZE).await;
+    fetch(&engine, space, &a, &a_parts, false).await;
+    let stored = parts_stored(&engine, space).await;
+    let (cached, _) = counted(&engine).await;
+    engine.set_blob_cache(0);
+
+    medium
+        .store
+        .failing
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(engine.evict().await.is_err());
+    assert!(holds(&engine, space, &a).await, "as the store has it");
+    assert_eq!(parts_stored(&engine, space).await, stored);
+    assert_eq!(records(&engine, space).await.len(), 1);
+    assert_eq!(engine.retention_of(&space, &a).await.0, BlobState::Cached);
+    assert_eq!(counted(&engine).await.0, cached);
+    // It reads as before.
+    let mut plain = engine.plain(&space, &a, None, 0..u64::MAX).await.unwrap();
+    let mut read = 0;
+    while let Some((_, chunk)) = plain.next().await.unwrap() {
+        read += chunk.len();
+    }
+    assert_eq!(read, SIZE);
+
+    engine.evict().await.unwrap();
+    assert!(!holds(&engine, space, &a).await);
+    assert_eq!(parts_stored(&engine, space).await, 0);
+    assert!(records(&engine, space).await.is_empty());
 }

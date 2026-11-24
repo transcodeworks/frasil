@@ -1067,7 +1067,7 @@ impl Engine {
         id: &[u8; 32],
         record: bool,
     ) -> Result<bool> {
-        let Some(replica) = state.replicas.get_mut(&space) else {
+        let Some(replica) = state.replicas.get(&space) else {
             return Ok(false);
         };
         let locators = replica.object_locators(id);
@@ -1078,7 +1078,7 @@ impl Engine {
             .collect();
         let mut stored = None;
         for locator in &locators {
-            if let Some(indices) = replica.forget_object(locator) {
+            if let Some(indices) = replica.object_stored(locator) {
                 stored.get_or_insert_with(BTreeSet::new).extend(indices);
             }
         }
@@ -1097,7 +1097,14 @@ impl Engine {
                 .vault
                 .delete(&mut batch, &space.0, Table::Retention, id);
         }
+        // The store first: a commit that fails leaves the device holding
+        // the object, in memory as at rest.
         state.vault.commit(batch).await?;
+        if let Some(replica) = state.replicas.get_mut(&space) {
+            for locator in &locators {
+                replica.forget_object(locator);
+            }
+        }
         if record {
             state.retained.remove(&(space, *id));
         } else {
