@@ -1296,6 +1296,13 @@ impl Device {
         self.inner.tasks.spawn(task);
     }
 
+    /// Runs a task in the background if the device's tasks can take it
+    /// now, without a panic when they cannot: whether it was taken.
+    #[cfg_attr(not(feature = "adapter-blobs"), allow(dead_code))]
+    pub(crate) fn try_spawn(&self, task: frasil_store::BoxFuture<'static, ()>) -> bool {
+        self.inner.tasks.try_spawn(task)
+    }
+
     /// Joins a space through an exchange mailbox at the peer at `url`,
     /// where this device cannot take part in nearby pairing, such as in a
     /// browser (admission.md, "Without a nearby connection"). Show the

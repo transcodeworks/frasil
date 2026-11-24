@@ -120,25 +120,34 @@ impl Reading {
     pub(super) async fn done(mut self) -> Result<()> {
         let engine = self.blobs.space().device.engine().clone();
         self.uses.clear();
-        if std::mem::take(&mut self.fetched) {
+        if self.fetched {
+            // Noted only once the cache was looked at: a read cancelled
+            // while it waits here is dropped, and looks at it then.
             engine.evict().await?;
+            self.fetched = false;
         }
         Ok(())
     }
 }
 
 /// A read dropped before it was [`done`](Reading::done), as when its
-/// future is cancelled part way through a fetch or a read: its uses end
-/// here, and the device looks at its cache at once, on a task of its own,
-/// since nothing can wait in a drop. What the read fetched to store
-/// nothing is dropped then, as if the read had ended.
+/// future is cancelled part way through a fetch or a read, or while it
+/// ends: its uses end here, and the device looks at its cache at once, on
+/// a task of its own, since nothing can wait in a drop. What the read
+/// fetched to store nothing is dropped then, as if the read had ended.
+///
+/// Nothing here panics. Where no task can be started, as on a thread with
+/// no runtime of a device that was given none, the cache is looked at the
+/// next time it is anyway: when a part arrives, when another read ends,
+/// and at the device's upkeep. What the read held beside the cache stays
+/// marked for that until then.
 impl Drop for Reading {
     fn drop(&mut self) {
         self.uses.clear();
         if self.fetched {
             let device = &self.blobs.space().device;
             let engine = device.engine().clone();
-            device.spawn(Box::pin(async move {
+            let _ = device.try_spawn(Box::pin(async move {
                 let _ = engine.evict().await;
             }));
         }
@@ -374,5 +383,119 @@ impl crate::Device {
     /// blobs take, in stored bytes, across all its spaces.
     pub async fn blob_cache_usage(&self) -> BlobCacheUsage {
         self.engine().blob_cache_usage().await
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::Reading;
+    use crate::outbox::Acknowledger;
+    use crate::retention::Want;
+    use crate::tasks::{Tasks, Tokio};
+    use crate::{BlobState, Device, Options, Storage};
+    use frasil_store::BoxFuture;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// A device's tasks without its upkeep, which looks at the cache too:
+    /// what the device starts by itself is left out, and what must not
+    /// fail to start, as a dropped read's look at the cache, runs.
+    struct NoUpkeep(Tokio);
+
+    impl Tasks for NoUpkeep {
+        fn spawn(&self, task: BoxFuture<'static, ()>) {
+            drop(task);
+        }
+
+        fn try_spawn(&self, task: BoxFuture<'static, ()>) -> bool {
+            self.0.try_spawn(task)
+        }
+
+        fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()> {
+            self.0.sleep(duration)
+        }
+    }
+
+    async fn device() -> Device {
+        let options = Options::new().tasks(Arc::new(NoUpkeep(Tokio::current())));
+        Device::open_with(Storage::Memory, &[1; 32], options)
+            .await
+            .unwrap()
+    }
+
+    /// A blob of a space with no peer, dropped and fetched again for a
+    /// read that is to store nothing: the read that uses it, and the blob.
+    async fn passing_read(device: &Device) -> (Reading, crate::Blobs, crate::BlobId) {
+        let space = device.create_space().await.unwrap();
+        let blobs = space.create_blobs().unwrap();
+        let bytes = vec![7; 1000];
+        let id = blobs.put(None, &bytes).await.unwrap();
+        let locator = blobs.entry(id).await.unwrap().object;
+        let engine = device.engine().clone();
+        let of = space.id().event();
+        // Its change is durable, by a member's acknowledgement: nothing
+        // but the read holds the blob from here on.
+        let heads: Vec<_> = engine.outbox(&of).await.into_iter().collect();
+        engine
+            .acknowledge(of, Acknowledger::Member([8; 32]), &heads)
+            .await
+            .unwrap();
+        // Absent here, by the application's choice.
+        blobs.drop_local(id).await.unwrap();
+        let reading = Reading {
+            blobs: blobs.clone(),
+            fetched: true,
+            uses: vec![
+                engine.use_object(of, &locator),
+                engine.want_object(of, &locator, Want::Pass),
+            ],
+        };
+        // Its parts arrive, as a peer would send them.
+        let (sealed, _, parts) = engine.seal_parts(of, &bytes).await.unwrap();
+        assert_eq!(sealed, locator);
+        for part in parts {
+            engine.receive_part(of, part).await.unwrap();
+        }
+        assert_eq!(blobs.local(id).await.unwrap().state, BlobState::Cached);
+        (reading, blobs, id)
+    }
+
+    /// The blob is absent within a moment.
+    async fn gone_soon(blobs: &crate::Blobs, id: crate::BlobId) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while blobs.local(id).await.unwrap().state != BlobState::Absent {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the cache is looked at once the read is dropped");
+    }
+
+    /// A read cancelled while it ends, waiting for the device to look at
+    /// its cache, still has the cache looked at: what it fetched to store
+    /// nothing goes.
+    #[tokio::test]
+    async fn a_read_cancelled_while_it_ends_leaves_nothing_stored() {
+        let device = device().await;
+        let (reading, blobs, id) = passing_read(&device).await;
+        // The device is busy: the read's end waits for it.
+        let busy = device.engine().lock().await;
+        let ending = tokio::spawn(reading.done());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!ending.is_finished());
+        ending.abort();
+        assert!(ending.await.unwrap_err().is_cancelled());
+        drop(busy);
+        gone_soon(&blobs, id).await;
+    }
+
+    /// A read dropped on a thread outside the device's runtime does not
+    /// panic, and the cache is looked at on the device's runtime.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_read_dropped_outside_the_runtime_leaves_nothing_stored() {
+        let device = device().await;
+        let (reading, blobs, id) = passing_read(&device).await;
+        std::thread::spawn(move || drop(reading)).join().unwrap();
+        gone_soon(&blobs, id).await;
     }
 }
