@@ -18,9 +18,12 @@
 //! released meanwhile asks for it again. Every wait has a deadline, and
 //! nothing leaves the host.
 
+#[path = "common/fault_proxy.rs"]
+mod fault_proxy;
 #[path = "../../../crates/frasil/tests/support/provider.rs"]
 mod provider;
 
+use fault_proxy::{Faults, spawn_proxy};
 use frasil::advanced::peer::{PeerHandle, connect_server};
 use frasil::advanced::{AdapterRegistry, Engine, FetchEnd, FetchPriority, Platform};
 use frasil_conformance::spawn_loopback;
@@ -28,11 +31,9 @@ use frasil_events::EventId;
 use frasil_space::{HistoryMode, Level, Via};
 use frasil_store::{DeviceBoundSlot, MemorySlot, MemoryStore};
 use std::future::Future;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
 
 const DEADLINE: Duration = Duration::from_secs(90);
 
@@ -54,164 +55,6 @@ where
         }
     })
     .await;
-}
-
-/// What the proxy does to the chunk routes, and what it saw of them.
-#[derive(Default)]
-struct Faults {
-    /// Each chunk request's locator, in hex, and slice index, in order.
-    asked: Mutex<Vec<(String, u64)>>,
-    /// Chunk requests for this slice or a later one end the connection
-    /// with no answer.
-    cut_from: Mutex<Option<u64>>,
-    /// Chunk requests for these slices end the connection with no answer.
-    cut_only: Mutex<Vec<u64>>,
-    /// This slice is served with its first byte flipped.
-    corrupt: Mutex<Option<u64>>,
-    /// Requests for these slices wait, once counted, until they are no
-    /// longer held back.
-    hold: Mutex<Vec<u64>>,
-    /// How many requests the proxy cut.
-    cut: AtomicUsize,
-}
-
-impl Faults {
-    /// The slices asked for of one object, in order.
-    fn asked(&self, locator: &[u8; 64]) -> Vec<u64> {
-        let hex: String = locator.iter().map(|byte| format!("{byte:02x}")).collect();
-        self.asked
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(of, _)| *of == hex)
-            .map(|(_, index)| *index)
-            .collect()
-    }
-
-    fn clear(&self) {
-        self.asked.lock().unwrap().clear();
-    }
-
-    /// Holds back the requests for these slices, and no others.
-    fn hold(&self, slices: &[u64]) {
-        *self.hold.lock().unwrap() = slices.to_vec();
-    }
-}
-
-/// A proxy on loopback in front of `upstream`: it answers chunk requests
-/// (`GET …/chunks/{index}`) itself, fetching each from the peer, and
-/// passes everything else, the WebSocket among it, through untouched.
-async fn spawn_proxy(upstream: &str) -> (String, Arc<Faults>) {
-    // ring, the only provider linked, for the proxy's own client.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let origin = format!("http://{}", listener.local_addr().unwrap());
-    let faults = Arc::new(Faults::default());
-    let upstream = upstream.to_owned();
-    let shared = faults.clone();
-    tokio::spawn(async move {
-        let client = reqwest::Client::new();
-        while let Ok((socket, _)) = listener.accept().await {
-            tokio::spawn(serve(
-                socket,
-                upstream.clone(),
-                client.clone(),
-                shared.clone(),
-            ));
-        }
-    });
-    (origin, faults)
-}
-
-/// One connection to the proxy, request by request until one is not a
-/// chunk request: from there on, bytes pass both ways as they are.
-async fn serve(
-    mut socket: TcpStream,
-    upstream: String,
-    client: reqwest::Client,
-    faults: Arc<Faults>,
-) {
-    let mut buffer = Vec::new();
-    loop {
-        let end = loop {
-            if let Some(at) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
-                break at + 4;
-            }
-            let mut piece = [0u8; 8192];
-            match socket.read(&mut piece).await {
-                Ok(0) | Err(_) => return,
-                Ok(read) => buffer.extend_from_slice(&piece[..read]),
-            }
-        };
-        let head = String::from_utf8_lossy(&buffer[..end]).into_owned();
-        let mut lines = head.split("\r\n");
-        let request = lines.next().unwrap_or_default().to_owned();
-        let mut words = request.split(' ');
-        let (method, path) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
-        let slice = path
-            .split_once("/objects/")
-            .and_then(|(_, rest)| rest.split_once("/chunks/"))
-            .and_then(|(locator, index)| Some((locator.to_owned(), index.parse::<u64>().ok()?)))
-            .filter(|_| method == "GET");
-        let Some((locator, index)) = slice else {
-            let Ok(mut onward) = TcpStream::connect(upstream.trim_start_matches("http://")).await
-            else {
-                return;
-            };
-            if onward.write_all(&buffer).await.is_err() {
-                return;
-            }
-            let _ = tokio::io::copy_bidirectional(&mut socket, &mut onward).await;
-            return;
-        };
-        buffer.drain(..end);
-        faults.asked.lock().unwrap().push((locator, index));
-        if faults
-            .cut_from
-            .lock()
-            .unwrap()
-            .is_some_and(|from| index >= from)
-            || faults.cut_only.lock().unwrap().contains(&index)
-        {
-            faults.cut.fetch_add(1, Ordering::SeqCst);
-            return;
-        }
-        while faults.hold.lock().unwrap().contains(&index) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let authorization = lines
-            .filter_map(|line| line.split_once(':'))
-            .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
-            .map(|(_, value)| value.trim().to_owned())
-            .unwrap_or_default();
-        let Ok(response) = client
-            .get(format!("{upstream}{path}"))
-            .header("Authorization", authorization)
-            .send()
-            .await
-        else {
-            return;
-        };
-        let status = response.status().as_u16();
-        let Ok(body) = response.bytes().await else {
-            return;
-        };
-        let mut body = body.to_vec();
-        if *faults.corrupt.lock().unwrap() == Some(index)
-            && let Some(first) = body.first_mut()
-        {
-            *first ^= 1;
-        }
-        let answer = format!(
-            "HTTP/1.1 {status} X\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        );
-        if socket.write_all(answer.as_bytes()).await.is_err()
-            || socket.write_all(&body).await.is_err()
-        {
-            return;
-        }
-    }
 }
 
 /// Bob's device, on a store that outlives it.
@@ -357,8 +200,12 @@ async fn a_fetch_cut_part_way_resumes_after_the_chunks_kept() {
     peer.shutdown().await;
 }
 
+/// A chunk that does not open as it arrives is refused, and asked of this
+/// peer no more on the connection; the chunks that opened before it stay
+/// (units.md, "Sync", objects: a reader asks another party for a chunk
+/// that fails), and the next connection goes on after them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_corrupted_slice_keeps_nothing_of_the_object() {
+async fn a_corrupted_slice_keeps_the_chunks_that_opened() {
     let peer = spawn_loopback().await.unwrap();
     let (proxy, faults) = spawn_proxy(&peer.origin).await;
     let (_alice, alice_link, bob, _store, space, locator, big) = setup(&peer.origin).await;
@@ -366,25 +213,29 @@ async fn a_corrupted_slice_keeps_nothing_of_the_object() {
     bob.keep_all_blobs();
 
     // The first byte of slice 2 is the end of chunk 1, which then fails to
-    // open: chunk 0, kept, is dropped with it, and the object is missing.
+    // open: chunk 0, which opened, is kept, and the object is not whole.
     *faults.corrupt.lock().unwrap() = Some(2);
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
     until(|| async { faults.asked(&locator).contains(&2) }).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     let refused = bob.object(&space, &locator).await.unwrap_err();
     assert_eq!(refused.class_name(), Some("Missing"), "{refused:?}");
-    // Not asked of this peer again on this connection.
-    assert_eq!(faults.asked(&locator), vec![0, 1, 2]);
+    assert!(holds(&bob, &space, &locator, 0).await);
+    assert!(!holds(&bob, &space, &locator, 1).await);
+    // Slice 0 once more, for the header the peer serves, which is the
+    // one held: the fault is the chunk's. The object is not asked of this
+    // peer again on this connection.
+    assert_eq!(faults.asked(&locator), vec![0, 1, 2, 0]);
     link.close();
     until(|| async { link.is_closed() }).await;
 
-    // Served whole, it is fetched again from slice 0: nothing was kept.
+    // Served right, it is fetched from the slice chunk 1 begins in.
     *faults.corrupt.lock().unwrap() = None;
     faults.clear();
     let link = connect_server(&bob, &proxy, vec![space]).await.unwrap();
     until(|| async { bob.object(&space, &locator).await.is_ok() }).await;
     assert_eq!(bob.object(&space, &locator).await.unwrap(), big);
-    assert_eq!(faults.asked(&locator), vec![0, 1, 2, 3]);
+    assert_eq!(faults.asked(&locator), vec![1, 2, 3]);
     link.close();
     alice_link.close();
     peer.shutdown().await;
@@ -1012,16 +863,14 @@ async fn a_space_paused_while_a_fetch_runs_fetches_no_more_until_resumed() {
     })
     .await;
     let locator = bobs_files.info(blob).await.unwrap().object;
-    // A read asks for the blob; slice 2 is held back.
+    // A download asks for the blob whole; slice 2 is held back.
     faults.hold(&[2]);
     let reading = {
         let bobs_files = bobs_files.clone();
         tokio::spawn(async move {
-            let mut read = Vec::new();
-            bobs_files
-                .get_stream(blob, &mut read, &frasil::Read::new(), |_, _| {})
-                .await
-                .map(|()| read)
+            bobs_files.keep(blob, |_, _| {}).await?;
+            let read = bobs_files.get(blob, &frasil::Read::new().local()).await?;
+            Ok::<_, frasil::Error>(read.unwrap_or_default())
         })
     };
     // Bob has two connections to the peer, the one he joined over and
