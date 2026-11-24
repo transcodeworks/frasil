@@ -22,6 +22,7 @@ mod faults;
 mod keys;
 mod sealed;
 mod sizes;
+mod waits;
 mod whole;
 
 const CHUNK: u64 = CHUNK_BYTES as u64;
@@ -1598,6 +1599,7 @@ async fn a_chunk_that_arrives_for_a_request_that_ended_is_not_stored() {
             Asked {
                 wanted: &wanted,
                 stores,
+                taken: &|| (),
             },
         )
         .await
@@ -1633,6 +1635,7 @@ async fn a_chunk_that_arrives_for_a_request_that_ended_is_not_stored() {
                 Asked {
                     wanted: &wanted,
                     stores,
+                    taken: &|| (),
                 },
             )
             .await

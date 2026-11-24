@@ -3812,9 +3812,16 @@ impl Engine {
                 || fetches.wants(&space, &locator, index)
                 || (in_order && fetches.reaches(&space, &locator, index))
         };
+        let taker = session.taker_if_any();
+        let taken = || {
+            if let Some(taker) = &taker {
+                taker.progressed();
+            }
+        };
         let asked = crate::objects::Asked {
             wanted: &wanted,
             stores: named || in_order || fetches.stores_chunk(&space, &locator, index),
+            taken: &taken,
         };
         match self.receive_part(space, part, asked).await? {
             // A chunk that does not check under the header this side

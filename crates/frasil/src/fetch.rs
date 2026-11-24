@@ -27,7 +27,7 @@ use frasil_adapter::Locator;
 use frasil_events::EventId;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tokio::sync::{Notify, watch};
@@ -145,6 +145,9 @@ pub(crate) struct Request {
     pub stores: bool,
     /// How a connection gave the request up, for its [`Fetch`].
     pub ended: Arc<watch::Sender<Option<FetchEnd>>>,
+    /// Counts the chunks that the connections which hold the request
+    /// took for the space while it waits ([`Taker::progressed`]).
+    pub progress: Arc<AtomicU64>,
 }
 
 #[cfg_attr(
@@ -164,6 +167,7 @@ impl Request {
             cancel: Cancel::new(),
             stores: true,
             ended: Arc::new(watch::channel(None).0),
+            progress: Arc::default(),
         }
     }
 }
@@ -317,6 +321,7 @@ impl Requests {
         stores: bool,
     ) -> Fetch {
         let cancel = Cancel::new();
+        let progress = Arc::<AtomicU64>::default();
         let (id, ended) = {
             let mut live = self.live();
             let ended = Arc::new(watch::channel(live.given_up(&space, &locator, None)).0);
@@ -333,6 +338,7 @@ impl Requests {
                     cancel: cancel.clone(),
                     stores,
                     ended: ended.clone(),
+                    progress: progress.clone(),
                 },
             );
             (id, ended)
@@ -342,6 +348,7 @@ impl Requests {
             id,
             cancel,
             ended,
+            progress,
             requests: self.clone(),
         }
     }
@@ -525,6 +532,27 @@ impl Taker {
         }
     }
 
+    /// The connection took a chunk the device did not have, for a request
+    /// of the space or an object its units name. Each request of the
+    /// space that this connection still holds, having neither given its
+    /// object up nor left its chunks unserved, counts it: its chunks are
+    /// queued behind what the connection brings, and whoever waits for
+    /// them is not stalled ([`Fetch::progress`]).
+    pub(crate) fn progressed(&self) {
+        let live = self.requests.live();
+        let Some(taking) = live.takers.get(&self.id) else {
+            return;
+        };
+        for request in live.requests.values() {
+            if request.space == self.space
+                && !taking.given_up.contains_key(&request.locator)
+                && !taking.unserved.contains(&request.id)
+            {
+                request.progress.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
     /// The connection asks no further for the chunks it asked of an
     /// object, for want of an answer it could keep, without giving the
     /// object up: a request made afterwards is asked for again. Each
@@ -587,6 +615,7 @@ pub struct Fetch {
     id: u64,
     cancel: Cancel,
     ended: Arc<watch::Sender<Option<FetchEnd>>>,
+    progress: Arc<AtomicU64>,
     requests: Arc<Requests>,
 }
 
@@ -611,6 +640,14 @@ impl Fetch {
     /// here.
     pub fn end(&self) -> Option<FetchEnd> {
         *self.ended.borrow()
+    }
+
+    /// How many chunks the connections that hold the request took for
+    /// its space since it was made, of this request or of another: a
+    /// chunk the device had already does not count. While it grows, the
+    /// request is being served or queued behind others, and not stalled.
+    pub(crate) fn progress(&self) -> u64 {
+        self.progress.load(Ordering::Relaxed)
     }
 
     /// Follows the request's end: the receiver changes when the space's
@@ -1265,6 +1302,7 @@ mod tests {
             cancel: Cancel::new(),
             stores: true,
             ended: Arc::new(tokio::sync::watch::channel(None).0),
+            progress: Arc::default(),
         }
     }
 

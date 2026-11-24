@@ -4820,6 +4820,9 @@ struct SliceTask {
     /// Whether this fetch kept a chunk: its own progress, whatever other
     /// fetches of the object kept meanwhile.
     kept: bool,
+    /// The connection's place among those that take the space's
+    /// requests: each chunk the fetch takes is its progress.
+    taker: Option<Arc<crate::fetch::Taker>>,
 }
 
 #[cfg(any(feature = "server", feature = "server-socket"))]
@@ -4964,9 +4967,15 @@ impl SliceTask {
                 // store: the request may end between here and there, and
                 // a read that began since must not get its part.
                 let cancel = &self.request.cancel;
+                let taker = &self.taker;
                 let asked = crate::objects::Asked {
                     wanted: &|| !cancel.is_cancelled(),
                     stores: self.request.stores,
+                    taken: &|| {
+                        if let Some(taker) = taker {
+                            taker.progressed();
+                        }
+                    },
                 };
                 match self.device.receive_part(space, part, asked).await {
                     Ok(Received::Kept) => self.kept = true,
@@ -5127,6 +5136,10 @@ impl Driver {
                 closing: self.closing.clone(),
                 status: self.status.clone(),
                 kept: false,
+                taker: self
+                    .spaces
+                    .get(&space)
+                    .and_then(|attached| attached.session.taker_if_any()),
             };
             let incoming = self.incoming.clone();
             self.runtime.spawn(async move {

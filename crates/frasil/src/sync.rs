@@ -371,6 +371,12 @@ impl SyncSession {
         taker
     }
 
+    /// The session's place among the connections that take the requests
+    /// made of the device, if it has taken them ([`taker`](Self::taker)).
+    pub(crate) fn taker_if_any(&self) -> Option<Arc<Taker>> {
+        self.taker.clone()
+    }
+
     /// Says that the session's connection is still being made and will
     /// take the space's requests ([`Requests::expect`]): none of them ends
     /// for want of a connection that will try until the session takes

@@ -30,6 +30,7 @@ async fn a_request_that_ends_as_its_chunk_is_admitted_leaves_no_record() {
             crate::objects::Asked {
                 wanted: &wanted,
                 stores: true,
+                taken: &|| (),
             },
         )
         .await

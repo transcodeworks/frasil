@@ -564,6 +564,17 @@ impl Window {
             .map_or(0, |held| held.arrived)
     }
 
+    /// How many chunks the connections that hold the request for the
+    /// chunk at `index` took for the space since the request was made
+    /// ([`Fetch::progress`]): 0 where the window waits for no such chunk.
+    pub(crate) fn progress(&self, index: u64) -> u64 {
+        lock(&self.watched.inner)
+            .windows
+            .get(&self.number)
+            .and_then(|held| held.wanted.get(&index))
+            .map_or(0, |(fetch, _)| fetch.progress())
+    }
+
     /// Makes the window one of a reader that stores nothing: chunks the
     /// device does not store are taken into its memory from now on, and
     /// the requests it makes are not the store's.

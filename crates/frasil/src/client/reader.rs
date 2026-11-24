@@ -75,7 +75,8 @@ pub const READ_AHEAD: u64 = 8;
 pub const MAX_READ_AHEAD: u64 = 64;
 
 /// How long a read waits with none of the chunks its reader asked for
-/// arriving before it gives up.
+/// arriving, and nothing else on the connections that hold its request,
+/// before it gives up.
 const STALL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// How often a read that waits looks whether anything is still connected.
@@ -170,12 +171,17 @@ impl core::fmt::Debug for BlobReader {
 }
 
 /// How long one read has waited with nothing arriving of what its reader
-/// asked for, over every wait it makes.
+/// asked for, and nothing else on the connections that hold its request,
+/// over every wait it makes.
 struct Stall {
     idle: std::time::Duration,
     /// How many of the chunks the reader asked for had arrived when the
     /// read last saw one arrive ([`Window::arrived`]).
     arrived: u64,
+    /// What the connections that hold the request for the chunk the read
+    /// waits for had taken when the read last looked
+    /// ([`Window::progress`]).
+    progress: u64,
     /// The wait under way for the next look.
     tick: frasil_store::BoxFuture<'static, ()>,
 }
@@ -790,6 +796,7 @@ impl BlobReader {
         Stall {
             idle: std::time::Duration::ZERO,
             arrived: self.window.arrived(),
+            progress: 0,
             tick: self.blobs.space().device.sleep(POLL),
         }
     }
@@ -817,11 +824,14 @@ impl BlobReader {
     /// checks.
     ///
     /// The time a read waits is counted over all its waits (`stall`), and
-    /// starts over only when a chunk its reader asked for arrives: the
-    /// one it waits for, or one read ahead. A chunk that arrives again,
-    /// and whatever else changes of the object, does not put the end
-    /// off, so that no party holds a read open without sending what was
-    /// asked of it.
+    /// starts over when a chunk its reader asked for arrives, the one it
+    /// waits for or one read ahead, and when a connection that holds the
+    /// request for the chunk it waits for takes another chunk for the
+    /// space: the read is then queued behind what that connection
+    /// brings, as with several readers on a slow link, and not stalled.
+    /// A chunk the device has already, sent again, and whatever else
+    /// changes of the object, does not put the end off, so that no party
+    /// holds a read open without sending what was asked of it.
     async fn wait(
         &self,
         index: u64,
@@ -832,6 +842,11 @@ impl BlobReader {
         let ended = ended(ends);
         tokio::pin!(ended);
         loop {
+            let progress = self.window.progress(index);
+            if progress != stall.progress {
+                stall.progress = progress;
+                stall.idle = std::time::Duration::ZERO;
+            }
             // The chunk came, twice, as bytes that the object key of
             // this reader's entry does not open, and the device holds
             // no other key for it.

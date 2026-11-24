@@ -396,6 +396,11 @@ pub(crate) struct Asked<'a> {
     /// that stores nothing joins what the device holds of its object,
     /// and begins no cached object.
     pub stores: bool,
+    /// Called once the part is taken, into the store or a reader's
+    /// window, unless the device held its chunk already: the progress of
+    /// the connection that brought it
+    /// ([`Taker::progressed`](crate::fetch::Taker::progressed)).
+    pub taken: &'a (dyn Fn() + Sync),
 }
 
 impl Asked<'_> {
@@ -403,6 +408,7 @@ impl Asked<'_> {
     pub(crate) const STORE: Asked<'static> = Asked {
         wanted: &|| true,
         stores: true,
+        taken: &|| (),
     };
 }
 
@@ -1694,13 +1700,18 @@ impl Engine {
         asked: Asked<'_>,
     ) -> Result<Received> {
         let key = (space, crate::replica::object_id(&part.locator));
-        let (fits, received) = {
+        let (fits, received, had) = {
             let mut state = self.lock().await;
             self.refresh_held(&mut state);
             let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
             if replica.holds_object(&part.locator) {
                 return Ok(Received::Whole);
             }
+            // A chunk the device holds already is no progress of the
+            // connection that sends it again, unless a reader could not
+            // open the one held and it was asked for again.
+            let had = replica.holds_chunk(&part.locator, part.index)
+                && !self.readers().distrusts(&key, part.index);
             // The header the replica holds, the one a receive through a
             // provider holds, or the one the windows of readers that
             // store nothing hold.
@@ -1715,7 +1726,7 @@ impl Engine {
             let openings = self.readers().openings(&key);
             let named = names_held_states(replica, &part.locator);
             let fits = fits_object(replica, &space, &part, held.as_deref(), &openings, named);
-            (fits, received)
+            (fits, received, had)
         };
         let opened = match fits {
             Fit::Fits { opened } => opened,
@@ -1788,6 +1799,7 @@ impl Engine {
         // window of a reader that stores nothing and asked for it.
         if kept.left.contains(&(locator, part.index)) {
             return Ok(if self.readers().offer(&space, &part, opened) {
+                (asked.taken)();
                 Received::Kept
             } else if kept.unmeant.contains(&(locator, part.index)) && self.readers().passing(&key)
             {
@@ -1798,6 +1810,9 @@ impl Engine {
         }
         if opened {
             self.readers().prove(&key);
+        }
+        if !had {
+            (asked.taken)();
         }
         let whole = self
             .read(&space, |replica| replica.holds_object(&locator))
