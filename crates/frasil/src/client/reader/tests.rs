@@ -17,6 +17,7 @@ use std::time::Duration;
 
 mod arrival;
 mod faults;
+mod keys;
 
 const CHUNK: u64 = CHUNK_BYTES as u64;
 
@@ -1309,7 +1310,8 @@ async fn a_bad_chunk_to_a_reader_that_stores_nothing_is_asked_of_another_party()
 /// The first chunk a read gets does not open: nothing is held and
 /// nothing was given, so no reader fails, and the read ends with the
 /// chunk another party sends. So for a reference, whose chunks open as
-/// they arrive under the key its reader holds.
+/// they arrive under the key its reader holds: one chunk that does not
+/// fails no read.
 #[tokio::test]
 async fn a_bad_first_chunk_fails_no_reader() {
     for (reference, read) in [
@@ -1343,7 +1345,15 @@ async fn a_bad_first_chunk_fails_no_reader() {
                     .receive_sent(absent.of, flipped)
                     .await
                     .unwrap();
-                assert_eq!(received, Received::BadChunk, "{reference}");
+                // Where only the object key of the reader's entry
+                // could open it, nothing says the chunk is at fault and
+                // not the key: its sender is not given up.
+                let expected = if reference {
+                    Received::Undecided
+                } else {
+                    Received::BadChunk
+                };
+                assert_eq!(received, expected);
                 assert_eq!(absent.send(1).await, Received::Kept);
                 reading.await.unwrap()
             };

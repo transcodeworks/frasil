@@ -345,7 +345,10 @@ pub(crate) enum Received {
     /// is not the object's, and a party that holds no key can make
     /// either. What the device holds stays, its sender is not given up,
     /// and the chunk is asked for again: a chunk that opens decides,
-    /// once the device holds a key that opens one.
+    /// once the device holds a key that opens one. So too for a chunk
+    /// that the device can open only with the object keys that entries
+    /// carry, when none of them opens it: the chunk or such a key is
+    /// wrong, and the readers that hold those keys fail their reads.
     Undecided,
 }
 
@@ -435,6 +438,28 @@ enum Fit {
     /// device holds; `opened` says its chunk opened under it. At most one
     /// of the two headers is the object's.
     Other { opened: bool },
+    /// It is a chunk of the object by its header, the one it carries or
+    /// the one held, and the device holds no key of the state that header
+    /// names: only the object keys that entries carry, which the open
+    /// readers of references supplied, and none of them opens it. The
+    /// chunk or one of those keys is not the object's, and nothing says
+    /// which.
+    Unjudged,
+}
+
+/// What a part's chunk is under one header ([`fits_object`]).
+enum Check {
+    /// It opens under the object's key.
+    Opens,
+    /// It is a chunk of the object by the header, and the device holds
+    /// no key to open it with.
+    Unopened,
+    /// It is none of the object's by the header, or does not open under
+    /// the key of the state the header names.
+    Fails,
+    /// It is a chunk of the object by the header, and opens under none
+    /// of the object keys that entries carry, the only keys held.
+    Unjudged,
 }
 
 /// Whether a part fits the object it names (units.md, "Reading an
@@ -446,6 +471,12 @@ enum Fit {
 /// header held, `held`, is the replica's, the one a receive through a
 /// provider holds while it runs (at-rest.md, "Held objects", receiving),
 /// or the one the windows of readers that store nothing hold.
+///
+/// The key of the state the header names decides where the replica holds
+/// it. An object key that an entry carries is its writer's word
+/// (adapter-blobs.md, 4 Security considerations, "A reference hands one
+/// key"): a chunk that opens under one is opened, and one that opens
+/// under none of them is not judged ([`Fit::Unjudged`]).
 fn fits_object(
     replica: &Replica,
     space: &EventId,
@@ -453,41 +484,57 @@ fn fits_object(
     held: Option<&[u8]>,
     openings: &[crate::reading::ObjectOpening],
 ) -> Fit {
-    // Whether the part checks under a header, and its chunk opened.
-    let checks = |bytes: &[u8]| -> Option<bool> {
-        let header = frasil_units::objects::Header::read(bytes).ok()?;
+    let checks = |bytes: &[u8]| -> Check {
+        let Ok(header) = frasil_units::objects::Header::read(bytes) else {
+            return Check::Fails;
+        };
         let check = |of: &EventId, key: Option<&[u8; 32]>| {
             check_chunk(of, &header, &part.locator, part.index, &part.chunk, key).is_ok()
         };
         if let Some((key, _)) = replica.object_key(&header.key_reference) {
             let object_key = ObjectKeys::of(&key).object_key(&header.object_id);
-            return check(space, Some(&object_key)).then_some(true);
+            return if check(space, Some(&object_key)) {
+                Check::Opens
+            } else {
+                Check::Fails
+            };
+        }
+        // Steps 3 and 4 need no key.
+        if !check(space, None) {
+            return Check::Fails;
         }
         if openings.is_empty() {
-            return check(space, None).then_some(false);
+            return Check::Unopened;
         }
-        openings
+        if openings
             .iter()
             .any(|opening| check(&opening.source, Some(&opening.key)))
-            .then_some(true)
+        {
+            Check::Opens
+        } else {
+            Check::Unjudged
+        }
     };
     match (part.header.as_deref(), held) {
         (None, None) => Fit::Headerless,
         (Some(new), None) => match checks(new) {
-            Some(opened) => Fit::Fits { opened },
-            None => Fit::Bad,
+            Check::Opens => Fit::Fits { opened: true },
+            Check::Unopened => Fit::Fits { opened: false },
+            Check::Fails => Fit::Bad,
+            Check::Unjudged => Fit::Unjudged,
         },
         (Some(new), Some(held)) if new != held => match checks(new) {
-            Some(opened) => Fit::Other { opened },
-            None => Fit::Bad,
+            Check::Opens => Fit::Other { opened: true },
+            Check::Unopened => Fit::Other { opened: false },
+            Check::Fails => Fit::Bad,
+            Check::Unjudged => Fit::Unjudged,
         },
-        (Some(_), Some(held)) => match checks(held) {
-            Some(opened) => Fit::Fits { opened },
-            None => Fit::Bad,
-        },
-        (None, Some(held)) => match checks(held) {
-            Some(opened) => Fit::Fits { opened },
-            None => Fit::Unfit,
+        (carried, Some(held)) => match checks(held) {
+            Check::Opens => Fit::Fits { opened: true },
+            Check::Unopened => Fit::Fits { opened: false },
+            Check::Fails if carried.is_some() => Fit::Bad,
+            Check::Fails => Fit::Unfit,
+            Check::Unjudged => Fit::Unjudged,
         },
     }
 }
@@ -1566,6 +1613,7 @@ impl Engine {
     /// | not opened | another header, opens | kept | what was held | kept |
     /// | not opened | no header, fails under the one held | [`Received::Undecided`] | nothing | asked again |
     /// | not opened | another header, nothing opens it | [`Received::Undecided`] | nothing | asked again |
+    /// | any | opens under no object key an entry carries, the only keys held | [`Received::Undecided`] | nothing | asked again |
     ///
     /// So a party that holds no key of the object makes the device drop
     /// nothing a chunk has opened under, and nothing it merely holds
@@ -1625,6 +1673,12 @@ impl Engine {
             // Asked of another party (units.md, "Sync", objects); what
             // is held stays.
             Fit::Bad => return Ok(Received::BadChunk),
+            // The readers whose keys did not open it hear of it: their
+            // reads fail as their entries' own, and nothing else changes.
+            Fit::Unjudged => {
+                self.readers().unopened(&key, part.index);
+                return Ok(Received::Undecided);
+            }
             Fit::Unfit | Fit::Other { .. } => {
                 // Whether a chunk has opened under the header held: as
                 // it arrived or in a reader, or a chunk of the store

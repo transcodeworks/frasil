@@ -829,6 +829,12 @@ impl BlobReader {
         let ended = ended(ends);
         tokio::pin!(ended);
         loop {
+            // The chunk came, twice, as bytes that the object key of
+            // this reader's entry does not open, and the device holds
+            // no other key for it.
+            if self.window.take_unopened(index) {
+                return Err((Error::Class("Decrypt"), false));
+            }
             if !self.reachable() {
                 return Err((Error::Class("Missing"), false));
             }
@@ -1105,7 +1111,10 @@ impl BlobReader {
     /// the chunk is read from the store no more by this reader and asked
     /// for again ([`Window::distrust`]): a part that opens takes its
     /// place, or that of everything held, if it comes under another
-    /// header ([`Engine::receive_part`](crate::device::Engine)).
+    /// header ([`Engine::receive_part`](crate::device::Engine)). Not so
+    /// where the reader opens with the object key its entry carries and
+    /// a chunk has opened under the header held otherwise: the key is
+    /// then at fault, and nothing is asked for again.
     async fn fault(&mut self, index: u64, holder: Option<EventId>, error: Error) -> Error {
         let engine = self.engine();
         let locator = self.entry.object;
@@ -1143,6 +1152,10 @@ impl BlobReader {
                         // object: the entry's fault. Or the bytes were
                         // not the object's, and went.
                         Ok(StoredFault::Stands | StoredFault::Dropped) => {}
+                        // A chunk has opened under the header held, and
+                        // not with this entry's key: the key's fault.
+                        Ok(StoredFault::Partial)
+                            if self.reference.is_some() && self.window.proved() => {}
                         Ok(StoredFault::Partial) | Err(_) => self.window.distrust(index),
                     },
                     None => {

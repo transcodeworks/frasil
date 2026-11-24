@@ -54,6 +54,12 @@ use tokio::sync::watch;
 /// An object, by the space a reader fetches it in and its object ID.
 type Key = (EventId, [u8; 32]);
 
+/// How many parts that the object key of a reader's entry does not open
+/// arrive for a chunk it waits for, with no other key to judge them by,
+/// before its read fails: one such part may be its sender's fault, and
+/// the chunk is asked for again; the second says the key is wrong.
+const UNOPENED_PARTS: u32 = 2;
+
 /// How many chunks an object's plaintext is cut into.
 fn count_of(size: u64) -> u64 {
     chunk_count(size, frasil_units::limits::CHUNK_BYTES as u64)
@@ -154,6 +160,10 @@ struct Held {
     /// that waits takes for progress. A chunk that arrives again, or one
     /// the window did not ask for, does not count.
     arrived: u64,
+    /// The chunks the window waits for of which parts arrived that its
+    /// key did not open, where the device holds no other key to judge
+    /// them by, and how many of each ([`Readers::unopened`]).
+    unopened: BTreeMap<u64, u32>,
     /// The chunks the store holds that did not open for the window's
     /// reader: it reads none of them from the store, and they are asked
     /// for again, until a part that checks takes their place.
@@ -302,6 +312,23 @@ impl Readers {
             .unwrap_or_default()
     }
 
+    /// Notes that a part arrived for a chunk that none of the object keys
+    /// the open readers of a reference hold opens, and that the device
+    /// has no other key to judge: each of those readers that waits for
+    /// the chunk hears of it, and fails its read once it heard so
+    /// [`UNOPENED_PARTS`] times ([`Window::take_unopened`]).
+    pub(crate) fn unopened(&self, key: &Key, index: u64) {
+        let Some(watched) = self.watched(key) else {
+            return;
+        };
+        for held in lock(&watched.inner).windows.values_mut() {
+            if held.opening.is_some() && held.wanted.contains_key(&index) {
+                *held.unopened.entry(index).or_default() += 1;
+            }
+        }
+        watched.bump();
+    }
+
     /// Offers a chunk the device does not store to the windows that asked
     /// for it: whether one took it. The caller has checked the part
     /// against the header it carries or the one held
@@ -321,6 +348,7 @@ impl Readers {
             }
             let chunk = shared.get_or_insert_with(|| Arc::new(part.chunk.clone()));
             held.chunks.insert(part.index, chunk.clone());
+            held.distrusted.remove(&part.index);
             held.arrived += 1;
         }
         let taken = shared.is_some();
@@ -472,6 +500,7 @@ impl Window {
         held.limit = usize::try_from(hold.end.saturating_sub(hold.start)).unwrap_or(usize::MAX);
         held.chunks.retain(|index, _| hold.contains(index));
         held.wanted.retain(|index, _| hold.contains(index));
+        held.unopened.retain(|index, _| hold.contains(index));
         if refused {
             held.wanted.clear();
             return;
@@ -575,6 +604,24 @@ impl Window {
         if let Some(held) = lock(&self.watched.inner).windows.get_mut(&self.number) {
             held.chunks.remove(&index);
         }
+    }
+
+    /// Whether [`UNOPENED_PARTS`] parts arrived for the chunk at `index`
+    /// that this window's key did not open, with no other key to judge
+    /// them by: `true` once, and the count starts over.
+    pub(crate) fn take_unopened(&self, index: u64) -> bool {
+        let mut inner = lock(&self.watched.inner);
+        let Some(held) = inner.windows.get_mut(&self.number) else {
+            return false;
+        };
+        let enough = held
+            .unopened
+            .get(&index)
+            .is_some_and(|parts| *parts >= UNOPENED_PARTS);
+        if enough {
+            held.unopened.remove(&index);
+        }
+        enough
     }
 
     /// Notes that the chunk the store holds at `index` did not open for
