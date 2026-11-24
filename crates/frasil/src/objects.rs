@@ -343,7 +343,7 @@ struct KeptParts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Source {
     /// Another party sent them over a connection: stored only while the
-    /// device means to hold their object ([`Engine::means_to_hold`]).
+    /// device means to hold their object ([`Engine::admit`]).
     Sent,
     /// The application gave them, as a space file's objects.
     Given,
@@ -1584,20 +1584,31 @@ impl Engine {
             // means to hold its object: one that arrives after the device
             // dropped the object, as a slice asked for before a read gave
             // up does, would land with no record and count as kept
-            // (at-rest.md, "Retention", recording). Parts the application
-            // gave, as a space file's, are stored as they are: with no
-            // record, kept.
+            // (at-rest.md, "Retention", recording).
+            // An object a read fetches gets its record here, before its
+            // first part is written. Parts the application gave, as a
+            // space file's, are stored as they are: with no record, kept.
             if source == Source::Sent {
                 let mut meant: BTreeMap<Locator, bool> = BTreeMap::new();
-                sealed.retain(|part| {
-                    let means = *meant
-                        .entry(part.locator)
-                        .or_insert_with(|| self.means_to_hold(&state, &space, &part.locator));
-                    if !means {
+                let mut admitted = Vec::with_capacity(sealed.len());
+                for part in sealed {
+                    let means = match meant.get(&part.locator) {
+                        Some(means) => *means,
+                        None => {
+                            let means = self
+                                .admit(&mut state, space, &part.locator, part.header.as_deref())
+                                .await?;
+                            meant.insert(part.locator, means);
+                            means
+                        }
+                    };
+                    if means {
+                        admitted.push(part);
+                    } else {
                         left.insert((part.locator, part.index));
                     }
-                    means
-                });
+                }
+                sealed = admitted;
             }
             // Taken under the lock that found the device means to hold
             // them, and held until the parts are noted: nothing drops an
@@ -1611,21 +1622,19 @@ impl Engine {
                 .map(|locator| self.use_object(space, locator))
                 .collect();
             // Room for what goes to the cache, before it is written
-            // (at-rest.md, "Retention", when).
+            // (at-rest.md, "Retention", when). What is held beside the
+            // cache counts against no budget, and makes nothing go.
             let cached: Vec<&&ObjectPart> = sealed
                 .iter()
                 .filter(|part| {
-                    matches!(
-                        state
-                            .retained
-                            .get(&(space, crate::replica::object_id(&part.locator))),
-                        Some(frasil_store::tables::Retention::Cached { .. })
-                    )
+                    state
+                        .retained
+                        .counts(&(space, crate::replica::object_id(&part.locator)))
                 })
                 .collect();
             let incoming: usize = cached.iter().map(|part| part.chunk.len()).sum();
             if incoming > 0 {
-                let writing = cached
+                let writing = sealed
                     .iter()
                     .map(|part| crate::replica::object_id(&part.locator))
                     .collect();

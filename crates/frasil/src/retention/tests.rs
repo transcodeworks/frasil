@@ -5,7 +5,7 @@
 //! part another party would send goes through the checks of a received
 //! part.
 
-use super::{BlobState, Stays, object_id};
+use super::{BlobState, Stays, Want, object_id};
 use crate::advanced::{AdapterRegistry, Platform};
 use crate::device::Engine;
 use crate::error::Error;
@@ -500,8 +500,6 @@ async fn frasils_own_objects_survive_a_full_cache_and_a_drop() {
         engine.drop_local_object(space, &own).await,
         Err(Error::NotAllowed(_))
     ));
-    engine.drop_if_cached(space, &own).await.unwrap();
-    assert!(holds(&engine, space, &own).await);
     assert_eq!(
         engine.blob_cache_usage().await.kept,
         0,
@@ -962,4 +960,238 @@ async fn an_object_is_not_dropped_while_its_parts_are_being_written() {
     engine.evict().await.unwrap();
     assert_eq!(parts_stored(&engine, space).await, 0);
     assert!(records(&engine, space).await.is_empty());
+}
+
+/// The stored bytes the device counts in its cache, and beside it.
+async fn counted(engine: &Engine) -> (u64, u64) {
+    let state = engine.lock().await;
+    (state.retained.cached, state.retained.beside)
+}
+
+/// A read says what it wants of a blob when it starts, and the device
+/// records the blob when its first part arrives: a read that fetches
+/// nothing writes no record, and leaves none to delete.
+#[tokio::test]
+async fn a_read_that_fetches_nothing_records_nothing() {
+    let medium = Medium::new();
+    let (engine, _, space) = medium.device().await;
+    let (a, a_parts) = object(&engine, space, b'a', SIZE).await;
+    let sets = engine.lock().await.retained.reads;
+    let reading = engine.want_object(space, &a, Want::Cache);
+    assert!(records(&engine, space).await.is_empty());
+    drop(reading);
+    engine.evict().await.unwrap();
+    assert!(records(&engine, space).await.is_empty());
+    assert_eq!(
+        engine.lock().await.retained.reads,
+        sets,
+        "no record was put"
+    );
+
+    // The record is there with the first part, and says cached.
+    let reading = engine.want_object(space, &a, Want::Cache);
+    let mut last = Received::Kept;
+    for part in &a_parts {
+        last = engine.receive_part(space, part.clone()).await.unwrap();
+    }
+    assert_eq!(last, Received::Whole);
+    assert!(matches!(
+        records(&engine, space).await[..],
+        [(_, Retention::Cached { .. })]
+    ));
+    drop(reading);
+    engine.evict().await.unwrap();
+    assert_eq!(engine.retention_of(&space, &a).await.0, BlobState::Cached);
+}
+
+/// A blob fetched for a read that is to store nothing is held beside the
+/// cache: it counts against no budget, makes no cached blob go, and is
+/// dropped once no read uses it. A read that leaves it in the cache takes
+/// it over.
+#[tokio::test]
+async fn a_blob_fetched_to_store_nothing_is_held_beside_the_cache() {
+    let medium = Medium::new();
+    let (engine, _, space) = medium.device().await;
+    let (a, a_parts) = object(&engine, space, b'a', SIZE).await;
+    let (b, b_parts) = object(&engine, space, b'b', SIZE).await;
+    let (c, c_parts) = object(&engine, space, b'c', SIZE).await;
+    let (d, d_parts) = object(&engine, space, b'd', SIZE).await;
+    // Room for two objects and not three.
+    engine.set_blob_cache(SIZE as u64 * 5 / 2);
+    fetch(&engine, space, &a, &a_parts, false).await;
+    fetch(&engine, space, &b, &b_parts, false).await;
+    let (cached, _) = counted(&engine).await;
+
+    let passing = engine.want_object(space, &c, Want::Pass);
+    for part in &c_parts {
+        engine.receive_part(space, part.clone()).await.unwrap();
+    }
+    assert!(holds(&engine, space, &a).await, "nothing went for it");
+    assert!(holds(&engine, space, &b).await);
+    assert!(holds(&engine, space, &c).await);
+    let (still, beside) = counted(&engine).await;
+    assert_eq!(still, cached);
+    assert!(beside > SIZE as u64);
+    assert_eq!(
+        engine.blob_cache_usage().await.cached,
+        cached + beside,
+        "what a running read holds is reported"
+    );
+    // At rest it is cached: after a crash it is the cache's to drop.
+    assert_eq!(records(&engine, space).await.len(), 3);
+    // Another read that stores nothing uses it while the first ends.
+    let second = engine.want_object(space, &c, Want::Pass);
+    drop(passing);
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &c).await);
+    drop(second);
+    engine.evict().await.unwrap();
+    assert!(!holds(&engine, space, &c).await, "dropped with its read");
+    assert_eq!(counted(&engine).await, (cached, 0));
+    assert_eq!(records(&engine, space).await.len(), 2);
+
+    // A read that leaves it in the cache takes it over: it counts, and
+    // the blob read longest ago goes for it.
+    let passing = engine.want_object(space, &d, Want::Pass);
+    engine
+        .receive_part(space, d_parts[0].clone())
+        .await
+        .unwrap();
+    let caching = engine.want_object(space, &d, Want::Cache);
+    engine.retain(space, &d, false).await.unwrap();
+    drop(passing);
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &d).await);
+    drop(caching);
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &d).await, "the cache's");
+    assert!(!holds(&engine, space, &a).await, "read longest ago");
+    assert!(holds(&engine, space, &b).await);
+    let (cached, beside) = counted(&engine).await;
+    assert!(cached <= engine.blob_cache());
+    assert_eq!(beside, 0);
+}
+
+/// A blob larger than the whole budget is held beside the cache while it
+/// is read, beside other cached blobs, which stay; and one found in the
+/// cache, as after a crash, goes before any blob that fits.
+#[tokio::test]
+async fn a_blob_larger_than_the_budget_makes_no_other_blob_go() {
+    let medium = Medium::new();
+    let (engine, _, space) = medium.device().await;
+    let (a, a_parts) = object(&engine, space, b'a', SIZE).await;
+    let (b, b_parts) = object(&engine, space, b'b', SIZE).await;
+    let (large, large_parts) = object(&engine, space, b'l', 4 * SIZE).await;
+    let budget = SIZE as u64 * 5 / 2;
+    engine.set_blob_cache(budget);
+    fetch(&engine, space, &a, &a_parts, false).await;
+    fetch(&engine, space, &b, &b_parts, false).await;
+
+    let reading = engine.want_object(space, &large, Want::Cache);
+    for part in &large_parts {
+        engine.receive_part(space, part.clone()).await.unwrap();
+    }
+    assert!(holds(&engine, space, &large).await);
+    assert!(holds(&engine, space, &a).await);
+    assert!(holds(&engine, space, &b).await);
+    let (cached, beside) = counted(&engine).await;
+    assert!(cached <= budget);
+    assert!(beside > 4 * SIZE as u64);
+    drop(reading);
+    engine.evict().await.unwrap();
+    assert!(!holds(&engine, space, &large).await);
+    assert!(holds(&engine, space, &a).await);
+    assert!(holds(&engine, space, &b).await);
+
+    // Found in the cache under a budget it does not fit: it goes first,
+    // though it was read last.
+    engine.set_blob_cache(u64::MAX);
+    fetch(&engine, space, &large, &large_parts, false).await;
+    assert_eq!(counted(&engine).await.1, 0);
+    engine.set_blob_cache(budget);
+    engine.evict().await.unwrap();
+    assert!(!holds(&engine, space, &large).await);
+    assert!(holds(&engine, space, &a).await);
+    assert!(holds(&engine, space, &b).await);
+}
+
+/// A store that a client without the `retention` table wrote, opened by
+/// this one: every object it holds has no record and is kept, whole or in
+/// part, and a blob it holds part of is fetched whole by the device
+/// itself (at-rest.md, "Retention", a client without this table).
+#[tokio::test]
+async fn a_store_with_no_retention_records_keeps_what_it_holds_whole_or_in_part() {
+    let medium = Medium::new();
+    let (engine, sealed, space) = medium.device().await;
+    let chunk = frasil_units::limits::CHUNK_BYTES;
+    let stream = engine.new_stream(frasil_adapter_blobs::TYPE).unwrap();
+    // A blob held whole, and one of which the other client had fetched a
+    // part when it stopped.
+    let (_, whole) = engine
+        .put_blob(space, &stream, Some("whole"), &vec![1; SIZE])
+        .await
+        .unwrap();
+    let (_, partial) = engine
+        .put_blob(space, &stream, Some("partial"), &vec![2; 2 * chunk + 1])
+        .await
+        .unwrap();
+    let parts = stored_parts(&engine, space, &partial).await;
+    engine.drop_local_object(space, &partial).await.unwrap();
+    engine.retain(space, &partial, false).await.unwrap();
+    assert_eq!(
+        engine.receive_part(space, parts[0].clone()).await.unwrap(),
+        Received::Kept
+    );
+    // An object no unit names, as a fetch left it.
+    let (other, other_parts) = object(&engine, space, b'o', SIZE).await;
+    fetch(&engine, space, &other, &other_parts, false).await;
+    assert_eq!(records(&engine, space).await.len(), 3);
+
+    // The other client knew no such record.
+    {
+        let mut state = engine.lock().await;
+        let mut batch = crate::at_rest::Batch::default();
+        for (item, _) in state.vault.scan(&space.0, Table::Retention).await.unwrap() {
+            state
+                .vault
+                .delete(&mut batch, &space.0, Table::Retention, &item);
+        }
+        state.vault.commit(batch).await.unwrap();
+    }
+    let engine = medium.reopen(engine, &sealed).await;
+    engine.set_blob_cache(0);
+    engine.evict().await.unwrap();
+    assert!(records(&engine, space).await.is_empty());
+    for locator in [&whole, &other] {
+        assert!(holds(&engine, space, locator).await);
+        assert_eq!(
+            engine.retention_of(&space, locator).await.0,
+            BlobState::Kept
+        );
+    }
+    // The part stays, kept, and the device means to hold the blob whole:
+    // it fetches the rest by itself, outside the budget.
+    let (state, bytes) = engine.retention_of(&space, &partial).await;
+    assert_eq!(state, BlobState::Kept);
+    assert!(bytes > chunk as u64 && bytes < 2 * chunk as u64);
+    assert_eq!(engine.missing_objects(&space).await, vec![partial]);
+    let usage = engine.blob_cache_usage().await;
+    assert_eq!(usage.cached, 0);
+    assert!(usage.kept > (2 * SIZE + chunk) as u64);
+    for part in &parts[1..] {
+        engine.receive_part(space, part.clone()).await.unwrap();
+    }
+    assert!(holds(&engine, space, &partial).await);
+    assert!(
+        records(&engine, space).await.is_empty(),
+        "kept by no record"
+    );
+    engine.evict().await.unwrap();
+    assert!(holds(&engine, space, &partial).await);
+    // The application may drop each, as any kept blob.
+    engine.drop_local_object(space, &partial).await.unwrap();
+    assert_eq!(
+        engine.retention_of(&space, &partial).await,
+        (BlobState::Absent, 0)
+    );
 }

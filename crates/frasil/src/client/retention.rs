@@ -13,15 +13,16 @@
 //! of units.md, 3.3 Reading an object runs as for any stored object: each
 //! chunk as it arrives, the locator's digest once the object is whole, and
 //! the rest when it is read. A read that is to store nothing holds the
-//! blob in the device's store while it runs and drops it when it ends.
+//! blob in the device's store while it runs, beside the cache, where it
+//! counts against no budget and evicts nothing, and the blob is dropped
+//! when the read ends. So is a blob larger than the whole budget.
 
 use super::blob_stream::Reporter;
 use super::{BlobId, Blobs};
 use crate::error::{Error, Result};
 use crate::fetch::FetchPriority;
-use crate::retention::InUse;
 pub use crate::retention::{BlobCacheUsage, BlobState};
-use frasil_adapter::Locator;
+use crate::retention::{InUse, Want};
 use frasil_adapter_blobs::Entry;
 use frasil_events::EventId;
 
@@ -98,34 +99,27 @@ pub struct BlobLocal {
     pub size: u64,
 }
 
-/// A blob made ready for a read: the device holds it whole, and drops
-/// nothing of it until the read is [`done`](Reading::done).
+/// A blob made ready for a read, or being fetched for one: the device
+/// drops nothing of it until the read is [`done`](Reading::done).
 pub(super) struct Reading {
     blobs: Blobs,
-    /// The space that stores the object for this read.
-    holder: EventId,
-    locator: Locator,
-    /// Whether this read fetched the object, to store nothing after.
-    passing: bool,
-    /// Whether this read fetched the object.
+    /// Whether this read set out to fetch the blob: the cache is looked at
+    /// once it ends.
     fetched: bool,
     uses: Vec<InUse>,
 }
 
 impl Reading {
-    /// The read ended: an object it fetched to store nothing is dropped,
-    /// and the cache is back within its budget.
+    /// The read ended: what it fetched to store nothing is dropped unless
+    /// another read uses it, and the cache is back within its budget.
     ///
     /// # Errors
     ///
     /// The store's.
-    pub(super) async fn done(self) -> Result<()> {
-        let engine = self.blobs.space().device.engine();
-        drop(self.uses);
-        if self.passing {
-            engine.drop_if_cached(self.holder, &self.locator).await?;
-        }
-        if self.fetched {
+    pub(super) async fn done(mut self) -> Result<()> {
+        let engine = self.blobs.space().device.engine().clone();
+        self.uses.clear();
+        if std::mem::take(&mut self.fetched) {
             engine.evict().await?;
         }
         Ok(())
@@ -171,23 +165,24 @@ impl Blobs {
         let locator = entry.object;
         // Used before the device is asked what it holds, so that what it
         // answers stays.
-        let mut uses = vec![engine.use_object(space, &locator)];
+        let mut reading = Reading {
+            blobs: self.clone(),
+            fetched: false,
+            uses: vec![engine.use_object(space, &locator)],
+        };
         if let Some(reference) = &entry.reference {
-            uses.push(engine.use_object(EventId(reference.source), &locator));
+            reading
+                .uses
+                .push(engine.use_object(EventId(reference.source), &locator));
         }
         if let Some(holder) = self.holder(entry).await {
-            if read.keep {
-                engine.retain(holder, &locator, true).await?;
+            // A blob another read fetched to store nothing is the cache's
+            // once a read that would leave it there reads it.
+            if read.keep || !read.uncached {
+                engine.retain(holder, &locator, read.keep).await?;
             }
             engine.touch(holder, &locator).await?;
-            return Ok(Some(Reading {
-                blobs: self.clone(),
-                holder,
-                locator,
-                passing: false,
-                fetched: false,
-                uses,
-            }));
+            return Ok(Some(reading));
         }
         if read.local {
             return Ok(None);
@@ -199,7 +194,19 @@ impl Blobs {
                  file: read without `uncached`, or use `materialise`",
             ));
         }
-        engine.retain(space, &locator, read.keep).await?;
+        if read.keep {
+            engine.retain(space, &locator, true).await?;
+        } else {
+            // Recorded when its first part arrives, so that a read that
+            // fetches nothing writes nothing.
+            let want = if read.uncached {
+                Want::Pass
+            } else {
+                Want::Cache
+            };
+            reading.uses.push(engine.want_object(space, &locator, want));
+        }
+        reading.fetched = true;
         let fetched = self
             .fetched(
                 space,
@@ -212,22 +219,10 @@ impl Blobs {
         if let Err(error) = fetched {
             // What an unkept read left of the blob is the cache's; of a
             // read that stores nothing, nothing stays.
-            drop(uses);
-            if read.uncached {
-                engine.drop_if_cached(space, &locator).await?;
-            } else {
-                engine.drop_unfetched(space, &locator).await?;
-            }
+            reading.done().await?;
             return Err(error);
         }
-        Ok(Some(Reading {
-            blobs: self.clone(),
-            holder: space,
-            locator,
-            passing: read.uncached,
-            fetched: true,
-            uses,
-        }))
+        Ok(Some(reading))
     }
 
     /// Fetches a blob into this device's store and keeps it there until

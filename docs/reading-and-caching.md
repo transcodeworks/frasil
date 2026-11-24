@@ -251,8 +251,14 @@ that must not wait on the network is `local`.
 A read fetches the blob whole before it gives any of it, into the device's
 store, so every check of the object format runs as for any stored blob. An
 `uncached` read drops the blob again when it ends, and so does any read
-under a budget of zero or of a blob larger than the whole budget: while such
-a read runs, the device stores that blob beyond its budget.
+under a budget of zero or of a blob larger than the whole budget. While such
+a read runs, the device stores that blob beside its cache: the blob counts
+against no budget and evicts nothing, so what a device stores beyond its
+budget is only what running reads hold. `blob_cache_usage()` counts it with
+the cached bytes meanwhile. When two reads of one blob run at once and one
+of them is not `uncached`, the blob is left in the cache. A read that
+fetches nothing, because nothing is connected or the fetch gets nowhere,
+writes nothing to the store.
 
 **Keeping and dropping.** `blobs.keep(id, on_progress)` fetches a blob into
 the store and keeps it, without reading it: a download in the background,

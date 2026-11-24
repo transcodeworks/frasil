@@ -776,7 +776,8 @@ it is a member. Re-keying after an erasure (section 3.4) seals
 **Recording.** A device that fetches an object into its cache commits the
 object's `retention` record of state 2 before, or in the commit of, the
 first part it stores of it, so that a crash between the two leaves no part
-that counts as kept. A device that seals an object itself commits a record
+that counts as kept. It commits none before a part arrives: a read that
+fetches nothing writes nothing. A device that seals an object itself commits a record
 of state 3 for it, and MAY commit the record after the parts: until it
 does, the object is kept. An object that has a record when the device
 seals it again keeps that record. When the application asks to keep an
@@ -852,9 +853,20 @@ application keeps the objects it must not lose.
 
 **When.** A device drops cached objects, least recently read first by key
 2, before a write that would take its cached bytes past the budget, and
-when it finds them past the budget at upkeep. An object larger than the
-whole budget, and every object under a budget of zero, is dropped once the
-read that fetched it ends.
+when it finds them past the budget at upkeep.
+
+Two kinds of object are held **beside the cache** while the reads that
+fetched them run: an object fetched for a read that is to store nothing
+once it ends, and an object larger than the whole budget, which is every
+object under a budget of zero. Such an object has a record of state 2, so
+that after a crash it is the cache's to drop. While a read uses it, its
+bytes count against no budget and the device drops no other object to make
+room for it; once no read uses it, the device drops it. A read that leaves
+its object in the cache and uses such an object takes it into the cache,
+unless it is larger than the whole budget. What a device stores beyond its
+budget is therefore only what running reads hold. A device that finds, in
+its cache, an object larger than the whole budget drops it before any
+object that fits.
 
 **A client without this table** never opens a `retention` record: the
 table's code is unknown to it (section 3.2, step 1), it uses no record it

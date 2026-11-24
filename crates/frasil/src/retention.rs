@@ -22,6 +22,16 @@
 //! What a space's log and outbox say of it is kept from one pass to the
 //! next, and only the events placed since are read.
 //!
+//! A read says what it wants of an object it fetches when it starts to use
+//! it ([`Engine::want_object`]), and the device records the object as
+//! cached when its first part arrives ([`Engine::admit`]): a read that
+//! fetches nothing writes nothing. An object fetched for a read that is to
+//! store nothing, and one larger than the whole budget, is held beside the
+//! cache: its bytes count against no budget and make no other object go,
+//! and it is dropped by the eviction pass that follows the last read that
+//! used it. What the device holds beyond its budget is therefore only what
+//! running reads hold.
+//!
 //! An object goes whole or not at all: its `retention` record and every
 //! part are deleted in one commit, and the device then forgets what it
 //! found out about the stored bytes, so that whatever it holds of the
@@ -58,6 +68,18 @@ struct Entry {
     /// Its place among the reads since the device opened, which orders
     /// the objects read within one step of the record's last read.
     order: u64,
+    /// Whether a cached object is held beside the cache: fetched for a
+    /// read that is to store nothing, or larger than the whole budget. Its
+    /// bytes count against no budget and make no other object go, and it
+    /// is dropped once no read uses it.
+    passing: bool,
+}
+
+impl Entry {
+    /// Whether its bytes count against the budget.
+    fn counts(&self) -> bool {
+        matches!(self.retention, Retention::Cached { .. }) && !self.passing
+    }
 }
 
 /// What the device knows of an object it put, while its record says so.
@@ -76,8 +98,15 @@ struct PutFacts {
 #[derive(Debug, Default)]
 pub(crate) struct Retained {
     entries: BTreeMap<Key, Entry>,
-    /// The stored bytes of the cached objects.
+    /// The stored bytes of the cached objects that count against the
+    /// budget.
     cached: u64,
+    /// The stored bytes of the cached objects held beside the cache while
+    /// reads use them.
+    beside: u64,
+    /// The cached objects to look at when a read ends: those held beside
+    /// the cache, and those whose record was put before any part.
+    settle: BTreeSet<Key>,
     /// The reads counted since the device opened.
     reads: u64,
     /// What is known of the objects whose record says the device put them.
@@ -104,47 +133,93 @@ impl Retained {
 
     fn set(&mut self, key: Key, retention: Retention, bytes: u64) {
         let puts = self.puts.remove(&key);
+        // A cached object held beside the cache stays so when it is read.
+        let settle = self.settle.contains(&key);
+        let passing = matches!(retention, Retention::Cached { .. })
+            && self.entries.get(&key).is_some_and(|entry| entry.passing);
         self.remove(&key);
         if retention == Retention::Put {
             self.puts.insert(key, puts.unwrap_or_default());
         }
-        if matches!(retention, Retention::Cached { .. }) {
-            self.cached = self.cached.saturating_add(bytes);
-        }
         self.reads += 1;
-        self.entries.insert(
-            key,
-            Entry {
-                retention,
-                bytes,
-                order: self.reads,
-            },
-        );
+        let entry = Entry {
+            retention,
+            bytes,
+            order: self.reads,
+            passing,
+        };
+        self.add(&entry);
+        self.entries.insert(key, entry);
+        if matches!(retention, Retention::Cached { .. }) && (settle || bytes == 0) {
+            self.settle.insert(key);
+        }
+    }
+
+    /// Counts an entry's bytes where they belong.
+    fn add(&mut self, entry: &Entry) {
+        if entry.counts() {
+            self.cached = self.cached.saturating_add(entry.bytes);
+        } else if entry.passing {
+            self.beside = self.beside.saturating_add(entry.bytes);
+        }
+    }
+
+    /// Takes an entry's bytes from where they were counted.
+    fn subtract(&mut self, entry: &Entry) {
+        if entry.counts() {
+            self.cached = self.cached.saturating_sub(entry.bytes);
+        } else if entry.passing {
+            self.beside = self.beside.saturating_sub(entry.bytes);
+        }
     }
 
     fn remove(&mut self, key: &Key) -> bool {
         self.puts.remove(key);
+        self.settle.remove(key);
         let Some(entry) = self.entries.remove(key) else {
             return false;
         };
-        if matches!(entry.retention, Retention::Cached { .. }) {
-            self.cached = self.cached.saturating_sub(entry.bytes);
-        }
+        self.subtract(&entry);
         true
+    }
+
+    /// Holds a cached object beside the cache, or counts it in the cache.
+    fn set_passing(&mut self, key: &Key, passing: bool) {
+        let Some(mut entry) = self.entries.get(key).copied() else {
+            return;
+        };
+        if entry.passing == passing || !matches!(entry.retention, Retention::Cached { .. }) {
+            return;
+        }
+        self.subtract(&entry);
+        entry.passing = passing;
+        self.add(&entry);
+        self.entries.insert(*key, entry);
+        if passing {
+            self.settle.insert(*key);
+        }
+    }
+
+    /// Whether an object's bytes count against the budget: it is cached,
+    /// and not held beside the cache.
+    pub(crate) fn counts(&self, key: &Key) -> bool {
+        self.entries.get(key).is_some_and(Entry::counts)
     }
 
     /// Notes the stored bytes the device now holds of an object.
     pub(crate) fn resize(&mut self, key: &Key, bytes: u64) {
-        let Some(entry) = self.entries.get_mut(key) else {
+        let Some(mut entry) = self.entries.get(key).copied() else {
             return;
         };
-        if matches!(entry.retention, Retention::Cached { .. }) {
-            self.cached = self
-                .cached
-                .saturating_sub(entry.bytes)
-                .saturating_add(bytes);
-        }
+        self.subtract(&entry);
         entry.bytes = bytes;
+        self.add(&entry);
+        self.entries.insert(*key, entry);
+        // A cached record with no part left says nothing once no read
+        // waits for its parts.
+        if bytes == 0 && matches!(entry.retention, Retention::Cached { .. }) {
+            self.settle.insert(*key);
+        }
     }
 
     /// Forgets an object the device no longer retains: the application
@@ -173,11 +248,13 @@ impl Retained {
         self.log_reads.load(Ordering::Relaxed)
     }
 
-    /// The cached objects, the one read longest ago first.
+    /// The cached objects that count against the budget, the one read
+    /// longest ago first.
     fn oldest_first(&self) -> Vec<Key> {
         let mut cached: Vec<(u64, u64, Key)> = self
             .entries
             .iter()
+            .filter(|(_, entry)| entry.counts())
             .filter_map(|(key, entry)| match entry.retention {
                 Retention::Cached { read } => Some((read, entry.order, *key)),
                 Retention::Kept | Retention::Put => None,
@@ -188,12 +265,41 @@ impl Retained {
     }
 }
 
-/// The objects that reads are using, by how many use each.
+/// What a use of an object says of the parts that arrive for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Want {
+    /// Nothing: the object is only not to be dropped.
+    Hold,
+    /// A read fetches the object, and leaves it in the cache.
+    Cache,
+    /// A read fetches the object, and is to store nothing once it ends.
+    Pass,
+}
+
+/// How many uses of an object there are, of each kind.
+#[derive(Debug, Clone, Copy, Default)]
+struct Using {
+    hold: usize,
+    cache: usize,
+    pass: usize,
+}
+
+impl Using {
+    fn of(&mut self, want: Want) -> &mut usize {
+        match want {
+            Want::Hold => &mut self.hold,
+            Want::Cache => &mut self.cache,
+            Want::Pass => &mut self.pass,
+        }
+    }
+}
+
+/// The objects that reads and writes are using, by how many use each.
 #[derive(Debug, Default)]
-pub(crate) struct Uses(Mutex<BTreeMap<Key, usize>>);
+pub(crate) struct Uses(Mutex<BTreeMap<Key, Using>>);
 
 impl Uses {
-    fn count(&self) -> std::sync::MutexGuard<'_, BTreeMap<Key, usize>> {
+    fn count(&self) -> std::sync::MutexGuard<'_, BTreeMap<Key, Using>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -204,14 +310,16 @@ impl Uses {
 pub(crate) struct InUse {
     uses: Arc<Uses>,
     key: Key,
+    want: Want,
 }
 
 impl Drop for InUse {
     fn drop(&mut self) {
         let mut count = self.uses.count();
-        if let Some(uses) = count.get_mut(&self.key) {
-            *uses -= 1;
-            if *uses == 0 {
+        if let Some(using) = count.get_mut(&self.key) {
+            let of = using.of(self.want);
+            *of = of.saturating_sub(1);
+            if using.hold + using.cache + using.pass == 0 {
                 count.remove(&self.key);
             }
         }
@@ -255,8 +363,10 @@ pub enum BlobState {
 pub struct BlobCacheUsage {
     /// The budget of the cache, as the device was opened with.
     pub budget: u64,
-    /// The bytes of the cached blobs, whole or in part: within the budget
-    /// but for a blob larger than it while a read holds it.
+    /// The bytes of the cached blobs, whole or in part: within the
+    /// budget, but for what running reads hold beside the cache, a blob
+    /// fetched for a read that is to store nothing or one larger than the
+    /// whole budget.
     pub cached: u64,
     /// The bytes of the blobs the device keeps, outside the budget.
     pub kept: u64,
@@ -432,12 +542,53 @@ impl Engine {
     /// A reader takes it before it looks whether the device holds the
     /// object, so that what it found stays.
     pub(crate) fn use_object(&self, space: EventId, locator: &Locator) -> InUse {
+        self.want_object(space, locator, Want::Hold)
+    }
+
+    /// Uses an object as [`use_object`](Self::use_object) does, and says
+    /// what a read that fetches it wants of the parts that arrive
+    /// meanwhile: left in the cache, or stored only until the read ends.
+    /// The device records nothing for it until a part arrives, so that a
+    /// read that fetches nothing writes nothing.
+    pub(crate) fn want_object(&self, space: EventId, locator: &Locator, want: Want) -> InUse {
         let key = (space, object_id(locator));
-        *self.uses().count().entry(key).or_insert(0) += 1;
+        *self.uses().count().entry(key).or_default().of(want) += 1;
         InUse {
             uses: self.uses().clone(),
             key,
+            want,
         }
+    }
+
+    /// What the reads that use an object want of the parts that arrive for
+    /// it: the cache, if any of them does; else to store nothing after;
+    /// `None` when no read fetches it.
+    fn wanted(&self, key: &Key) -> Option<Want> {
+        let count = self.uses().count();
+        let using = count.get(key)?;
+        if using.cache > 0 {
+            Some(Want::Cache)
+        } else if using.pass > 0 {
+            Some(Want::Pass)
+        } else {
+            None
+        }
+    }
+
+    /// An object's stored length, by the header the device holds of it or
+    /// the one a part carries.
+    fn stored_total(
+        state: &State,
+        space: &EventId,
+        locator: &Locator,
+        header: Option<&[u8]>,
+    ) -> Option<u64> {
+        state
+            .replicas
+            .get(space)
+            .and_then(|replica| replica.object_header(locator))
+            .or(header)
+            .and_then(crate::replica::stored_length)
     }
 
     /// Whether a read uses an object, or a request for its chunks is
@@ -529,40 +680,79 @@ impl Engine {
     }
 
     /// Whether the device means to hold an object that another party
-    /// sends parts of, so that a part is stored: it has a record; the
-    /// device holds chunks of it, which with no record are kept; the
-    /// device keeps every blob, or the application holds the space's
-    /// objects; a request for its chunks is still wanted, or the
-    /// application asked for it; or it is not an object the device fetches
-    /// only when it is read, so that the device fetches it by itself, as
-    /// it does Frasil's own. An object the device dropped, or meant to
-    /// fetch for a read that gave up, is none of these.
-    pub(crate) fn means_to_hold(&self, state: &State, space: &EventId, locator: &Locator) -> bool {
-        let id = object_id(locator);
-        if self.keeps_all_blobs()
-            || self.is_held_space(state, space)
-            || state.retained.get(&(*space, id)).is_some()
-        {
-            return true;
+    /// sends a part of, so that the part is stored, and under which
+    /// retention (at-rest.md, "Retention", recording). It does when the
+    /// object has a record; when the device holds chunks of it, which with
+    /// no record are kept; when the device keeps every blob, or the
+    /// application holds the space's objects; when a read fetches it, for
+    /// which a record of state 2 is committed here, before the part; when
+    /// a request for its chunks is still wanted, or the application asked
+    /// for it; or when it is not an object the device fetches only when it
+    /// is read, so that the device fetches it by itself, as it does
+    /// Frasil's own. An object the device dropped, or meant to fetch for a
+    /// read that gave up, is none of these.
+    ///
+    /// A cached object is held beside the cache, where its bytes count
+    /// against no budget, while only reads that are to store nothing fetch
+    /// it, or when it is larger than the whole budget (at-rest.md,
+    /// "Retention", when).
+    ///
+    /// # Errors
+    ///
+    /// The store's.
+    pub(crate) async fn admit(
+        &self,
+        state: &mut State,
+        space: EventId,
+        locator: &Locator,
+        header: Option<&[u8]>,
+    ) -> Result<bool> {
+        let key = (space, object_id(locator));
+        if self.keeps_all_blobs() || self.is_held_space(state, &space) {
+            return Ok(true);
         }
-        let Some(replica) = state.replicas.get(space) else {
-            return true;
+        let want = self.wanted(&key);
+        let large = Self::stored_total(state, &space, locator, header)
+            .is_some_and(|total| total > self.blob_cache());
+        if let Some(entry) = state.retained.entries.get(&key).copied() {
+            if matches!(entry.retention, Retention::Cached { .. }) {
+                // A read that leaves it in the cache takes it from those
+                // that would not.
+                let beside = large || (entry.passing && want != Some(Want::Cache));
+                state.retained.set_passing(&key, beside);
+            }
+            return Ok(true);
+        }
+        let Some(replica) = state.replicas.get(&space) else {
+            return Ok(true);
         };
         let holds = replica
-            .object_locators(&id)
+            .object_locators(&key.1)
             .iter()
             .any(|locator| replica.holds_chunks(locator));
-        if holds
-            || state.held.asked_for(space, locator)
+        if holds {
+            return Ok(true);
+        }
+        if let Some(want) = want {
+            let read = self.read_now(state);
+            self.record(state, space, key.1, Retention::Cached { read })
+                .await?;
+            state
+                .retained
+                .set_passing(&key, large || want == Want::Pass);
+            return Ok(true);
+        }
+        let asked = state.held.asked_for(&space, locator)
             || self
                 .fetches()
-                .of(space)
+                .of(&space)
                 .iter()
-                .any(|request| request.locator[..32] == id[..])
-        {
-            return true;
-        }
-        !crate::objects::fetched_on_read(replica, locator)
+                .any(|request| request.locator[..32] == key.1[..]);
+        Ok(asked
+            || state
+                .replicas
+                .get(&space)
+                .is_none_or(|replica| !crate::objects::fetched_on_read(replica, locator)))
     }
 
     /// Whether the space's objects have no retention on this device: the
@@ -606,9 +796,11 @@ impl Engine {
         Ok(())
     }
 
-    /// Says how the device retains a blob's object it is about to fetch,
-    /// before the first part arrives (at-rest.md, "Retention", recording):
-    /// kept with `keep`, cached otherwise. An object the device holds
+    /// Says how the device retains a blob's object, and commits its record
+    /// at once (at-rest.md, "Retention", recording): kept with `keep`,
+    /// cached otherwise. A read that fetches an object into the cache says
+    /// so with [`want_object`](Self::want_object) instead, which records
+    /// nothing until a part arrives. An object the device holds
     /// parts of with no record is kept already and stays so; a cached one
     /// becomes kept with `keep`, and a kept one never becomes cached. In a
     /// space whose objects the application holds, nothing is recorded.
@@ -633,8 +825,16 @@ impl Engine {
         let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
         let holds = replica.knows_object_id(&id);
         let retention = match (state.retained.get(&(space, id)), keep) {
-            (Some(Retention::Kept), _)
-            | (Some(Retention::Cached { .. } | Retention::Put), false) => return Ok(()),
+            // A read that leaves the object in the cache takes it from a
+            // read that fetched it to store nothing, unless it is larger
+            // than the whole budget.
+            (Some(Retention::Cached { .. }), false) => {
+                let large = Self::stored_total(&state, &space, locator, None)
+                    .is_some_and(|total| total > self.blob_cache());
+                state.retained.set_passing(&(space, id), large);
+                return Ok(());
+            }
+            (Some(Retention::Kept), _) | (Some(Retention::Put), false) => return Ok(()),
             (_, true) => Retention::Kept,
             // Parts with no record: kept.
             (None, false) if holds || self.keeps_all_blobs() => return Ok(()),
@@ -910,11 +1110,13 @@ impl Engine {
         Ok(true)
     }
 
-    /// Drops cached objects, the one read longest ago first, until the
-    /// cached bytes and `incoming` more fit the budget, or nothing more
-    /// may go (at-rest.md, "Retention", when): never an object that
-    /// [`must_stay`](Self::must_stay), nor one of `writing`, the objects
-    /// the incoming bytes are parts of.
+    /// Drops what no read uses any more of the objects held beside the
+    /// cache, and the cached records left with no part; then drops cached
+    /// objects, first any larger than the whole budget, then the one read
+    /// longest ago first, until the cached bytes and `incoming` more fit
+    /// the budget, or nothing more may go (at-rest.md, "Retention", when):
+    /// never an object that [`must_stay`](Self::must_stay), nor one of
+    /// `writing`, the objects the incoming bytes are parts of.
     ///
     /// # Errors
     ///
@@ -925,15 +1127,49 @@ impl Engine {
         incoming: u64,
         writing: &BTreeSet<[u8; 32]>,
     ) -> Result<()> {
-        let budget = self.blob_cache();
-        let over = |state: &State| state.retained.cached.saturating_add(incoming) > budget;
-        if self.keeps_all_blobs() || !over(state) {
+        if self.keeps_all_blobs() {
             return Ok(());
         }
+        let budget = self.blob_cache();
         // What must stay is brought up to date once for each space in a
         // pass; a drop changes neither a log nor an outbox.
         let mut read: BTreeSet<EventId> = BTreeSet::new();
-        for (space, id) in state.retained.oldest_first() {
+        let settle: Vec<Key> = state.retained.settle.iter().copied().collect();
+        for (space, id) in settle {
+            let Some(entry) = state.retained.entries.get(&(space, id)).copied() else {
+                state.retained.settle.remove(&(space, id));
+                continue;
+            };
+            if writing.contains(&id) {
+                continue;
+            }
+            if read.insert(space) {
+                Self::refresh_staying(state, &space);
+            }
+            // One a read still uses is looked at again when a read ends.
+            if self.stays(state, &space, &id).is_some() {
+                continue;
+            }
+            if entry.passing || entry.bytes == 0 {
+                self.drop_stored(state, space, &id, true).await?;
+            } else {
+                state.retained.settle.remove(&(space, id));
+            }
+        }
+        let over = |state: &State| state.retained.cached.saturating_add(incoming) > budget;
+        if !over(state) {
+            return Ok(());
+        }
+        // An object that cannot fit goes before any that can.
+        let oldest = state.retained.oldest_first();
+        let (large, fitting): (Vec<Key>, Vec<Key>) = oldest.into_iter().partition(|key| {
+            state
+                .retained
+                .entries
+                .get(key)
+                .is_some_and(|entry| entry.bytes > budget)
+        });
+        for (space, id) in large.into_iter().chain(fitting) {
             if !over(state) {
                 break;
             }
@@ -1023,43 +1259,6 @@ impl Engine {
             .map(drop)
     }
 
-    /// Drops an object that a read fetched to store nowhere, if it is
-    /// cached and nothing else uses it.
-    ///
-    /// # Errors
-    ///
-    /// The store's.
-    pub(crate) async fn drop_if_cached(&self, space: EventId, locator: &Locator) -> Result<()> {
-        let mut state = self.lock().await;
-        if self.must_stay(&mut state, &space, locator).is_some() {
-            return Ok(());
-        }
-        self.drop_stored(&mut state, space, &object_id(locator), true)
-            .await
-            .map(drop)
-    }
-
-    /// Drops the record of a cached object a read meant to fetch and got
-    /// nothing of.
-    ///
-    /// # Errors
-    ///
-    /// The store's.
-    pub(crate) async fn drop_unfetched(&self, space: EventId, locator: &Locator) -> Result<()> {
-        let mut state = self.lock().await;
-        let id = object_id(locator);
-        let empty = state
-            .replicas
-            .get(&space)
-            .is_none_or(|replica| replica.object_bytes_stored(&id) == 0);
-        if !empty || self.must_stay(&mut state, &space, locator).is_some() {
-            return Ok(());
-        }
-        self.drop_stored(&mut state, space, &id, true)
-            .await
-            .map(drop)
-    }
-
     /// How a blob's object stands in a space on this device, and the
     /// stored bytes the device holds of it: for an object the application
     /// holds as a file, kept, with its stored length.
@@ -1142,7 +1341,7 @@ impl Engine {
             cached: if self.keeps_all_blobs() {
                 0
             } else {
-                state.retained.cached
+                state.retained.cached.saturating_add(state.retained.beside)
             },
             kept,
         }

@@ -404,3 +404,82 @@ async fn a_blob_this_device_put_is_cached_once_the_peer_holds_it() {
         Some(vec![4; SIZE])
     );
 }
+
+/// A read that is to store nothing, and a read of a blob larger than the
+/// whole budget, hold their blob beside the cache while they run: they
+/// evict nothing, and their blob goes when they end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_that_leaves_nothing_displaces_nothing_in_the_cache() {
+    let peer = spawn_loopback().await.unwrap();
+    let (_alice, space, files) = alice(&peer).await;
+    // Room for two blobs and not three.
+    let budget = SIZE as u64 * 5 / 2;
+    let bob = open(2, Storage::Memory, Options::new().blob_cache(budget)).await;
+    let (bobs_files, ids) = join(&peer, &space, &files, &bob, 3).await;
+    let large = files
+        .put(Some("a large file"), &vec![9; 3 * SIZE])
+        .await
+        .unwrap();
+    within(async {
+        while bobs_files.list().await.unwrap().len() < 4 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    for (index, id) in ids.iter().take(2).enumerate() {
+        let read = get(&bobs_files, *id, &Read::new()).await;
+        assert_eq!(read, Some(vec![index as u8 + 1; SIZE]));
+    }
+
+    let passing = get(&bobs_files, ids[2], &Read::new().uncached()).await;
+    assert_eq!(passing, Some(vec![3; SIZE]));
+    assert_eq!(state(&bobs_files, ids[0]).await, BlobState::Cached);
+    assert_eq!(state(&bobs_files, ids[1]).await, BlobState::Cached);
+    assert_eq!(state(&bobs_files, ids[2]).await, BlobState::Absent);
+
+    let whole = get(&bobs_files, large, &Read::new()).await;
+    assert_eq!(whole, Some(vec![9; 3 * SIZE]));
+    assert_eq!(state(&bobs_files, ids[0]).await, BlobState::Cached);
+    assert_eq!(state(&bobs_files, ids[1]).await, BlobState::Cached);
+    assert_eq!(state(&bobs_files, large).await, BlobState::Absent);
+    let usage = bob.blob_cache_usage().await;
+    assert!(usage.cached <= budget, "{usage:?}");
+    assert!(usage.cached > 2 * SIZE as u64, "{usage:?}");
+}
+
+/// Two reads of one blob at once, one of them to store nothing: both get
+/// the bytes, and the blob is left in the cache, as the other read asked.
+/// Two reads that both store nothing leave nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_reads_of_one_blob_at_once_one_of_them_uncached() {
+    let peer = spawn_loopback().await.unwrap();
+    let (_alice, space, files) = alice(&peer).await;
+    let bob = open(2, Storage::Memory, Options::new()).await;
+    let (bobs_files, ids) = join(&peer, &space, &files, &bob, 2).await;
+    // The keys are here once a first blob reads.
+    let first = get(&bobs_files, ids[1], &Read::new()).await;
+    assert_eq!(first, Some(vec![2; SIZE]));
+
+    let (cached, passing) = (Read::new(), Read::new().uncached());
+    let (kept, passed) = tokio::join!(
+        get(&bobs_files, ids[0], &cached),
+        get(&bobs_files, ids[0], &passing)
+    );
+    assert_eq!(kept, Some(vec![1; SIZE]));
+    assert_eq!(passed, Some(vec![1; SIZE]));
+    assert_eq!(state(&bobs_files, ids[0]).await, BlobState::Cached);
+    assert_eq!(
+        bobs_files.get(ids[0], &Read::new().local()).await.unwrap(),
+        Some(vec![1; SIZE])
+    );
+
+    bobs_files.drop_local(ids[0]).await.unwrap();
+    let (one, other) = tokio::join!(
+        get(&bobs_files, ids[0], &passing),
+        get(&bobs_files, ids[0], &passing)
+    );
+    assert_eq!(one, Some(vec![1; SIZE]));
+    assert_eq!(other, Some(vec![1; SIZE]));
+    assert_eq!(state(&bobs_files, ids[0]).await, BlobState::Absent);
+    assert_eq!(state(&bobs_files, ids[1]).await, BlobState::Cached);
+}

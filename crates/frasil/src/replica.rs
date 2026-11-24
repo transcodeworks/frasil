@@ -6836,6 +6836,21 @@ pub(crate) fn object_id(locator: &Locator) -> [u8; 32] {
     id
 }
 
+/// An object's stored length by its header (units.md, "Objects"): the
+/// header with its length, and each sealed chunk. `None` for bytes that do
+/// not read as a header.
+pub(crate) fn stored_length(header: &[u8]) -> Option<u64> {
+    let read = frasil_units::objects::Header::read(header).ok()?;
+    let chunk = frasil_units::limits::CHUNK_BYTES as u64;
+    let sealed = frasil_units::limits::SEALED_CHUNK_BYTES as u64;
+    let count = frasil_units::objects::chunk_count(read.size, chunk);
+    Some(
+        (4 + header.len() as u64)
+            .saturating_add(read.size)
+            .saturating_add(count.saturating_mul(sealed - chunk)),
+    )
+}
+
 /// A unit that opened, with what its adapter needs.
 /// A snapshot unit's stream, declaration, `excluded` and parents.
 type SnapshotCandidate = (
