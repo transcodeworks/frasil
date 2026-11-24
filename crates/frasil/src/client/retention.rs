@@ -100,7 +100,8 @@ pub struct BlobLocal {
 }
 
 /// A blob made ready for a read, or being fetched for one: the device
-/// drops nothing of it until the read is [`done`](Reading::done).
+/// drops nothing of it until the read is [`done`](Reading::done), or is
+/// dropped.
 pub(super) struct Reading {
     blobs: Blobs,
     /// Whether this read set out to fetch the blob: the cache is looked at
@@ -123,6 +124,24 @@ impl Reading {
             engine.evict().await?;
         }
         Ok(())
+    }
+}
+
+/// A read dropped before it was [`done`](Reading::done), as when its
+/// future is cancelled part way through a fetch or a read: its uses end
+/// here, and the device looks at its cache at once, on a task of its own,
+/// since nothing can wait in a drop. What the read fetched to store
+/// nothing is dropped then, as if the read had ended.
+impl Drop for Reading {
+    fn drop(&mut self) {
+        self.uses.clear();
+        if self.fetched {
+            let device = &self.blobs.space().device;
+            let engine = device.engine().clone();
+            device.spawn(Box::pin(async move {
+                let _ = engine.evict().await;
+            }));
+        }
     }
 }
 

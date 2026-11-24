@@ -483,3 +483,47 @@ async fn two_reads_of_one_blob_at_once_one_of_them_uncached() {
     assert_eq!(state(&bobs_files, ids[0]).await, BlobState::Absent);
     assert_eq!(state(&bobs_files, ids[1]).await, BlobState::Cached);
 }
+
+/// A read that is to store nothing and is dropped part way, its future
+/// cancelled, leaves nothing stored: the blob it fetched goes at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cancelled_read_that_stores_nothing_leaves_nothing_stored() {
+    let peer = spawn_loopback().await.unwrap();
+    let (_alice, space, files) = alice(&peer).await;
+    let bob = open(2, Storage::Memory, Options::new()).await;
+    let (bobs_files, ids) = join(&peer, &space, &files, &bob, 2).await;
+    let first = get(&bobs_files, ids[1], &Read::new()).await;
+    assert_eq!(first, Some(vec![2; SIZE]));
+
+    // A writer nobody reads from: the read fetches the blob, writes what
+    // fits, and waits.
+    let (writer, reader) = tokio::io::duplex(1024);
+    let reading = {
+        let blobs = bobs_files.clone();
+        let id = ids[0];
+        tokio::spawn(async move {
+            let read = Read::new().uncached();
+            blobs.get_stream(id, writer, &read, |_, _| {}).await
+        })
+    };
+    within(async {
+        while state(&bobs_files, ids[0]).await == BlobState::Absent {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(!reading.is_finished());
+    reading.abort();
+    assert!(reading.await.unwrap_err().is_cancelled());
+    within(async {
+        while state(&bobs_files, ids[0]).await != BlobState::Absent {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert_eq!(bob.blob_cache_usage().await.cached, {
+        let kept = bobs_files.local(ids[1]).await.unwrap();
+        kept.bytes
+    });
+    drop(reader);
+}

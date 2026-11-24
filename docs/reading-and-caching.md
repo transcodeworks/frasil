@@ -258,7 +258,9 @@ budget is only what running reads hold. `blob_cache_usage()` counts it with
 the cached bytes meanwhile. When two reads of one blob run at once and one
 of them is not `uncached`, the blob is left in the cache. A read that
 fetches nothing, because nothing is connected or the fetch gets nowhere,
-writes nothing to the store.
+writes nothing to the store. A read that is cancelled, its future dropped
+part way, ends as any read does: what it fetched to store nothing is
+dropped at once.
 
 **Keeping and dropping.** `blobs.keep(id, on_progress)` fetches a blob into
 the store and keeps it, without reading it: a download in the background,
