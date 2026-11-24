@@ -815,47 +815,88 @@ is durable does not say otherwise: an acknowledgement is about events
 alone ([units.md](units.md), section 3.13), a peer stores a unit ahead of
 its object ([peers.md](peers.md), "A unit ahead of its object"), and in a
 space whose peer the device has not heard since it opened a member's
-acknowledgement makes the unit durable. The device replaces the record
-only once both hold of one always-on peer of the space, the same in both:
+acknowledgement makes the unit durable. Nor does a peer's answer that it
+holds the object, taken alone: a peer collects an object that no stored
+unit has referenced `orphan_grace` after it received it
+([peers.md](peers.md), "Objects"), so a peer that answered, and
+acknowledged the unit afterwards, may hold the unit and none of the bytes.
 
-1. the peer answered that it holds the object whole, to this device's
-   upload of it ([units.md](units.md), section 3.4, item 7), no more than
-   1,800 seconds of the device's timeline ago and since the device opened;
-   and
-2. the heads that peer last acknowledged to this device have a unit that
-   names the object in their past, so that the object is referenced at the
-   peer and is not collected there as an orphan.
+A unit **names** the object here as it references it at a peer
+([peers.md](peers.md), "Objects"): the device's log holds the unit, the
+unit lists the object's locator in `objects`, and it is neither replaced
+nor released. For this rule a device counts as replaced each unit in the
+cover of a snapshot unit its log holds, whether or not the replica uses
+that snapshot yet, and as released each unit of a released stream. A unit
+that lists another locator with the same object ID does not name the
+object.
 
-The record that replaces it is of state 1 when key 3 is present, and of
-state 2 otherwise. An answer of one peer and an acknowledgement of
-another release nothing: the first peer may hold the object with no unit
-that names it, and collect it. Nor does an older answer: a peer collects
-an object that no unit has referenced `orphan_grace` after its upload
-([peers.md](peers.md), "Objects"), which is an hour at the least, and a
-device does not know what the peer it speaks to waits. An acknowledgement
-taken before the answer counts whatever its age, as the device keeps it
-(section 2.4, `ack`): the unit was at the peer when the object arrived.
+The device replaces the record only once both hold of one always-on peer
+of the space, the same in both, in this order:
+
+1. the heads that peer last acknowledged to this device have a unit that
+   names the object in their past; and
+2. the peer answers that it holds the object whole, to a question the
+   device put to it after it took that acknowledgement: the device's
+   upload of the object ([units.md](units.md), section 3.4, item 7), or a
+   fetch of one of its chunks ([units.md](units.md), section 3.14), which
+   a peer serves only of an object whose upload completed
+   ([peers.md](peers.md), "A unit ahead of its object").
+
+When it answers, the peer stores a unit that references the object and
+holds its bytes: the object is referenced there, and is not collected as
+an orphan. The record that replaces the one of state 3 is of state 1 when
+key 3 is present, and of state 2 otherwise; the device then drops cached
+objects as before a write (below, "When"). No time bounds the rule, and no
+answer to a question put before the acknowledgement releases the object,
+whatever its age: the peer may have collected the object between its
+answer and the unit. The acknowledgement counts whatever its age, as the
+device keeps it (section 2.4, `ack`), since the question follows it. An
+answer of one peer and an acknowledgement of another release nothing: the
+first peer may hold the object with no unit that names it, and collect it.
+Where an answer does not say which question it answers, as `ObjectHave`
+does not on a stream ([units.md](units.md), section 3.14), it counts only
+if every chunk of the object that the device sent on that connection was
+sent after the acknowledgement; a device that sent one before asks by a
+fetch.
 
 Until then the object is never dropped for the budget, whether the space
 has an always-on peer, is paused, or gains or loses its peer meanwhile,
 and whatever the application asks but to drop it in a space with no
-always-on peer. A device that does not know which of its units name the
-object, after a restart, reads them from its log. In a space with no
-always-on peer the record stays of state 3, and the object stays until the
-application drops it.
+always-on peer. A device reads which units name the object from its log.
+In a space with no always-on peer the record stays of state 3, and the
+object stays until the application drops it.
 
-A record of state 3 may stand where the peer holds the object or is about
-to be sent the unit without it: after a crash between the two, when the
-unit reached the peer through another device, or when the device put
-again bytes the peer had answered for. So a device uploads to an always-on
-peer each object of state 3 that no unit waiting for that peer's
-acknowledgement names, when it is granted the right to store in the space
-on a connection, and at upkeep while no answer of that peer counts under
-item 1. The upload is the one a writer makes before a unit
-([units.md](units.md), section 3.4, item 7), and no other message: a peer
-that holds the object answers so, and one that does not takes it. The
-device makes it once for each connection, and at upkeep no more often
-than an answer counts.
+So a device asks an always-on peer whether it holds each object of state 3
+that no unit waiting for that peer's acknowledgement names:
+
+- when it is granted the right to store in the space on a connection;
+- once that peer has acknowledged a unit that names the object, if the
+  device has not asked it since that acknowledgement; and
+- at upkeep, no more often than once in 1,800 seconds of its timeline.
+  This rule waits, and counts by the lower estimate
+  ([overview.md](overview.md), section 6.4).
+
+The question is the upload a writer makes before a unit, or the fetch of
+item 2, and no other message: a peer that holds the object answers so, and
+one that does not takes the upload. A record of state 3 may thus stand
+where the peer holds the object: after a crash between the answer and the
+commit, when the unit reached the peer through another device, or when the
+device put again bytes the peer had answered for. A peer that refuses the
+upload is not asked again on that connection.
+
+**A put object that no unit names.** A record of state 3 waits for a peer
+to hold a unit that names the object. When no unit in the device's log
+lists a locator of the object any more, as when the entry was removed and
+a snapshot the replica uses replaced the units that listed it, no peer
+will hold such a unit: the device replaces the record as above, by one of
+state 1 when key 3 is present and of state 2 otherwise, and asks no peer
+for the object again. No entry this device can read names the object
+then, so no read of it is lost. The record stays while a unit that lists
+the object is only counted as replaced or released by the rule above, in
+the cover of a snapshot the replica does not use yet or in a released
+stream, which a restore brings back ([peers.md](peers.md), "Release and
+restore"). A partial replica ([units.md](units.md), section 3.15), whose
+log does not hold every unit, replaces no record this way.
 
 **What is never dropped.** To stay within its budget a device drops only
 an object whose `retention` record has state 2, and never:
@@ -975,7 +1016,7 @@ finds it held or not held; neither fails.
   | `timeline` | The device starts from the older reading. With a wall clock known at that reading and now, the time since counts as time off and the timeline is about where it was. Without one, the timeline goes back by the time between the two readings: a rule that waits on the lower estimate waits longer by that much. The run number repeats one already used, so the upper estimate between a reading of that earlier run and now, with no wall clock on either side, is taken as within one run ([overview.md](overview.md), section 6.4) and can come out short: a rule that stops after a time stops later, by at most the time rolled back. | Nothing |
   | `state` | The log's older base: events that rest on the newer base lack their parents until sync or a snapshot brings them again. An older last completed sync: under [ext-guests.md](ext-guests.md)'s online-only policy the device stops writing sooner, until it syncs. A leave request no longer recorded: a guest writes again under its own write rule, until an administrator ends its grant. The personal space no longer marked: the device finds it again from the space's recovery entries. A claim marked again with its `claim` record present changes nothing; with it gone, the device forgets the log as a claim that never finished. | Nothing |
   | `ack` | The device remembers less of what that peer or member acknowledged: a party that then serves less than it last acknowledged, but no less than the record put back says, is not reported `RolledBack` ([units.md](units.md), section 3.13). Which events are durable comes from the `outbox` records, not from `ack`. | Nothing |
-  | `retention` | The object's older state. A record of state 2 put back over one of state 1 lets the device drop an object the application asked to keep; the object was cached before, so another party served it or took it. A record of state 3 put back over one of state 1 or 2 keeps an object that a peer holds until the device uploads it again, and then makes it kept or cached as its key 3 says. A record of state 3 without key 3 put back over one with it forgets that the application asked to keep the object, which is cached once a peer holds it. No record of state 2 is older than one of state 3 for the same put, so none is put back over it. A record put back for an object dropped since has no part: state 1 or 3 fetches the object again, state 2 is deleted. A record deleted alone leaves its object kept. | Nothing |
+  | `retention` | The object's older state. A record of state 2 put back over one of state 1 lets the device drop an object the application asked to keep; the object was cached before, so another party served it or took it. A record of state 3 put back over one of state 1 or 2 keeps an object that a peer holds until that peer answers for it again, and then makes it kept or cached as its key 3 says. A record of state 3 without key 3 put back over one with it forgets that the application asked to keep the object, which is cached once a peer holds it. No record of state 2 is older than one of state 3 for the same put, so none is put back over it. A record put back for an object dropped since has no part: state 1 or 3 fetches the object again, state 2 is deleted. A record deleted alone leaves its object kept. | Nothing |
 
   Other rolled-back or deleted records lose data in the same way, never
   forge it.

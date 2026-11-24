@@ -215,9 +215,10 @@ D_HELD, D_MISSING = 1, 2
 # it caches within its budget, or one it put that no always-on peer is known
 # to hold (at-rest.md, "Retention").
 R_KEPT, R_CACHED, R_PUT = 1, 2, 3
-# How long a peer's answer that it holds an object counts, in seconds of the
-# device's timeline: under the least `orphan_grace` a peer may run with.
-PUT_ANSWER = 1800
+# How long a device waits, at upkeep, before it asks a peer again whether it
+# holds an object the device put, in seconds of the device's timeline by the
+# lower estimate.
+PUT_OFFER = 1800
 # The last read of a cached object is the timeline's T rounded down to this.
 READ_STEP = 3600
 BODY_DERIVED, BODY_HANDED = 1, 2
@@ -653,7 +654,8 @@ def retention_after(record: dict | None, parts: bool, change: str, now: int = 0,
     `record` is its value before or None, `parts` whether the device held
     parts of it before. `change` is "put", the device seals the object;
     "keep", the application asks to keep it; "held", an always-on peer
-    holds it and a unit that names it (`released`); "drop", the application
+    holds it and a unit that names it (`released`), or no unit names it any
+    more (`unnamed`); "drop", the application
     drops it, in a space with an always-on peer or, with `peer` false,
     without one. A drop that is refused raises NotAllowed. What is true of
     every object, such as that one in use is not dropped, is not here."""
@@ -676,16 +678,58 @@ def retention_after(record: dict | None, parts: bool, change: str, now: int = 0,
     raise ValueError(change)
 
 
-def released(answers: dict, acknowledged: dict, names: set, now: int) -> bool:
+def naming(units: dict, locator: bytes, replaced: set, released: set) -> set:
+    """The units that name an object for its release (at-rest.md, "Retention",
+    an object the device put), as a unit references it at a peer: those the
+    device's log holds that list `locator` and are neither replaced nor
+    released. `units` maps each unit of the log to the locators it lists,
+    `replaced` are the units in the cover of a snapshot unit the log holds,
+    and `released` those of released streams."""
+    return {unit for unit, listed in units.items()
+            if locator in listed and unit not in replaced and unit not in released}
+
+
+def released(asked: dict, acknowledged: dict, names: set) -> bool:
     """Whether an object of state 3 leaves it (at-rest.md, "Retention", an
     object the device put): some always-on peer answered that it holds the
-    object no more than PUT_ANSWER ago, and the heads that same peer last
-    acknowledged have a unit that names the object in their past. `answers`
-    maps a peer to the timeline's T of its latest answer, `acknowledged` a
-    peer to the events in the past of the heads it last acknowledged, and
-    `names` are the units that name the object."""
-    return any(now - at <= PUT_ANSWER and names & acknowledged.get(peer, set())
-               for peer, at in answers.items())
+    object whole, to a question put after the device took that same peer's
+    acknowledgement of heads that have a unit naming the object in their
+    past. `asked` maps each peer that so answered to the events in the past
+    of the heads it had acknowledged when the question was put, and
+    `acknowledged` each peer to the events in the past of the heads it last
+    acknowledged; `names` are the units that name the object (`naming`). No
+    age enters: an answer to a question put before the acknowledgement
+    releases nothing, however fresh."""
+    return any(names & before and names & acknowledged.get(peer, set())
+               for peer, before in asked.items())
+
+
+def offered(asked: dict | None, after: bool, now: int, connected: bool = False) -> bool:
+    """Whether a device asks an always-on peer now for an object of state 3
+    that no unit waiting for that peer's acknowledgement names (at-rest.md,
+    "Retention", an object the device put). `asked` is the device's latest
+    question to that peer on this connection, {"at": T, "after": whether the
+    peer had then acknowledged a unit naming the object}, or None; `after`
+    says whether it has acknowledged one now; `connected`, that the
+    connection was just granted the right to store. The wait counts by the
+    lower estimate, the difference of two readings of T."""
+    if connected or asked is None:
+        return True
+    return (after and not asked["after"]) or now - asked["at"] > PUT_OFFER
+
+
+def unnamed(units: dict, locators: set, replaced: set, partial: bool = False) -> bool:
+    """Whether a record of state 3 is replaced because no unit names its
+    object any more (at-rest.md, "Retention", a put object that no unit
+    names): no unit of the device's log lists one of the object's
+    `locators`, leaving out `replaced`, the units in the cover of a snapshot
+    unit the replica uses. A unit of a released stream, or in the cover of
+    a snapshot the replica does not use yet, still lists it; and a partial
+    replica replaces no record this way."""
+    if partial:
+        return False
+    return not any(locators & set(listed) for unit, listed in units.items()
+                   if unit not in replaced)
 
 
 def evictable(records: dict, own: set, pending: set, in_use: set) -> list:
@@ -1987,13 +2031,40 @@ def self_test() -> None:
             assert str(refused) == "NotAllowed"
         assert retention_after(record, True, "drop", peer=False) is None
     assert retention_after(kept_, True, "drop") is None
-    # Only the peer that holds the object releases it, while its answer counts.
+    # Only the peer that holds the object releases it, by an answer to a
+    # question put after it acknowledged a unit that names the object.
     unit, a_, b_ = b"u" * 32, b"a", b"b"
-    assert released({a_: 100}, {a_: {unit}}, {unit}, 100 + PUT_ANSWER)
-    assert not released({a_: 100}, {a_: {unit}}, {unit}, 101 + PUT_ANSWER)
-    assert not released({a_: 100}, {b_: {unit}}, {unit}, 100)
-    assert not released({a_: 100}, {a_: set()}, {unit}, 100)
-    assert not released({}, {a_: {unit}}, {unit}, 100)
+    assert released({a_: {unit}}, {a_: {unit}}, {unit})
+    assert not released({a_: set()}, {a_: {unit}}, {unit})
+    assert not released({a_: {unit}}, {b_: {unit}}, {unit})
+    assert not released({b_: {unit}}, {a_: {unit}}, {unit})
+    assert not released({a_: {unit}}, {a_: set()}, {unit})
+    assert not released({}, {a_: {unit}}, {unit})
+    # A unit names the object by its locator, while it stands.
+    here, there, old_, new_ = b"l" * 64, b"l" * 32 + b"m" * 32, b"v" * 32, b"w" * 32
+    listed = {old_: [here], new_: [here], unit: [there]}
+    assert naming(listed, here, set(), set()) == {old_, new_}
+    assert naming(listed, here, {old_}, set()) == {new_}
+    assert naming(listed, here, {old_}, {new_}) == set()
+    assert not released({a_: {old_}}, {a_: {old_}}, naming(listed, here, {old_}, set()))
+    assert released({a_: {old_, new_}}, {a_: {old_, new_}},
+                    naming(listed, here, {old_}, set()))
+    # Asked at a connection, once the peer acknowledged such a unit, and at
+    # upkeep once in PUT_OFFER.
+    assert offered(None, False, 0)
+    assert offered({"at": 0, "after": False}, True, 1)
+    assert not offered({"at": 0, "after": True}, True, PUT_OFFER)
+    assert offered({"at": 0, "after": True}, True, PUT_OFFER + 1)
+    assert not offered({"at": 0, "after": False}, False, PUT_OFFER)
+    assert offered({"at": 0, "after": False}, False, PUT_OFFER + 1)
+    assert offered({"at": 0, "after": True}, True, 1, connected=True)
+    # A put object that no unit names is put no longer.
+    assert not unnamed(listed, {here}, {old_})
+    assert unnamed(listed, {here}, {old_, new_})
+    assert not unnamed(listed, {here, there}, {old_, new_})
+    assert not unnamed(listed, {here}, {old_, new_}, partial=True)
+    assert unnamed({}, {here}, set())
+    assert retention_after({1: R_PUT}, True, "held", 7300) == {1: R_CACHED, 2: 7200}
     assert not item_ok(T_PSEUDONYM, slot_reference(bytes(32), MAX_SLOT_INDEX, bytes(32)))
     assert item_ok(T_PSEUDONYM, slot_reference(bytes(32), MAX_SLOT_INDEX - 1, bytes(32)))
     assert not item_ok(T_PSEUDONYM, cbor([bytes(32), 0]))
