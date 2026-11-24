@@ -43,6 +43,7 @@ use crate::retention::Want;
 use frasil_adapter::Locator;
 use frasil_adapter_blobs::Entry;
 use frasil_events::EventId;
+use frasil_keys::derive::Secret;
 use frasil_units::limits::CHUNK_BYTES;
 use frasil_units::objects::Opening;
 use std::collections::BTreeSet;
@@ -79,8 +80,9 @@ pub enum Verified {
 
 /// A reader over one blob, from [`Blobs::open_reader`]. Dropping it ends
 /// its fetches and frees what it holds; [`close`](Self::close) does the
-/// same and waits until the device has looked at its cache.
-#[derive(Debug)]
+/// same and waits until the device has looked at its cache. Formatted
+/// for a log, it shows neither bytes of the blob nor a reference's object
+/// key.
 pub struct BlobReader {
     blobs: Blobs,
     id: BlobId,
@@ -89,7 +91,8 @@ pub struct BlobReader {
     /// object: that one, and for a reference its source.
     space: EventId,
     holders: Vec<EventId>,
-    reference: Option<(EventId, [u8; 32])>,
+    /// For a reference, its source and the object's key.
+    reference: Option<(EventId, Secret)>,
     /// Whether the reader fetches nothing.
     local: bool,
     /// Whether the application holds the blob as a file.
@@ -113,6 +116,18 @@ pub struct BlobReader {
     failed: Option<&'static str>,
     /// Held while the reader lives, for the task that follows the object.
     alive: Arc<()>,
+}
+
+impl core::fmt::Debug for BlobReader {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BlobReader")
+            .field("id", &self.id)
+            .field("space", &self.space)
+            .field("position", &self.position)
+            .field("read_ahead", &self.read_ahead)
+            .field("size", &self.size())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Waits for a request's end.
@@ -183,11 +198,12 @@ impl Blobs {
         let reference = entry
             .reference
             .as_ref()
-            .map(|reference| (EventId(reference.source), reference.object_key));
+            .map(|reference| (EventId(reference.source), Secret::new(reference.object_key)));
         let mut holders = vec![space];
         holders.extend(
             reference
-                .map(|(source, _)| source)
+                .as_ref()
+                .map(|(source, _)| *source)
                 .filter(|source| *source != space),
         );
         // Used before the device is asked what it holds, so that what it
@@ -265,7 +281,7 @@ struct Following {
     space: EventId,
     locator: Locator,
     holders: Vec<EventId>,
-    reference: Option<(EventId, [u8; 32])>,
+    reference: Option<(EventId, Secret)>,
     window: Window,
     alive: Weak<()>,
 }
@@ -294,7 +310,7 @@ impl Following {
             }
             if whole && self.window.begin_verifying() {
                 let verified = engine
-                    .verify_whole(&self.space, &self.locator, self.reference)
+                    .verify_whole(&self.space, &self.locator, key_of(&self.reference))
                     .await;
                 self.window.end_verifying();
                 match verified {
@@ -309,6 +325,12 @@ impl Following {
             }
         }
     }
+}
+
+/// A reference's source and object key, for a call that takes them by
+/// value.
+fn key_of(reference: &Option<(EventId, Secret)>) -> Option<(EventId, [u8; 32])> {
+    reference.as_ref().map(|(source, key)| (*source, **key))
 }
 
 /// Tells the application that a blob was refused while it was read.
@@ -333,7 +355,7 @@ impl BlobReader {
             space: self.space,
             locator: self.entry.object,
             holders: self.holders.clone(),
-            reference: self.reference,
+            reference: self.reference.clone(),
             window: engine.open_window(self.space, self.entry.object, false),
             alive: Arc::downgrade(&self.alive),
         };
@@ -592,7 +614,7 @@ impl BlobReader {
                 header = header.or(holding.header);
             }
             if let Some(header) = header.or_else(|| self.window.header()) {
-                let parts = match self.reference {
+                let parts = match &self.reference {
                     None => {
                         let key = engine.content_key_for(&self.space, &header).await;
                         PartReader::new(
@@ -603,7 +625,7 @@ impl BlobReader {
                         )
                     }
                     Some((source, key)) => {
-                        PartReader::new(&header, &source, Opening::ObjectKey(&key), &locator)
+                        PartReader::new(&header, source, Opening::ObjectKey(key), &locator)
                     }
                 }?;
                 self.parts = Some(parts);
@@ -788,7 +810,7 @@ impl BlobReader {
             .plain(
                 &self.space,
                 &self.entry.object,
-                self.reference,
+                key_of(&self.reference),
                 index..index.saturating_add(1),
             )
             .await?;

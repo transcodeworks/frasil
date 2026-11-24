@@ -87,6 +87,82 @@ async fn absent() -> Absent {
     absent_with(Options::new(), bytes()).await
 }
 
+/// A reference in one space to an object another space sealed, absent
+/// here, with the object key its entry carries: the space the reader
+/// fetches in holds no key of the state the object's header names, so
+/// nothing of it opens as it arrives.
+async fn referenced() -> (Absent, [u8; 32]) {
+    use frasil_adapter_blobs::{Entry, Reference};
+    use frasil_units::objects::ObjectKeys;
+    let device = Device::open(Storage::Memory, &[1; 32]).await.unwrap();
+    let engine = device.engine().clone();
+    let source = device.create_space().await.unwrap().id().event();
+    let space = device.create_space().await.unwrap();
+    let of = space.id().event();
+    let blobs = space.create_blobs().unwrap();
+    let bytes = bytes();
+    let (locator, reference, parts) = engine.seal_parts(source, &bytes).await.unwrap();
+    let key = {
+        let state = engine.lock().await;
+        engine.sealing(&state, &source).unwrap().1
+    };
+    let id: [u8; 32] = locator[..32].try_into().unwrap();
+    let object_key = *ObjectKeys::of(&key).object_key(&id);
+    let handle = [4; 16];
+    engine
+        .put_entry(
+            of,
+            blobs.opening(),
+            handle,
+            Entry {
+                object: locator,
+                key: reference,
+                size: bytes.len() as u64,
+                media_type: None,
+                name: None,
+                reference: Some(Reference {
+                    source: source.0,
+                    object_key,
+                }),
+            },
+        )
+        .await
+        .unwrap();
+    let heads: Vec<_> = engine.outbox(&of).await.into_iter().collect();
+    engine
+        .acknowledge(of, Acknowledger::Member([8; 32]), &heads)
+        .await
+        .unwrap();
+    let header = parts[0].header.clone();
+    let parts = parts
+        .into_iter()
+        .map(|part| ObjectPart {
+            header: header.clone(),
+            ..part
+        })
+        .collect();
+    let taker = engine.fetches().attach(of);
+    let absent = Absent {
+        device,
+        engine,
+        space,
+        of,
+        blobs,
+        id: BlobId::from_bytes(handle),
+        locator,
+        bytes,
+        parts,
+        _taker: taker,
+    };
+    (absent, object_key)
+}
+
+/// A run of bytes as `Debug` lists them, without the brackets.
+fn listed(bytes: &[u8]) -> String {
+    let shown = format!("{bytes:?}");
+    shown[1..shown.len() - 1].to_owned()
+}
+
 impl Absent {
     /// The chunks asked for now, with their priorities, in order.
     fn asked(&self) -> Vec<(u64, FetchPriority)> {
@@ -819,4 +895,21 @@ async fn a_local_reader_reads_what_is_held_and_fetches_nothing() {
     assert_eq!(failed.class_name(), Some("Missing"));
     assert!(absent.asked().is_empty());
     let _ = absent.space;
+}
+
+/// A reader formatted for a log shows neither the plaintext it holds nor
+/// the object key of a reference.
+#[tokio::test]
+async fn a_formatted_reader_shows_neither_plaintext_nor_key() {
+    let (absent, object_key) = referenced().await;
+    let mut reader = absent
+        .blobs
+        .open_reader(absent.id, &Read::new().uncached())
+        .await
+        .unwrap();
+    let piece = absent.read(&mut reader, 0, 64).await;
+    assert_eq!(piece, absent.bytes[..64]);
+    let shown = format!("{reader:?}");
+    assert!(!shown.contains(&listed(&piece[..16])), "{shown}");
+    assert!(!shown.contains(&listed(&object_key[..8])), "{shown}");
 }
