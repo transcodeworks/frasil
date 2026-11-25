@@ -446,6 +446,11 @@ reader.close().await?;
   cancels what the reader asked for before, so that nothing it left behind
   is fetched ahead of the chunk it waits for. A reader that is dropped or
   closed cancels all of it.
+- A read is given up by dropping its future, which leaves what it asked
+  for standing, so that the same read made again costs nothing. `cancel()`
+  lets go of everything the reader asked for, before the header is known
+  as after it, and leaves the reader as it was: call it for a read that
+  will not be made again, and read on whenever.
 - `size()` is the size the blob's header gives. The header's own checks
   bind only its object ID to the blob; its size is bound by each chunk, so
   `size()` is `None`, and no read answers the end of the blob, until a
