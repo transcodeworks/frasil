@@ -10,6 +10,9 @@
 // `/media-sw.js` is the package's service worker (`dist/media-sw.js`), at the root so that its scope
 // covers the runner page.
 //
+// `/composed-sw.js` is a service worker of the tests' own that calls the package's handler beside
+// its own (`test/binding/composed-sw.js`), at the root for the same reason.
+//
 // `/wrong-mime/dist/…` serves the same files with `.wasm` as `application/octet-stream`, as a server
 // that does not know the type does, to test that the package falls back from streaming.
 //
@@ -227,7 +230,9 @@ const server = createServer(async (incoming, outgoing) => {
     ? url.pathname.slice("/wrong-mime".length)
     : url.pathname === "/media-sw.js"
       ? "/dist/media-sw.js"
-      : url.pathname;
+      : url.pathname === "/composed-sw.js"
+        ? "/test/binding/composed-sw.js"
+        : url.pathname;
   const served = path.startsWith("/dist/") || path.startsWith("/test/binding/");
   const file = normalize(join(packageDir, decodeURIComponent(path)));
   if (!served || !file.startsWith(packageDir)) {

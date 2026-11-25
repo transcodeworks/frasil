@@ -224,8 +224,9 @@ is the guide; this is what is particular to a browser.
   so the binding lends it to the call in flight and the TypeScript layer
   queues the calls. A call given up, by an `AbortSignal` or by cancelling
   `reader.stream()`, drops its future inside the module and then lets go of
-  what the reader had asked of the space's connections, so nothing is
-  fetched for a read nobody waits for.
+  what the reader had asked of the space's connections
+  (`BlobReader::cancel`), before the blob's header is known as after it, so
+  nothing is fetched for a read nobody waits for.
 - **Reading a large blob without downloading it.** A reader fetches the
   chunks it reads. With `{ uncached: true }`, and for a blob larger than the
   cache's budget, they stay in WebAssembly memory, `read_ahead + 1` sealed
@@ -234,8 +235,9 @@ is the guide; this is what is particular to a browser.
   `{ blobCache }` at `Device.open`, 256 MiB unless given. Over the
   package's `IndexedDbStore` the TypeScript layer lowers it, at each open,
   to half of what `navigator.storage.estimate()` says the origin may still
-  store (its quota less its usage, plus what the cache holds already), and
-  leaves it as given where the browser gives no estimate or one with no
+  store (its quota less its usage, plus what the cache holds already, and
+  nothing when the origin is over its quota by more than the cache holds),
+  and leaves it as given where the browser gives no estimate or one with no
   quota. Half leaves room for kept blobs, documents and the origin's other
   storage, which the same quota covers.
 - **A write the browser refuses.** IndexedDB aborts a transaction past the
@@ -244,10 +246,14 @@ is the guide; this is what is particular to a browser.
   gives the client `StoreError::full`, as `frasil`'s own
   `browser::IndexedDbStore` does. For the chunks a read fetched, the client
   then drops cached blobs, the one read longest ago first, until as many
-  bytes went as the chunks take, and commits again; refused again, the
+  bytes went as the chunks take, and commits again, once; refused again, the
   blob's open readers take the chunks into their own memory and the read
-  goes on as an `uncached` one. An application's own store says the same
-  by rejecting with an error named `QuotaExceededError`.
+  goes on as an `uncached` one. With no reader open, as under `keep`, the
+  chunk is refused and the download fails; a `put` and every other write
+  fail with the store's error, and evict nothing
+  ([reading-and-caching.md](reading-and-caching.md), "What a device keeps
+  of its blobs"). An application's own store says the same by rejecting
+  with an error named `QuotaExceededError`.
 - **Media elements.** A `<video>` or `<audio>` element reads from a URL,
   and the client cannot run in a service worker, since a service worker is
   stopped between events and holds no device. `@frasil/client/media` mints
@@ -255,11 +261,31 @@ is the guide; this is what is particular to a browser.
   forwards each request, with its `Range`, over a `MessagePort` to the page
   or worker that runs the client, which reads the range through a reader
   and gives the bytes back a piece at a time, as the element takes them.
-  The service worker keeps only each page's port, by the page's client ID,
-  and asks the page for it again when it has none, as after a restart. It
+  The service worker keeps only each page's ports, by the page's client ID,
+  one for each `MediaServer` the page connected, and asks the page for them
+  again when it has none, as after a restart. A URL begins with the name of
+  the server that minted it, which is how the worker finds its port. It
   answers `206` with `Content-Range`, `Accept-Ranges` and `Content-Length`
   for one range, `200` for none or several, `416` for one past the end,
   and a `HEAD` with no body.
+- **A URL is never a document.** The worker answers `404` to a navigation
+  and to a request whose destination is a document, a frame, an `<object>`
+  or an `<embed>`. Every answer carries `X-Content-Type-Options: nosniff`,
+  `Content-Security-Policy: sandbox; default-src 'none'`,
+  `Cross-Origin-Resource-Policy: same-origin` and `Cache-Control: no-store`.
+  The media type told is the application's when it is `audio/…`, `video/…`,
+  `image/…` other than SVG, `application/ogg` or
+  `application/octet-stream`, and `application/octet-stream` otherwise: an
+  application must still not pass a type from untrusted metadata, since the
+  URL is on its own origin.
+- **The service worker's script.** Service workers need a secure context.
+  `media-sw.js` calls `skipWaiting()` and `clients.claim()`, so registering
+  it at a scope that already has a service worker replaces that worker at
+  once; an origin with a worker of its own calls `handleMedia` from it
+  instead, first in its `fetch` and `message` listeners, with the same
+  prefix as the page, which ends with a slash and is given one if it does
+  not. `MediaServer.connect` rejects with `timeout` when no service worker
+  has taken the page's port within ten seconds.
 
 ```ts
 import { MediaServer } from "@frasil/client/media";

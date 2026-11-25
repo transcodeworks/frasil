@@ -18,7 +18,8 @@
  * ```
  *
  * The service worker must control the page: its script is served from the page's directory or
- * one above it, or with a `Service-Worker-Allowed` header that names such a scope.
+ * one above it, or with a `Service-Worker-Allowed` header that names such a scope. Service
+ * workers need a secure context: `https:`, or `http://localhost` while developing.
  *
  * This module loads no WebAssembly: it uses the `Blobs` it is given.
  *
@@ -26,7 +27,7 @@
  */
 
 import { FrasilError } from "./errors.js";
-import { MEDIA_PREFIX } from "./media-worker.js";
+import { MEDIA_PREFIX, mediaPrefix, mediaType, SERVER_NAME_LENGTH } from "./media-worker.js";
 import type { BlobReader, ReaderOptions } from "./reader.js";
 import type { BlobId, Blobs } from "./streams.js";
 
@@ -36,7 +37,14 @@ export { handleMedia, MEDIA_PREFIX } from "./media-worker.js";
 export interface MediaOptions extends ReaderOptions {
   /**
    * The media type the element is told, such as `video/mp4`: `application/octet-stream` unless
-   * given. An element may refuse a file whose type it is not told.
+   * given. An element may refuse a file whose type it is not told. Only `audio/…`, `video/…`,
+   * `image/…` other than SVG, `application/ogg` and `application/octet-stream` are told as
+   * given; any other type is told as `application/octet-stream`.
+   *
+   * Never take it from what another member wrote, such as a blob's `mediaType`, without
+   * checking it against the types the application plays: the URL is on the page's own origin,
+   * and the list above is all that stands between a member's bytes and a type the browser
+   * would run there.
    */
   readonly type?: string;
 }
@@ -50,22 +58,42 @@ export interface MediaConnection {
   readonly serviceWorker?: string | URL;
   /** The scope to register it with: the script's directory unless given. */
   readonly scope?: string;
+  /**
+   * How long connecting may take, in milliseconds: 10,000 unless given. It rejects with
+   * `timeout` when no service worker has taken the page's port by then.
+   */
+  readonly timeout?: number;
 }
 
 /** What a server is made with. */
 export interface MediaServerOptions {
   /**
    * The path its URLs are minted under: `/frasil-media/` unless given. The service worker's
-   * `handleMedia` must be given the same.
+   * `handleMedia` must be given the same. It ends with a slash, and is given one if it does not.
    */
   readonly prefix?: string;
+  /**
+   * How long a request's reader stays open with nothing asked of it, in milliseconds: 30,000
+   * unless given. The reader is opened again when the element reads on.
+   */
+  readonly idle?: number;
 }
 
 /** How many bytes the page reads for each piece the service worker asks for. */
 const PIECE = 262_144;
 
-/** How long a reader stays open with nothing asked of it, in milliseconds. */
+/** How long a reader stays open with nothing asked of it, in milliseconds, unless given. */
 const IDLE = 30_000;
+
+/** How long connecting may take, in milliseconds, unless given. */
+const CONNECT_WAIT = 10_000;
+
+/** `bytes` random bytes in hex. */
+function random(bytes: number): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
 
 /** What the service worker asks. */
 type Ask =
@@ -79,6 +107,8 @@ interface Served {
   readonly id: BlobId;
   readonly type: string;
   readonly read: ReaderOptions;
+  /** The blob's size, once a request's reader has opened a chunk under its header. */
+  size: number | undefined;
   /** The requests under way for it. */
   readonly requests: Set<Serving>;
 }
@@ -124,10 +154,17 @@ function rangeOf(header: string | null, size: number): [number, number] | "none"
  * A URL is an unguessable path of this origin. Only the service worker answers it, only for a
  * request of the page that connected this server, and only until it is revoked: another origin's
  * page is not controlled by the service worker, and another page of this origin is asked for its
- * own port, which does not know the URL.
+ * own ports, which do not know the URL.
+ *
+ * A page may connect several servers: each has a port of its own at the service worker, and a
+ * URL's path begins with the name of the server that minted it, which is how the worker finds
+ * the port to ask.
  */
 export class MediaServer {
   readonly #prefix: string;
+  /** What its URLs' last segments begin with: how the service worker tells its port. */
+  readonly #name = random(SERVER_NAME_LENGTH / 2);
+  readonly #idleAfter: number;
   readonly #served = new Map<string, Served>();
   readonly #serving = new Map<number, Serving>();
   #port: MessagePort | undefined;
@@ -135,19 +172,29 @@ export class MediaServer {
   #closed = false;
 
   constructor(options: MediaServerOptions = {}) {
-    this.#prefix = options.prefix ?? MEDIA_PREFIX;
+    this.#prefix = mediaPrefix(options.prefix ?? MEDIA_PREFIX);
+    this.#idleAfter = options.idle ?? IDLE;
   }
 
   /**
    * A server in a page, connected to the service worker that controls the page; with
-   * `serviceWorker`, that script is registered first. Resolves once a service worker controls
-   * the page, which a page loaded with a forced reload never is.
+   * `serviceWorker`, that script is registered first. Resolves once the service worker that
+   * controls the page has taken the server's port.
    *
-   * Rejects with `unsupported` where there are no service workers, as in a worker.
+   * Rejects with `unsupported` where there are no service workers, as in a worker or outside a
+   * secure context, and with `timeout` when no service worker takes the port in time
+   * ({@link MediaConnection.timeout}): none controls the page, as when its script is served
+   * from outside the page's directory or the page was loaded with a forced reload, or the one
+   * that does is not the media worker and does not call `handleMedia`.
    */
   static async connect(options: MediaConnection & MediaServerOptions = {}): Promise<MediaServer> {
     const server = new MediaServer(options);
-    server.#disconnect = await connectMediaPort((port) => server.attach(port), options);
+    try {
+      server.#disconnect = await connectMediaPort((port) => server.attach(port), options);
+    } catch (error) {
+      server.close();
+      throw error;
+    }
     return server;
   }
 
@@ -165,6 +212,8 @@ export class MediaServer {
     port.onmessage = (event: MessageEvent<Ask>) => {
       void this.#asked(port, event.data);
     };
+    // The service worker sends this port the requests for the URLs that begin with the name.
+    port.postMessage({ t: "serve", server: this.#name });
   }
 
   /**
@@ -173,11 +222,16 @@ export class MediaServer {
    */
   url(blobs: Blobs, id: BlobId, options: MediaOptions = {}): string {
     if (this.#closed) throw new FrasilError("disposed", "This MediaServer was closed.");
-    const { type = "application/octet-stream", ...read } = options;
-    const token = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
-      byte.toString(16).padStart(2, "0"),
-    ).join("");
-    this.#served.set(token, { blobs, id, type, read, requests: new Set() });
+    const { type, ...read } = options;
+    const token = this.#name + random(16);
+    this.#served.set(token, {
+      blobs,
+      id,
+      type: mediaType(type),
+      read,
+      size: undefined,
+      requests: new Set(),
+    });
     return new URL(this.#prefix + token, globalThis.location.origin).href;
   }
 
@@ -270,12 +324,7 @@ export class MediaServer {
 
   async #open(port: MessagePort, ask: Ask & { t: "open" }): Promise<void> {
     const head = (status: number, headers: [string, string][] = []): void =>
-      port.postMessage({
-        t: "head",
-        id: ask.id,
-        status,
-        headers: [["cache-control", "no-store"], ...headers],
-      });
+      port.postMessage({ t: "head", id: ask.id, status, headers });
     const served = this.#served.get(ask.token);
     if (served === undefined) {
       head(404);
@@ -292,19 +341,30 @@ export class MediaServer {
     };
     this.#serving.set(ask.id, serving);
     served.requests.add(serving);
-    const reader = await served.blobs.openReader(served.id, served.read);
-    if (this.#serving.get(ask.id) !== serving) {
-      // Given up while the reader opened.
-      await reader.close();
-      return;
+    // The size is the blob's, whichever request learnt it: a later one fetches no chunk for it,
+    // and opens its reader when the element reads.
+    let size = served.size;
+    if (size === undefined) {
+      const reader = await served.blobs.openReader(served.id, served.read);
+      if (this.#serving.get(ask.id) !== serving) {
+        // Given up while the reader opened, as when the URL was revoked: the request is
+        // answered all the same, so that it ends at the service worker.
+        head(404);
+        await reader.close();
+        return;
+      }
+      serving.reader = reader;
+      size = await reader.fetchSize({ signal: serving.abort.signal });
+      if (this.#serving.get(ask.id) !== serving) {
+        head(404);
+        return;
+      }
+      served.size = size;
     }
-    serving.reader = reader;
-    const size = await reader.fetchSize({ signal: serving.abort.signal });
     const range = rangeOf(ask.range, size);
     const about: [string, string][] = [
       ["content-type", served.type],
       ["accept-ranges", "bytes"],
-      ["cross-origin-resource-policy", "same-origin"],
     ];
     if (range === "none") {
       this.#end(serving);
@@ -337,6 +397,8 @@ export class MediaServer {
     if (serving.reader === undefined) {
       const reader = await served.blobs.openReader(served.id, served.read);
       if (this.#serving.get(id) !== serving) {
+        // Given up while the reader opened: answered all the same, so that the request ends.
+        port.postMessage({ t: "error", id });
         await reader.close();
         return;
       }
@@ -349,7 +411,10 @@ export class MediaServer {
     );
     if (piece.length === 0) throw new FrasilError("missing", "the blob ended before its size");
     serving.position += piece.length;
-    if (this.#serving.get(id) !== serving) return;
+    if (this.#serving.get(id) !== serving) {
+      port.postMessage({ t: "error", id });
+      return;
+    }
     this.#idle(serving);
     const data = piece.buffer as ArrayBuffer;
     port.postMessage({ t: "chunk", id, data }, [data]);
@@ -358,7 +423,7 @@ export class MediaServer {
   /** Closes a request's reader once nothing was asked of it for a while. */
   #idle(serving: Serving): void {
     clearTimeout(serving.idle);
-    serving.idle = setTimeout(() => this.#rest(serving), IDLE);
+    serving.idle = setTimeout(() => this.#rest(serving), this.#idleAfter);
   }
 }
 
@@ -366,8 +431,12 @@ export class MediaServer {
  * Connects a page to the service worker that controls it, for a {@link MediaServer} that lives
  * in a worker: `onPort` is called with a port to the service worker, once it answers and again
  * each time it asks for one, as it does after the browser stopped and started it. Hand each
- * port to the worker, which gives it to {@link MediaServer.attach}. Resolves to the function
- * that stops it.
+ * port to the worker, which gives it to {@link MediaServer.attach}. Resolves, once the service
+ * worker has taken the first port, to the function that stops it; rejects with `timeout` when
+ * none takes it in time ({@link MediaConnection.timeout}).
+ *
+ * It may be called more than once in a page, once for each server: each call brings a port of
+ * its own.
  *
  * ```ts
  * // the page
@@ -392,40 +461,89 @@ export async function connectMediaPort(
       { whatToDo: "call connectMediaPort in the page, and hand its ports to the worker" },
     );
   }
-  if (options.serviceWorker !== undefined) {
-    await workers.register(
-      options.serviceWorker,
-      options.scope === undefined ? undefined : { scope: options.scope },
-    );
-  }
-  if (workers.controller === null) {
-    await new Promise<void>((resolve) => {
-      workers.addEventListener("controllerchange", () => resolve(), { once: true });
-    });
-  }
+  const limit = options.timeout ?? CONNECT_WAIT;
   // The start of the service worker that has this page's port. The worker asks for a port
   // under the name of its start: once when the page says hello, and again whenever a request
   // finds it with none, as after the browser stopped and started it. One port goes to each
   // start, so a port on its way is not replaced under the requests that use it.
   let connected: unknown;
+  /** The ports sent that the worker has not said it took. */
+  const sent = new Set<string>();
+  let taken: () => void = () => {};
+  const took = new Promise<void>((resolve) => {
+    taken = resolve;
+  });
   const hello = (): void => workers.controller?.postMessage({ frasilMedia: "hello" });
   const asked = (event: MessageEvent): void => {
-    const data = event.data as { frasilMedia?: unknown; instance?: unknown } | null;
+    const data = event.data as { frasilMedia?: unknown; instance?: unknown; n?: unknown } | null;
+    if (data?.frasilMedia === "taken") {
+      if (typeof data.n === "string" && sent.delete(data.n)) taken();
+      return;
+    }
     const controller = workers.controller;
     if (data?.frasilMedia !== "connect" || data.instance === connected || controller === null) {
       return;
     }
     connected = data.instance;
     const { port1, port2 } = new MessageChannel();
-    controller.postMessage({ frasilMedia: "port" }, [port1]);
+    const n = random(8);
+    sent.add(n);
+    controller.postMessage({ frasilMedia: "port", n }, [port1]);
     onPort(port2);
   };
-  workers.addEventListener("message", asked);
-  workers.addEventListener("controllerchange", hello);
-  workers.startMessages();
-  hello();
-  return () => {
+  const stop = (): void => {
     workers.removeEventListener("message", asked);
     workers.removeEventListener("controllerchange", hello);
   };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const none = workers.controller === null;
+      reject(
+        new FrasilError(
+          "timeout",
+          none
+            ? `No service worker came to control this page within ${limit} ms.`
+            : `The service worker that controls this page did not take its media port within ${limit} ms.`,
+          {
+            whatToDo: none
+              ? "serve the service worker's script from the page's directory or one above it, or with a Service-Worker-Allowed header and that scope; load the page without a forced reload; use https or localhost"
+              : "register the media service worker at a scope that covers the page, or call handleMedia in the service worker that controls it, with the same prefix",
+          },
+        ),
+      );
+    }, limit);
+  });
+  try {
+    if (options.serviceWorker !== undefined) {
+      await Promise.race([
+        workers.register(
+          options.serviceWorker,
+          options.scope === undefined ? undefined : { scope: options.scope },
+        ),
+        expired,
+      ]);
+    }
+    if (workers.controller === null) {
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          workers.addEventListener("controllerchange", () => resolve(), { once: true });
+        }),
+        expired,
+      ]);
+    }
+    workers.addEventListener("message", asked);
+    workers.addEventListener("controllerchange", hello);
+    workers.startMessages();
+    hello();
+    await Promise.race([took, expired]);
+  } catch (error) {
+    stop();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    // Not waited for by anything once the timer is cleared.
+    expired.catch(() => {});
+  }
+  return stop;
 }
