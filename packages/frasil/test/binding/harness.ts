@@ -196,6 +196,8 @@ export interface ReadsWindow {
   media: typeof import("../../src/media.js");
   agent: Agent & {
     device: Device;
+    /** The unlock key of the device `createWith` opened. */
+    unlockKey: Uint8Array;
     createWith(name: string, options?: Options, store?: Store): Promise<string>;
     absent(space: string, data: Uint8Array): Promise<{ blobs: Blobs; blob: string }>;
   };

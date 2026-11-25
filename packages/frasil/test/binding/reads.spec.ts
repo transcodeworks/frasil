@@ -198,6 +198,31 @@ test("a cancelled stream and an aborted read leave the reader readable and the b
     const size = 5 * 1_048_536;
     const data = helpers.pattern(size);
     const { blobs, blob } = await agent.absent(space, data);
+    // Given up before the blob's header is known: a size and a first read, each aborted once
+    // its call runs in the module and has asked for the first chunk, which the peer has not
+    // sent yet. This reader leaves what it fetches in the cache, so a request that stayed out
+    // would store its chunk.
+    const early = await blobs.openReader(blob, { readAhead: 0 });
+    const earlier: string[] = [];
+    for (const call of [
+      (signal: AbortSignal) => early.fetchSize({ signal }),
+      (signal: AbortSignal) => early.read(0, 10, { signal }),
+    ]) {
+      const abort = new AbortController();
+      const calling = call(abort.signal);
+      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+      abort.abort();
+      earlier.push(
+        await calling.then(
+          () => "resolved",
+          (error: { name: string }) => error.name,
+        ),
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const untouched = await blobs.local(blob);
+    const earlyReader = { size: early.size, local: [untouched.state, untouched.bytes] };
+    await early.close();
     const reader = await blobs.openReader(blob, { uncached: true, readAhead: 2 });
     // Cancelled while its first read waits for a chunk from the peer.
     const first = reader.stream(3 * 1_048_536).getReader();
@@ -235,6 +260,8 @@ test("a cancelled stream and an aborted read leave the reader readable and the b
     await blobs.dropLocal(blob);
     const local = await blobs.local(blob);
     return {
+      earlier,
+      early: earlyReader,
       cancelledRead,
       piece: piece?.length === 262_144 && piece.every((byte, index) => byte === data[index]),
       aborted,
@@ -248,6 +275,8 @@ test("a cancelled stream and an aborted read leave the reader readable and the b
   }, space);
   const byte = (index: number) => (index * 31 + 7) & 0xff;
   expect(seen).toEqual({
+    earlier: ["AbortError", "AbortError"],
+    early: { size: undefined, local: ["absent", 0] },
     cancelledRead: true,
     piece: true,
     aborted: "AbortError",
@@ -405,6 +434,38 @@ test("the budget is lowered to half of what the browser says the origin may stil
     64 * MIB,
     standard,
   ]);
+  expect(errors).toEqual([]);
+  await page.context().close();
+});
+
+test("an origin over its quota has its cache capped by what the cache could give back", async ({
+  browser,
+}) => {
+  const name = uniqueName("over");
+  const { page, errors } = await devicePage(browser);
+  const seen = await page.evaluate(async (name) => {
+    const { agent, frasil, helpers } = window as unknown as ReadsWindow;
+    const space = await agent.createWith(name);
+    const { blobs, blob } = await agent.absent(space, helpers.pattern(2 * 1_048_536));
+    await blobs.get(blob);
+    const cached = (await agent.device.blobCacheUsage()).cached;
+    await agent.device.close();
+    const budgets: number[] = [];
+    // Over the quota by half of what the cache holds, and by twice as much.
+    for (const over of [Math.floor(cached / 2), 2 * cached]) {
+      Object.defineProperty(StorageManager.prototype, "estimate", {
+        value: async () => ({ quota: 64 * 1024 * 1024, usage: 64 * 1024 * 1024 + over }),
+        configurable: true,
+      });
+      const device = await frasil.Device.open(frasil.Storage.indexedDb(name), agent.unlockKey);
+      budgets.push((await device.blobCacheUsage()).budget);
+      await device.close();
+    }
+    return { cached, budgets };
+  }, name);
+  expect(seen.cached).toBeGreaterThan(2 * MIB);
+  // Half of what is left once the cache gave the excess back; nothing when it cannot.
+  expect(seen.budgets).toEqual([Math.floor((seen.cached - Math.floor(seen.cached / 2)) / 2), 0]);
   expect(errors).toEqual([]);
   await page.context().close();
 });

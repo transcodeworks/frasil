@@ -77,7 +77,8 @@ export interface Options {
    *
    * Over an {@link IndexedDbStore} the budget is lowered to half of what the browser says the
    * origin may still store (`navigator.storage.estimate()`: its quota less its usage, plus what
-   * the cache holds already), where the browser says so. {@link Device.blobCacheUsage} gives
+   * the cache holds already, and nothing when the origin is over its quota by more than that),
+   * where the browser says so. {@link Device.blobCacheUsage} gives
    * the budget in force.
    */
   readonly blobCache?: number;
@@ -106,8 +107,10 @@ const QUOTA_SHARE = 0.5;
 
 /**
  * Lowers a device's blob cache budget to {@link QUOTA_SHARE} of what the browser says the origin
- * may still store, counting what the cache holds already as room. Nothing changes where the
- * browser gives no estimate, or one with no quota, or for a device that keeps every blob.
+ * may still store, counting what the cache holds already as room: of its quota, less its usage,
+ * plus the cached bytes, and of nothing when that is below zero, as for an origin further over
+ * its quota than its cache is large. Nothing changes where the browser gives no estimate, or one
+ * with no quota, or for a device that keeps every blob.
  */
 async function withinQuota(device: raw.Device, options: Options): Promise<void> {
   if (options.keepAllBlobs) return;
@@ -120,7 +123,8 @@ async function withinQuota(device: raw.Device, options: Options): Promise<void> 
   const quota = estimate?.quota;
   if (quota === undefined || !Number.isFinite(quota) || quota <= 0) return;
   const usage = await callAsync(() => device.blobCacheUsage() as Promise<BlobCacheUsage>);
-  const room = Math.max(0, quota - (estimate?.usage ?? 0)) + usage.cached;
+  // An origin over its quota has that much less than nothing left: the cache gives it back.
+  const room = Math.max(0, quota - (estimate?.usage ?? 0) + usage.cached);
   const cap = Math.floor(room * QUOTA_SHARE);
   if (cap < usage.budget) call(() => device.setBlobCache(cap));
 }
