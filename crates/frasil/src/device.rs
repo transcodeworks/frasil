@@ -3490,21 +3490,38 @@ impl Engine {
             .collect()
     }
 
-    /// The current state's content key of up to `limit` spaces, for local
-    /// announcements (transport.md, "Member announcements").
+    /// The spaces this device announces in one interval on a local network,
+    /// each with its current state's content key (transport.md, "Member
+    /// announcements"): the next four after `last`, the last space it
+    /// announced, of the spaces it may announce, in turn. It announces no
+    /// restricted space, and none it has left or forked in.
     #[cfg_attr(not(feature = "iroh"), allow(dead_code))]
-    pub(crate) async fn announced_states(&self, limit: usize) -> Vec<(EventId, [u8; 32])> {
+    pub(crate) async fn announced_states(
+        &self,
+        last: Option<&EventId>,
+    ) -> Vec<(EventId, [u8; 32])> {
+        let me = self.device_id();
         let state = self.lock().await;
-        state
+        let keys: BTreeMap<EventId, [u8; 32]> = state
             .replicas
             .values()
             .filter(|replica| Self::announces(replica))
+            .filter(|replica| {
+                !matches!(
+                    Self::standing_in(&state, replica, &me),
+                    Standing::Ended(_) | Standing::Forked
+                )
+            })
             .filter_map(|replica| {
                 let current = replica.current()?;
                 let (key, _) = replica.state_key(current)?;
                 Some((replica.space(), *key))
             })
-            .take(limit)
+            .collect();
+        let spaces: Vec<EventId> = keys.keys().copied().collect();
+        frasil_transport::lan::next_spaces(&spaces, last)
+            .into_iter()
+            .filter_map(|space| Some((space, *keys.get(&space)?)))
             .collect()
     }
 

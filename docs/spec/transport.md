@@ -1202,11 +1202,16 @@ the networks its member endpoint binds on and register with the same
 relays, so that it reaches a host that only a relay reaches.
 
 **Member announcements.** A device that has a space open, with local
-discovery switched on, sends section 2.9's member announcement every 2
-seconds, with up to 0.5 seconds of random jitter, under its current state
-of that space. It announces at most 4 spaces, one packet each, and never a
-restricted space ([ext-restricted-spaces.md](ext-restricted-spaces.md)).
-A listener:
+discovery switched on, sends section 2.9's member announcement for it
+under its current state of that space. Every 2 seconds, with up to 0.5
+seconds of random jitter, it announces at most 4 spaces, one packet each,
+and takes its spaces in turn: a device with N spaces to announce announces
+each of them once every ceil(N / 4) intervals. It never announces a
+restricted space ([ext-restricted-spaces.md](ext-restricted-spaces.md)),
+nor a space it is out of in its own view. A member connection an announcement
+starts attaches every space its two devices share (section 3.6), so a
+space waits for its turn only when no other space the two share has been
+announced. A listener:
 
 ```text
 for each packet, in order:

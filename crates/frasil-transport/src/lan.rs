@@ -44,7 +44,7 @@ pub const PACKET_BYTES: usize = 1 + 24 + PLAINTEXT_BYTES + 16;
 /// A listener tries its current state of each space and up to this many
 /// before it.
 pub const OLDER_STATES: usize = 3;
-/// The most spaces a device announces.
+/// The most spaces a device announces in one interval.
 pub const MAX_SPACES: usize = 4;
 /// Seconds between a device's announcements of a space.
 pub const INTERVAL_SECONDS: u64 = 2;
@@ -67,6 +67,24 @@ pub const PAIRING_GAP_SECONDS: u64 = 3;
 pub const NAME_CHARACTERS: usize = 48;
 /// The nearby name when nothing is left of the application's.
 pub const NAME_FALLBACK: &str = "Nearby device";
+
+/// The spaces a device announces in one interval (section 3.16, "Member
+/// announcements"): of `spaces`, those it may announce in ascending order,
+/// the next [`MAX_SPACES`] after `last`, the last one it announced, going
+/// round to the first, and each at most once. A device with N such spaces
+/// so announces each of them once every ceil(N / 4) intervals, and a space
+/// that joins or leaves the set between two intervals costs no other space
+/// its turn.
+pub fn next_spaces<T: Ord + Clone>(spaces: &[T], last: Option<&T>) -> Vec<T> {
+    let start = last.map_or(0, |last| spaces.partition_point(|space| space <= last));
+    spaces
+        .iter()
+        .cycle()
+        .skip(start)
+        .take(spaces.len().min(MAX_SPACES))
+        .cloned()
+        .collect()
+}
 
 /// `lan_key(S) = HKDF(none, k(S), "frasil/lan-key/v1")`.
 pub fn lan_key(state_secret: &[u8; 32]) -> Secret {
@@ -274,4 +292,53 @@ pub fn read_nearby(packet: &[u8]) -> Result<Nearby, TransportClass> {
         port,
         name: nearby_name(map[&3].as_text()?),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_SPACES, next_spaces};
+
+    /// Every space has its turn once every ceil(N / 4) intervals.
+    #[test]
+    fn spaces_are_announced_in_turn() {
+        for count in 0..=13_u32 {
+            let spaces: Vec<u32> = (0..count).collect();
+            let intervals = spaces.len().div_ceil(MAX_SPACES);
+            let mut last = None;
+            let mut announced = Vec::new();
+            for _ in 0..intervals {
+                let next = next_spaces(&spaces, last.as_ref());
+                assert_eq!(next.len(), spaces.len().min(MAX_SPACES));
+                last = next.last().copied();
+                announced.extend(next);
+            }
+            for space in &spaces {
+                assert!(announced.contains(space), "{space} of {count}");
+            }
+            // At most four spaces: all of them, every interval.
+            if spaces.len() <= MAX_SPACES {
+                assert_eq!(next_spaces(&spaces, last.as_ref()).len(), spaces.len());
+            }
+        }
+        assert_eq!(next_spaces(&[1, 2, 3, 4, 5, 6], None), [1, 2, 3, 4]);
+        assert_eq!(next_spaces(&[1, 2, 3, 4, 5, 6], Some(&4)), [5, 6, 1, 2]);
+        assert_eq!(next_spaces(&[1, 2, 3, 4, 5, 6], Some(&2)), [3, 4, 5, 6]);
+    }
+
+    /// The set changes between two intervals: the turn goes on from the
+    /// last space announced, whether it is still there or not.
+    #[test]
+    fn a_changed_set_keeps_the_turn() {
+        // The last one announced left.
+        assert_eq!(next_spaces(&[1, 2, 3, 5, 6, 7], Some(&4)), [5, 6, 7, 1]);
+        // Spaces joined before and after it.
+        assert_eq!(
+            next_spaces(&[0, 1, 2, 3, 4, 5, 6, 7, 8], Some(&4)),
+            [5, 6, 7, 8]
+        );
+        // It was the greatest, or is past the greatest left.
+        assert_eq!(next_spaces(&[1, 2, 3, 4, 5], Some(&5)), [1, 2, 3, 4]);
+        assert_eq!(next_spaces(&[1, 2], Some(&9)), [1, 2]);
+        assert_eq!(next_spaces::<u32>(&[], Some(&9)), []);
+    }
 }

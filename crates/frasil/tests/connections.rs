@@ -266,6 +266,51 @@ async fn members_of_five_spaces_sync_them_all_on_the_local_network() {
     }
 }
 
+/// A device announces its spaces four at a time, each in turn
+/// (transport.md, "Member announcements"): two devices whose one shared
+/// space is the fifth or later of each, by ID, still find each other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn members_find_each_other_by_a_space_neither_announces_first() {
+    let alice = device().await;
+    let bob = device().await;
+    // Alice's spaces, the shared one last by ID.
+    let mut hers = Vec::new();
+    for _ in 0..9 {
+        hers.push(alice.create_space().await.unwrap());
+    }
+    hers.sort_unstable();
+    let space = hers[8];
+    alice
+        .grant_device(
+            space,
+            bob.public_keys().clone(),
+            Level::Write,
+            HistoryMode::WithHistory,
+            Via::Code,
+        )
+        .await
+        .unwrap();
+    bob.follow(space).await;
+    bob.ingest(space, alice.events(&space).await).await.unwrap();
+    // Bob's own, until four come before the shared one.
+    let mut before = 0;
+    for _ in 0..64 {
+        if before == 4 {
+            break;
+        }
+        if bob.create_space().await.unwrap() < space {
+            before += 1;
+        }
+    }
+    assert_eq!(before, 4, "four of Bob's spaces come before the shared one");
+    let alice_node = Node::loopback(alice.clone()).await.unwrap();
+    let bob_node = Node::loopback(bob.clone()).await.unwrap();
+    alice_node.discover(LanConfig::loopback_v4()).unwrap();
+    bob_node.discover(LanConfig::loopback_v4()).unwrap();
+    carries(&bob, &alice, space, "from Bob").await;
+    carries(&alice, &bob, space, "from Alice").await;
+}
+
 /// Whether each device holds exactly one admitted attach of each space
 /// with the other.
 async fn attached_once(alice: &Engine, bob: &Engine, spaces: &[EventId]) -> bool {
