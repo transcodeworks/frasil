@@ -57,6 +57,15 @@
       "types": "./dist/solid.d.ts",
       "default": "./dist/solid.js"
     },
+    "./media": {
+      "types": "./dist/media.d.ts",
+      "default": "./dist/media.js"
+    },
+    "./media/worker": {
+      "types": "./dist/media-worker.d.ts",
+      "default": "./dist/media-worker.js"
+    },
+    "./media-sw.js": "./dist/media-sw.js",
     "./package.json": "./package.json"
   },
   "sideEffects": [
@@ -65,7 +74,8 @@
     "./dist/wasm/*.js",
     "./dist/*/runtime.js",
     "./dist/*/engine.js",
-    "./dist/*/wasm/*.js"
+    "./dist/*/wasm/*.js",
+    "./dist/media-sw.js"
   ],
   "publishConfig": {
     "access": "public",
@@ -86,7 +96,7 @@
     "test:binding": "playwright test",
     "size": "node scripts/size.mjs --check",
     "lint": "biome check .",
-    "check:package": "publint --strict && attw --pack . --profile esm-only --exclude-entrypoints ./frasil_wasm.wasm ./module/frasil_wasm.wasm",
+    "check:package": "publint --strict && attw --pack . --profile esm-only --exclude-entrypoints ./frasil_wasm.wasm ./module/frasil_wasm.wasm ./media-sw.js",
     "knip": "knip"
   },
   "peerDependencies": {

@@ -16,7 +16,7 @@ import {
   type SpaceId,
 } from "./space.js";
 
-import { Storage } from "./stores.js";
+import { IndexedDbStore, Storage } from "./stores.js";
 
 /**
  * A recovery sheet (identity.md, "Recovery keys"): the recovery key's secret, the person and the
@@ -69,6 +69,60 @@ export interface Options {
    * requires one; {@link Device.setLibraryTicket} sets one later.
    */
   readonly libraryTicket?: Uint8Array;
+  /**
+   * The budget of the blob cache, in stored bytes: 268,435,456 (256 MiB) unless given. A read
+   * leaves the blobs it fetches in the cache, and the device drops whole cached blobs, the one
+   * read longest ago first, to stay within the budget. With 0 nothing is cached: a read passes
+   * its blob through memory. Kept blobs and the blobs this device put are outside it.
+   *
+   * Over an {@link IndexedDbStore} the budget is lowered to half of what the browser says the
+   * origin may still store (`navigator.storage.estimate()`: its quota less its usage, plus what
+   * the cache holds already), where the browser says so. {@link Device.blobCacheUsage} gives
+   * the budget in force.
+   */
+  readonly blobCache?: number;
+  /**
+   * Keeps every blob the device fetches, and fetches every blob of its spaces by itself: nothing
+   * is evicted, and `blobCache` counts for nothing.
+   */
+  readonly keepAllBlobs?: boolean;
+}
+
+/** The budget of the blob cache and what the device's blobs take, from {@link Device.blobCacheUsage}. */
+export interface BlobCacheUsage {
+  /** The budget of the cache in force, in stored bytes. */
+  readonly budget: number;
+  /**
+   * The stored bytes of the cached blobs, whole or in part: within the budget, but for what
+   * running reads hold beside the cache.
+   */
+  readonly cached: number;
+  /** The stored bytes of the blobs the device keeps, outside the budget. */
+  readonly kept: number;
+}
+
+/** The share of what the origin may still store that the blob cache takes at most. */
+const QUOTA_SHARE = 0.5;
+
+/**
+ * Lowers a device's blob cache budget to {@link QUOTA_SHARE} of what the browser says the origin
+ * may still store, counting what the cache holds already as room. Nothing changes where the
+ * browser gives no estimate, or one with no quota, or for a device that keeps every blob.
+ */
+async function withinQuota(device: raw.Device, options: Options): Promise<void> {
+  if (options.keepAllBlobs) return;
+  let estimate: StorageEstimate | undefined;
+  try {
+    estimate = await globalThis.navigator?.storage?.estimate?.();
+  } catch {
+    return;
+  }
+  const quota = estimate?.quota;
+  if (quota === undefined || !Number.isFinite(quota) || quota <= 0) return;
+  const usage = await callAsync(() => device.blobCacheUsage() as Promise<BlobCacheUsage>);
+  const room = Math.max(0, quota - (estimate?.usage ?? 0)) + usage.cached;
+  const cap = Math.floor(room * QUOTA_SHARE);
+  if (cap < usage.budget) call(() => device.setBlobCache(cap));
 }
 
 /**
@@ -105,6 +159,7 @@ export class Device extends Handle<raw.Device> {
         }>,
     );
     if (sealed === undefined) await store.saveSealedKeys(opened.sealedKeys);
+    if (store instanceof IndexedDbStore) await withinQuota(opened.device, options);
     const device = new Device(opened.device);
     if (options.libraryTicket !== undefined) device.setLibraryTicket(options.libraryTicket);
     return device;
@@ -143,6 +198,7 @@ export class Device extends Handle<raw.Device> {
         }>,
     );
     await store.saveSealedKeys(recovered.sealedKeys);
+    if (store instanceof IndexedDbStore) await withinQuota(recovered.device, options);
     const device = new Device(recovered.device);
     return device;
   }
@@ -544,6 +600,14 @@ export class Device extends Handle<raw.Device> {
    */
   listCheckpoints(): Promise<ListCheckpointStatus> {
     return callAsync(() => this.raw().listCheckpoints() as Promise<ListCheckpointStatus>);
+  }
+
+  /**
+   * The budget of the blob cache, and what the device's cached and kept blobs take, in stored
+   * bytes, across all its spaces.
+   */
+  blobCacheUsage(): Promise<BlobCacheUsage> {
+    return callAsync(() => this.raw().blobCacheUsage() as Promise<BlobCacheUsage>);
   }
 
   /** Closes the device: stops its upkeep and its connections. It can still be read. */

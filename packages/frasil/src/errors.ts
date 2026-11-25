@@ -86,9 +86,9 @@ export class FrasilError extends Error {
   constructor(
     code: ErrorCode,
     message: string,
-    fields: { class?: string; whatToDo?: string } = {},
+    fields: { class?: string; whatToDo?: string; cause?: unknown } = {},
   ) {
-    super(message);
+    super(message, fields.cause === undefined ? undefined : { cause: fields.cause });
     this.code = code;
     if (fields.class !== undefined) this.class = fields.class;
     this.whatToDo =

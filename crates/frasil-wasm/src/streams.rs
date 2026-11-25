@@ -1011,14 +1011,19 @@ impl Blobs {
     /// opened, and the last one only once every check passed on the whole
     /// blob. A sink whose read failed part way holds a prefix of the
     /// blob, to be discarded. Resolves once the whole blob was pushed.
+    /// `options` says what becomes of a blob the read fetches: `{ keep,
+    /// uncached, local }`; a `local` read of a blob the device does not
+    /// hold whole pushes nothing and rejects with `missing`.
     #[wasm_bindgen(js_name = getStream)]
     pub fn get_stream(
         &self,
         blob: String,
         push: Function,
         on_progress: Option<Function>,
+        options: JsValue,
     ) -> Result<Promise, JsValue> {
         let blob = id::<BlobId>(&blob)?;
+        let read = crate::retention::read_of(&options)?;
         let blobs = self.inner.clone();
         Ok(promise(async move {
             let writer = Push {
@@ -1026,7 +1031,7 @@ impl Blobs {
                 pending: None,
             };
             blobs
-                .get_stream(blob, writer, &frasil::Read::new(), progress(on_progress))
+                .get_stream(blob, writer, &read, progress(on_progress))
                 .await
                 .js()?;
             Ok(JsValue::UNDEFINED)
@@ -1035,12 +1040,16 @@ impl Blobs {
 
     /// A blob's bytes. A blob this device does not hold whole is fetched
     /// first, into its cache; `undefined` when it is not here and nothing
-    /// is connected that could send it.
-    pub fn get(&self, blob: String) -> Result<Promise, JsValue> {
+    /// is connected that could send it. `options` says what becomes of a
+    /// blob the read fetches: `{ keep, uncached, local }`, to keep it, to
+    /// store nothing of it, or to fetch nothing and give only a blob the
+    /// device holds whole.
+    pub fn get(&self, blob: String, options: JsValue) -> Result<Promise, JsValue> {
         let blob = id::<BlobId>(&blob)?;
+        let read = crate::retention::read_of(&options)?;
         let blobs = self.inner.clone();
         Ok(promise(async move {
-            match blobs.get(blob, &frasil::Read::new()).await {
+            match blobs.get(blob, &read).await {
                 Ok(Some(data)) => Ok(bytes(&data)),
                 Ok(None) => Ok(JsValue::UNDEFINED),
                 Err(failure) => Err(error(failure)),

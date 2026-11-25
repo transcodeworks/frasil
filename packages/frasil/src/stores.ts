@@ -36,6 +36,10 @@ export interface Store {
   /**
    * If every expectation holds, deletes then puts in one atomic, durable step and answers `true`;
    * otherwise changes nothing and answers `false`.
+   *
+   * A store with no room for the puts rejects with an error named `QuotaExceededError`, as the
+   * browser's own is, or with one whose `cause` is such an error, having written nothing. The
+   * device then drops blobs from its cache and commits again.
    */
   commit(commit: Commit): Promise<boolean> | boolean;
   /** The device's sealed keys, kept beside the records; `undefined` before the device is made. */
@@ -129,7 +133,9 @@ const SEALED = "device";
 
 function storeError(what: string, cause: unknown): FrasilError {
   const detail = cause instanceof Error || cause instanceof DOMException ? ` ${cause.message}` : "";
-  return new FrasilError("store", `The store could not ${what}.${detail}`);
+  // The cause stays on the error: a write the browser refused past the origin's quota is told
+  // from other failures by its name, `QuotaExceededError`.
+  return new FrasilError("store", `The store could not ${what}.${detail}`, { cause });
 }
 
 /** A request's result, as a promise. */

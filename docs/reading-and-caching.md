@@ -193,7 +193,7 @@ connected, so a read fetches them now), missing (it does not hold them and
 nothing is connected that could send them), keys pending (the key the blob,
 or the change that adds it, is sealed under has not reached this device yet;
 connecting changes nothing until a member or a peer delivers it), or
-withdrawn. The npm package reports absent as missing.
+withdrawn.
 
 A blob this device put is readable here at once; whether it has left the
 device is a separate question, and it has two halves. In Rust, and
@@ -409,10 +409,11 @@ The Swift and Kotlin bindings have all of this under their own names: a
 record's fields are applied in the order `keep`, `uncached`, `local`, so of
 `keep` and `uncached` together `uncached` holds.
 
-The npm package reads as `Read::new()` does, into the cache, under the
-default budget. It does not yet have `Options::blob_cache`,
-`Options::keep_all_blobs`, `Read`, `keep`, `drop_local`, `local`,
-`blob_cache_usage` or `open_reader`.
+The npm package has all of this under JavaScript's names: `{ blobCache,
+keepAllBlobs }` at `Device.open`, `{ keep, uncached, local }` on each read,
+`keep`, `dropLocal`, `local`, `blobCacheUsage` and `openReader`; its
+[README](../packages/frasil/README.md) covers the browser's quota and
+playing a blob in a media element.
 
 ## Reading a blob that is not all here
 
