@@ -21,6 +21,7 @@ export {
   type BackdatedCheckpointEvent,
   type BadCheckpointEvent,
   type BadStatementEvent,
+  type BlobCacheUsage,
   type ChangedEvent,
   type CheckpointInEffectEvent,
   type CheckpointPendingEvent,
@@ -100,6 +101,15 @@ export {
   type Status,
   structurallyEqual,
 } from "./observe.js";
+export {
+  type Abortable,
+  type BlobLocal,
+  BlobReader,
+  type BlobState,
+  type ReaderOptions,
+  type ReadOptions,
+  type Verified,
+} from "./reader.js";
 export type { BlobDetails } from "./references.js";
 export {
   type DeviceLists,

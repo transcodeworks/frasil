@@ -21,7 +21,12 @@
 //      dist/index-embedded/): a second build of the module with the `index` feature (SQLite, for a
 //      dedicated worker), loaded from a file and inlined. The TypeScript layer compiles against
 //      that build's glue, whose declarations hold the default build's and the index's;
-//    - `@frasil/client/client` (dist/client.js): `IndexClient` alone, which loads no module.
+//    - `@frasil/client/client` (dist/client.js): `IndexClient` alone, which loads no module;
+//    - `@frasil/client/media` and `@frasil/client/media/worker` (dist/media.js and
+//      dist/media-worker.js): the media helper and the service worker's handler, which load no
+//      module;
+// 6. `@frasil/client/media-sw.js` (dist/media-sw.js): the service worker's handler as a classic
+//    script to host as it is, with its listeners.
 //
 // Cargo builds into CARGO_TARGET_DIR when it is set, and target/ otherwise.
 //
@@ -212,6 +217,7 @@ const engines = ["engine", "engine-embedded", "engine-compiled"];
 const compiledEntry = ["compiled", "load"];
 const indexOnly = ["indexed"];
 const clientOnly = ["client"];
+const mediaOnly = ["media", "media-worker"];
 const everything = readdirSync(dist).filter(
   (file) => file.endsWith(".js") || file.endsWith(".d.ts"),
 );
@@ -225,7 +231,14 @@ const everything = readdirSync(dist).filter(
  * @param {{ glue: string, engine: string, extra?: string[], bytes: "file" | "base64" | "bare" }} entry
  */
 function assemble(dir, entry) {
-  const own = [...engines, ...compiledEntry, ...indexOnly, ...bindings, ...clientOnly];
+  const own = [
+    ...engines,
+    ...compiledEntry,
+    ...indexOnly,
+    ...bindings,
+    ...clientOnly,
+    ...mediaOnly,
+  ];
   const keep = new Set([
     ...everything.filter(
       (file) => !own.some((name) => file === `${name}.js` || file === `${name}.d.ts`),
@@ -285,9 +298,35 @@ for (const name of [...engines.slice(1), ...compiledEntry, ...indexOnly]) {
 assemble(dist, {
   glue: generatedDefault,
   engine: "engine",
-  extra: [...bindings, ...clientOnly],
+  extra: [...bindings, ...clientOnly, ...mediaOnly],
   bytes: "file",
 });
+
+// The service worker's handler as a script of its own: a classic script, which every browser
+// that has service workers registers, so it holds neither `import` nor `export`.
+const handler = readFileSync(join(dist, "media-worker.js"), "utf8");
+if (/^\s*import\s/m.test(handler)) {
+  console.error("build: src/media-worker.ts must import nothing: it is hosted as one script.");
+  process.exit(1);
+}
+writeFileSync(
+  join(dist, "media-sw.js"),
+  `// The service worker of @frasil/client/media: host this file where its scope covers the pages
+// that play media. It answers the requests for the URLs a page's MediaServer mints, by asking
+// that page, and takes control of the origin's pages at once.
+(() => {
+${handler.replace(/^export /gm, "")}
+self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
+self.addEventListener("fetch", (event) => {
+  handleMedia(event);
+});
+self.addEventListener("message", (event) => {
+  handleMedia(event);
+});
+})();
+`,
+);
 
 console.log(`built ${dist} (${bytes.length} bytes of WebAssembly, loaded from a file)`);
 console.log(`built ${join(dist, "embedded")}, with the module inlined`);

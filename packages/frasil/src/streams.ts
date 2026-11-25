@@ -8,6 +8,7 @@
 import type { MemberId } from "./device.js";
 import { FrasilError } from "./errors.js";
 import { asyncSource, identityOf, milliseconds, type Observable, sharedStore } from "./observe.js";
+import { type BlobLocal, BlobReader, type ReaderOptions, type ReadOptions } from "./reader.js";
 import type { BlobDetails } from "./references.js";
 import { call, callAsync, follow, Handle, type raw } from "./runtime.js";
 import type { Space } from "./space.js";
@@ -65,15 +66,17 @@ export type BlobChange =
   | { readonly kind: "arrived" | "evicted" | "withdrawn"; readonly id: BlobId };
 
 /**
- * Where a blob's bytes stand on this device: readable, being fetched (`done` of `total` bytes),
- * missing (this device does not hold them and nothing is sending them now: a read fetches them
- * while a peer or member is connected), waiting for keys (the key it is sealed under has not
- * reached this device yet; connecting changes nothing until it does), or withdrawn (a held file
- * changed; peers still have it).
+ * Where a blob's bytes stand on this device: readable (it holds them whole, kept or cached),
+ * being fetched (`done` of `total` bytes), absent (it does not hold them, and a peer or a member
+ * of the space is connected: a read fetches them now), missing (it does not hold them, and
+ * nothing is connected that could send them), waiting for keys (the key it is sealed under has
+ * not reached this device yet; connecting changes nothing until it does), or withdrawn (a held
+ * file changed; peers still have it).
  */
 export type BlobStatus =
   | { readonly kind: "readable" }
   | { readonly kind: "fetching"; readonly done: number; readonly total: number }
+  | { readonly kind: "absent" }
   | { readonly kind: "missing" }
   | { readonly kind: "keysPending" }
   | { readonly kind: "withdrawn" };
@@ -1148,8 +1151,8 @@ export class Blobs extends Handle<raw.Blobs> {
 
   /**
    * Calls `callback` with each change of the stream from now on: a blob put or removed (this
-   * device's own included), its bytes arrived, or a held blob withdrawn. Resolves to the function
-   * that stops it. `onError` gets the error that ends it, if any.
+   * device's own included), its bytes arrived or evicted, or a held blob withdrawn. Resolves to
+   * the function that stops it. `onError` gets the error that ends it, if any.
    */
   async onChange(
     callback: (change: BlobChange) => void,
@@ -1159,7 +1162,10 @@ export class Blobs extends Handle<raw.Blobs> {
     return follow<BlobChange>(changes, callback, onError);
   }
 
-  /** Where a blob's bytes stand on this device: readable, fetching, missing or withdrawn. */
+  /**
+   * Where a blob's bytes stand on this device: readable, fetching, absent, missing, waiting for
+   * keys or withdrawn. {@link Blobs.local} tells whether it is kept or cached.
+   */
   status(id: BlobId): Promise<BlobStatus> {
     return callAsync(() => this.raw().status(id) as Promise<BlobStatus>);
   }
@@ -1170,12 +1176,61 @@ export class Blobs extends Handle<raw.Blobs> {
    * it is not here and nothing is connected that could send it. Each chunk opens under the blob's
    * key before its bytes are given, and the checks that need the whole blob do not run on a range:
    * a member that holds the blob's key can serve a range read other validly sealed chunks, and
-   * nothing refutes them later, so read with `get` what must be the blob's.
+   * nothing refutes them later, so read with `get` what must be the blob's. `options` says what
+   * becomes of the chunks the read fetches ({@link ReadOptions}).
    */
-  getRange(id: BlobId, offset: number, length: number): Promise<Uint8Array | undefined> {
+  getRange(
+    id: BlobId,
+    offset: number,
+    length: number,
+    options: ReadOptions = {},
+  ): Promise<Uint8Array | undefined> {
     return callAsync(
-      () => this.raw().getRange(id, offset, length) as Promise<Uint8Array | undefined>,
+      () => this.raw().getRange(id, offset, length, options) as Promise<Uint8Array | undefined>,
     );
+  }
+
+  /**
+   * Opens a reader over a blob, which reads any range of it and fetches only the chunks it
+   * needs: a large file plays, or is read in parts, without being downloaded. What it fetches
+   * goes where `options` says ({@link ReaderOptions}): into the cache by default, kept with
+   * `keep`, into the reader's own memory with `uncached`, and nothing is fetched with `local`.
+   * A blob larger than the cache's whole budget is read through the reader's memory too.
+   * Nothing is fetched until the reader is read or asked its size. Close the reader when done.
+   *
+   * Rejects with `invalid_input` when the stream holds no blob of this ID.
+   */
+  async openReader(id: BlobId, options: ReaderOptions = {}): Promise<BlobReader> {
+    const reader = await callAsync(
+      () => this.raw().openReader(id, options) as Promise<raw.BlobReader>,
+    );
+    return BlobReader.wrap(reader, options);
+  }
+
+  /**
+   * Fetches a blob into this device's store and keeps it there until {@link Blobs.dropLocal},
+   * without reading it: a download in the background, outside the cache's budget. `onProgress`
+   * follows the fetch. A blob the device holds already is kept from now on, and one that cannot
+   * be fetched now stays marked: the device fetches it by itself once a peer or a member that
+   * holds it is connected, and this call rejects with `missing`.
+   */
+  keep(id: BlobId, onProgress?: Progress): Promise<void> {
+    return callAsync(() => this.raw().keep(id, onProgress) as Promise<void>);
+  }
+
+  /**
+   * Drops what this device stores of a blob, kept or cached: the blob is absent here, and a read
+   * fetches it again. Nothing changes for anyone else, and the stream still lists the blob.
+   * Rejects with `not_allowed` while the blob must stay: a read is using it, this device put it
+   * and no peer is known to hold its bytes yet, or the device keeps every blob.
+   */
+  dropLocal(id: BlobId): Promise<void> {
+    return callAsync(() => this.raw().dropLocal(id) as Promise<void>);
+  }
+
+  /** Where a blob stands on this device: kept, cached or absent, and the bytes stored of it. */
+  local(id: BlobId): Promise<BlobLocal> {
+    return callAsync(() => this.raw().local(id) as Promise<BlobLocal>);
   }
 
   /**
@@ -1235,9 +1290,10 @@ export class Blobs extends Handle<raw.Blobs> {
    * The SHA-256 of a blob's plaintext, a stable hash of its content for keying media or comparing
    * with local files. A blob this device does not hold whole is fetched first, into its cache;
    * `undefined` when it cannot be read whole. It is computed on this device: peers never see it.
+   * `options` says what becomes of a blob the read fetches ({@link ReadOptions}).
    */
-  contentHash(id: BlobId): Promise<Uint8Array | undefined> {
-    return callAsync(() => this.raw().contentHash(id) as Promise<Uint8Array | undefined>);
+  contentHash(id: BlobId, options: ReadOptions = {}): Promise<Uint8Array | undefined> {
+    return callAsync(() => this.raw().contentHash(id, options) as Promise<Uint8Array | undefined>);
   }
 
   /** Puts a blob, with a name if given. Resolves to its ID. */
@@ -1293,9 +1349,15 @@ export class Blobs extends Handle<raw.Blobs> {
   /**
    * A blob's bytes as a stream, without holding them whole in memory. A blob this device does not
    * hold whole is fetched first, into its cache. `onProgress` reports the bytes fetched, then the
-   * bytes opened. The stream errors if the blob cannot be read.
+   * bytes opened. The stream errors if the blob cannot be read. `options` says what becomes of a
+   * blob the read fetches ({@link ReadOptions}); a `local` read of a blob this device does not
+   * hold whole errors with `missing`.
    */
-  getStream(id: BlobId, onProgress?: Progress): ReadableStream<Uint8Array> {
+  getStream(
+    id: BlobId,
+    onProgress?: Progress,
+    options: ReadOptions = {},
+  ): ReadableStream<Uint8Array> {
     let wake: (() => void) | undefined;
     let cancelled = false;
     return new ReadableStream<Uint8Array>({
@@ -1308,7 +1370,7 @@ export class Blobs extends Handle<raw.Blobs> {
             wake = resolve;
           });
         };
-        callAsync(() => this.raw().getStream(id, push, onProgress) as Promise<void>).then(
+        callAsync(() => this.raw().getStream(id, push, onProgress, options) as Promise<void>).then(
           () => {
             if (!cancelled) controller.close();
           },
@@ -1334,10 +1396,12 @@ export class Blobs extends Handle<raw.Blobs> {
   /**
    * A blob's bytes. A blob this device does not hold whole is fetched first from a connected peer
    * or member, into its cache; `undefined` when it is not here and nothing is connected that
-   * could send it. A reference reads like any blob.
+   * could send it. A reference reads like any blob. `options` says what becomes of a blob the
+   * read fetches ({@link ReadOptions}): `keep` keeps it, `uncached` stores nothing of it, and
+   * `local` fetches nothing, so the read gives only a blob this device holds whole.
    */
-  get(id: BlobId): Promise<Uint8Array | undefined> {
-    return callAsync(() => this.raw().get(id) as Promise<Uint8Array | undefined>);
+  get(id: BlobId, options: ReadOptions = {}): Promise<Uint8Array | undefined> {
+    return callAsync(() => this.raw().get(id, options) as Promise<Uint8Array | undefined>);
   }
 
   /**

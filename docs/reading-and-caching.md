@@ -193,8 +193,7 @@ connected, so a read fetches them now), missing (it does not hold them and
 nothing is connected that could send them), keys pending (the key the blob,
 or the change that adds it, is sealed under has not reached this device yet;
 connecting changes nothing until a member or a peer delivers it), or
-withdrawn. The npm package and the Swift and Kotlin bindings report absent
-as missing.
+withdrawn. The Swift and Kotlin bindings report absent as missing.
 
 A blob this device put is readable here at once; whether it has left the
 device is a separate question, and it has two halves. In Rust,
@@ -401,9 +400,13 @@ write a file. A reader (`open_reader`) is the exception: over a blob held as
 a file it reads the file, and over one that is not it fetches the chunks it
 reads into its own memory, whatever its `Read` says, and makes no file.
 
-The npm package and the Swift and Kotlin bindings read as `Read::new()`
-does, into the cache, under the default budget. They do not yet have
-`Options::blob_cache`, `Options::keep_all_blobs`, `Read`, `keep`,
+The npm package has all of this under JavaScript's names: `{ blobCache,
+keepAllBlobs }` at `Device.open`, `{ keep, uncached, local }` on each read,
+`keep`, `dropLocal`, `local`, `blobCacheUsage` and `openReader`; its
+[README](../packages/frasil/README.md) covers the browser's quota and
+playing a blob in a media element. The Swift and Kotlin bindings read as
+`Read::new()` does, into the cache, under the default budget, and do not yet
+have `Options::blob_cache`, `Options::keep_all_blobs`, `Read`, `keep`,
 `drop_local`, `local`, `blob_cache_usage` or `open_reader`.
 
 ## Reading a blob that is not all here

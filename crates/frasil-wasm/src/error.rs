@@ -9,7 +9,8 @@
 //!   `unknown_stream`, `not_allowed`, `sync_before_writing`,
 //!   `rotation_due`, `adapter`, `connection`, `timeout`, `limit_passed`,
 //!   `unsupported`, `released`, `incompatible_data`, `other_revision`; and
-//!   `invalid_input` for an argument that does not read. `unknown` is a variant added to `frasil::Error` after this
+//!   `invalid_input` for an argument that does not read, and `cancelled`
+//!   for a reader's call that was asked to stop. `unknown` is a variant added to `frasil::Error` after this
 //!   binding was written.
 //! - `class`, for a failed check of the specification: the class as the
 //!   specification names it, such as `Malformed`.
@@ -95,6 +96,17 @@ impl<T> Js<T> for frasil::Result<T> {
     fn js(self) -> Result<T, JsValue> {
         self.map_err(error)
     }
+}
+
+/// A call that was asked to stop before it ended: `cancelled`. The
+/// TypeScript layer asks, and gives its caller the reason it was given.
+pub(crate) fn cancelled() -> JsValue {
+    with_code(
+        "cancelled",
+        "the call was cancelled",
+        "Call again; nothing was changed.",
+        None,
+    )
 }
 
 /// An argument JavaScript passed that does not convert: `invalid_input`.

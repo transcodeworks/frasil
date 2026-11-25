@@ -13,7 +13,11 @@
 //!     nothing and answers `false`.
 //!
 //!   The package's `IndexedDbStore` is one, with every commit one IndexedDB
-//!   transaction. A store that throws or rejects fails as `store`. Its
+//!   transaction. A store that throws or rejects fails as `store`. A
+//!   `commit` that rejects with an error named `QuotaExceededError`, or
+//!   whose `cause` is one, as the browser's is past the origin's quota,
+//!   had no room: the device makes room in its blob cache and commits
+//!   again (`StoreError::full`). Its
 //!   `saveSealedKeys(sealed)` keeps the device's keys when `makePerson`
 //!   seals them again ([`JsKeys`]).
 //! - **The restore mode** is `never-restored` by default: a browser has no
@@ -93,6 +97,40 @@ fn failed(message: String) -> StoreError {
     StoreError::new(message)
 }
 
+/// Whether what a store threw or rejected with says it had no room: an
+/// error named `QuotaExceededError`, as the browser's own is, or one whose
+/// `cause` is.
+fn no_room(thrown: &JsValue) -> bool {
+    let named = |value: &JsValue| {
+        Reflect::get(value, &JsValue::from_str("name"))
+            .ok()
+            .and_then(|name| name.as_string())
+            .is_some_and(|name| name == "QuotaExceededError")
+    };
+    named(thrown)
+        || Reflect::get(thrown, &JsValue::from_str("cause"))
+            .is_ok_and(|cause| cause.is_object() && named(&cause))
+}
+
+/// [`call`] for a commit, which may have had no room.
+async fn call_commit(object: &JsValue, argument: JsValue) -> Result<JsValue, StoreError> {
+    let method = Reflect::get(object, &JsValue::from_str("commit"))
+        .ok()
+        .and_then(|method| method.dyn_into::<Function>().ok())
+        .ok_or_else(|| failed("the store has no method `commit`".into()))?;
+    let refused = |thrown: JsValue| {
+        if no_room(&thrown) {
+            StoreError::full(message_of(&thrown))
+        } else {
+            failed(message_of(&thrown))
+        }
+    };
+    let value = method.call1(object, &argument).map_err(refused)?;
+    JsFuture::from(Promise::resolve(&value))
+        .await
+        .map_err(refused)
+}
+
 fn pairs(value: &JsValue) -> Result<Records, StoreError> {
     let array = value
         .dyn_ref::<Array>()
@@ -163,9 +201,7 @@ impl Store for JsStore {
                 .set("puts", puts)
                 .set("deletes", deletes)
                 .build();
-            let value = call(&self.object, "commit", &[argument])
-                .await
-                .map_err(failed)?;
+            let value = call_commit(&self.object, argument).await?;
             value
                 .as_bool()
                 .ok_or_else(|| failed("commit answered something other than a boolean".into()))

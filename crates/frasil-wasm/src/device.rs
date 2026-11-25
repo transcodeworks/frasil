@@ -68,16 +68,30 @@ fn person_of(sealed: &[u8]) -> Option<[u8; 32]> {
 
 /// The options every browser device runs with: its tasks and its
 /// connections are the browser's, and `store` keeps its sealed keys when
-/// they are sealed again.
-fn browser_options(store: JsValue) -> Options {
+/// they are sealed again. From the application's `options`: `blobCache`,
+/// the budget of the blob cache in stored bytes (256 MiB unless given; 0
+/// stores nothing), and `keepAllBlobs`, which keeps every blob.
+fn browser_options(store: JsValue, options: &JsValue) -> Result<Options, JsValue> {
     // A browser runs this module on one thread: the Arcs only satisfy the
     // options' types.
     #[allow(clippy::arc_with_non_send_sync)]
-    let options = Options::new()
+    let mut browser = Options::new()
         .tasks(Arc::new(BrowserTasks))
         .connect_with(Arc::new(BrowserConnect))
         .keep_keys(Arc::new(JsKeys::new(store)));
-    options
+    if options.is_object() {
+        let budget = field(options, "blobCache")?;
+        if !budget.is_undefined() {
+            let bytes = budget
+                .as_f64()
+                .ok_or_else(|| invalid("blobCache is a whole number of bytes."))?;
+            browser = browser.blob_cache(crate::retention::whole(bytes, "blobCache")?);
+        }
+        if field(options, "keepAllBlobs")?.is_truthy() {
+            browser = browser.keep_all_blobs();
+        }
+    }
+    Ok(browser)
 }
 
 /// A device: its keys, its store, the spaces it holds, and its connections.
@@ -106,6 +120,7 @@ impl Device {
     ) -> Promise {
         promise(async move {
             let platform = platform(store.clone(), &options)?;
+            let browser = browser_options(store, &options)?;
             let unlock_key = unlock(unlock_key)?;
             let adapters = AdapterRegistry::with_builtins();
             let (engine, sealed) = match sealed_keys {
@@ -122,7 +137,7 @@ impl Device {
                     (engine, sealed.to_vec())
                 }
             };
-            let device = frasil::Device::from_engine(engine, browser_options(store)).js()?;
+            let device = frasil::Device::from_engine(engine, browser).js()?;
             Ok(Obj::new()
                 .set("device", Device { inner: device })
                 .set("sealedKeys", bytes(&sealed))
@@ -149,13 +164,14 @@ impl Device {
     ) -> Promise {
         promise(async move {
             let platform = platform(store.clone(), &options)?;
+            let browser = browser_options(store, &options)?;
             let unlock_key = unlock(unlock_key)?;
             let sheet = frasil::RecoverySheet::read(&sheet).js()?;
             let (engine, _) =
                 Engine::create(platform, &unlock_key, AdapterRegistry::with_builtins())
                     .await
                     .js()?;
-            let device = frasil::Device::from_engine(engine, browser_options(store)).js()?;
+            let device = frasil::Device::from_engine(engine, browser).js()?;
             let sealed = match device
                 .recover_from_sheet(&unlock_key, sheet, &peer_url)
                 .await
