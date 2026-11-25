@@ -321,6 +321,13 @@ typedef void (*UniffiCallbackInterfaceWriteReadyListenerMethod1)(uint64_t, RustB
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_ADMISSION_LISTENER_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_ADMISSION_LISTENER_METHOD0
+typedef void (*UniffiCallbackInterfaceAdmissionListenerMethod0)(uint64_t, RustBuffer, RustBuffer, int8_t* _Nonnull,
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_ARRIVAL_LISTENER
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_ARRIVAL_LISTENER
 typedef struct UniffiVTableCallbackInterfaceArrivalListener {
@@ -394,6 +401,15 @@ typedef struct UniffiVTableCallbackInterfaceWriteReadyListener {
     UniffiCallbackInterfaceWriteReadyListenerMethod0 _Nonnull writeReady;
     UniffiCallbackInterfaceWriteReadyListenerMethod1 _Nonnull failed;
 } UniffiVTableCallbackInterfaceWriteReadyListener;
+
+#endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_ADMISSION_LISTENER
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_ADMISSION_LISTENER
+typedef struct UniffiVTableCallbackInterfaceAdmissionListener {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceAdmissionListenerMethod0 _Nonnull confirm;
+} UniffiVTableCallbackInterfaceAdmissionListener;
 
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CLONE_ARRIVALLISTENER
@@ -568,12 +584,12 @@ void uniffi_frasil_uniffi_fn_free_device(uint64_t handle, RustCallStatus *_Nonnu
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CONSTRUCTOR_DEVICE_OPEN
 #define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CONSTRUCTOR_DEVICE_OPEN
-uint64_t uniffi_frasil_uniffi_fn_constructor_device_open(RustBuffer path, RustBuffer unlock_key
+uint64_t uniffi_frasil_uniffi_fn_constructor_device_open(RustBuffer path, RustBuffer unlock_key, RustBuffer options
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CONSTRUCTOR_DEVICE_OPEN_IN_MEMORY
 #define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CONSTRUCTOR_DEVICE_OPEN_IN_MEMORY
-uint64_t uniffi_frasil_uniffi_fn_constructor_device_open_in_memory(RustBuffer unlock_key
+uint64_t uniffi_frasil_uniffi_fn_constructor_device_open_in_memory(RustBuffer unlock_key, RustBuffer options
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_DEVICE_ARRIVALS
@@ -684,6 +700,11 @@ uint64_t uniffi_frasil_uniffi_fn_method_device_trust_deposit_keys(uint64_t ptr, 
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_DEVICE_WAITING_DEPOSITS
 #define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_DEVICE_WAITING_DEPOSITS
 uint64_t uniffi_frasil_uniffi_fn_method_device_waiting_deposits(uint64_t ptr
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_DEVICE_JOIN
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_DEVICE_JOIN
+uint64_t uniffi_frasil_uniffi_fn_method_device_join(uint64_t ptr, RustBuffer invitation, RustBuffer name, uint64_t listener, RustBuffer cancellation
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CLONE_DURABLELISTENER
@@ -861,6 +882,11 @@ uint64_t uniffi_frasil_uniffi_fn_method_space_wait_durable(uint64_t ptr, uint64_
 uint64_t uniffi_frasil_uniffi_fn_method_space_wait_write_ready(uint64_t ptr, uint64_t within_ms
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_SPACE_INVITE
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_SPACE_INVITE
+uint64_t uniffi_frasil_uniffi_fn_method_space_invite(uint64_t ptr, RustBuffer level, RustBuffer name, uint64_t listener
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CLONE_SUBSCRIPTION
 #define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CLONE_SUBSCRIPTION
 uint64_t uniffi_frasil_uniffi_fn_clone_subscription(uint64_t handle, RustCallStatus *_Nonnull out_status
@@ -899,6 +925,72 @@ void uniffi_frasil_uniffi_fn_method_writereadylistener_write_ready(uint64_t ptr,
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_WRITEREADYLISTENER_FAILED
 #define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_WRITEREADYLISTENER_FAILED
 void uniffi_frasil_uniffi_fn_method_writereadylistener_failed(uint64_t ptr, RustBuffer message, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CLONE_ADMISSIONLISTENER
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CLONE_ADMISSIONLISTENER
+uint64_t uniffi_frasil_uniffi_fn_clone_admissionlistener(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_FREE_ADMISSIONLISTENER
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_FREE_ADMISSIONLISTENER
+void uniffi_frasil_uniffi_fn_free_admissionlistener(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_INIT_CALLBACK_VTABLE_ADMISSIONLISTENER
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_INIT_CALLBACK_VTABLE_ADMISSIONLISTENER
+void uniffi_frasil_uniffi_fn_init_callback_vtable_admissionlistener(const UniffiVTableCallbackInterfaceAdmissionListener* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_ADMISSIONLISTENER_CONFIRM
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_ADMISSIONLISTENER_CONFIRM
+int8_t uniffi_frasil_uniffi_fn_method_admissionlistener_confirm(uint64_t ptr, RustBuffer code, RustBuffer name, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CLONE_INVITATION
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CLONE_INVITATION
+uint64_t uniffi_frasil_uniffi_fn_clone_invitation(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_FREE_INVITATION
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_FREE_INVITATION
+void uniffi_frasil_uniffi_fn_free_invitation(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_INVITATION_ADMITTED
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_INVITATION_ADMITTED
+uint64_t uniffi_frasil_uniffi_fn_method_invitation_admitted(uint64_t ptr, RustBuffer cancellation
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_INVITATION_TEXT
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_INVITATION_TEXT
+RustBuffer uniffi_frasil_uniffi_fn_method_invitation_text(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CLONE_CANCELLATION
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CLONE_CANCELLATION
+uint64_t uniffi_frasil_uniffi_fn_clone_cancellation(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_FREE_CANCELLATION
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_FREE_CANCELLATION
+void uniffi_frasil_uniffi_fn_free_cancellation(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CONSTRUCTOR_CANCELLATION_NEW
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_CONSTRUCTOR_CANCELLATION_NEW
+uint64_t uniffi_frasil_uniffi_fn_constructor_cancellation_new(RustCallStatus *_Nonnull out_status
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_CANCELLATION_CANCEL
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_CANCELLATION_CANCEL
+void uniffi_frasil_uniffi_fn_method_cancellation_cancel(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_CANCELLATION_IS_CANCELLED
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_FN_METHOD_CANCELLATION_IS_CANCELLED
+int8_t uniffi_frasil_uniffi_fn_method_cancellation_is_cancelled(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_FRASIL_UNIFFI_RUSTBUFFER_ALLOC
@@ -1383,6 +1475,12 @@ uint16_t uniffi_frasil_uniffi_checksum_method_device_waiting_deposits(void
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_DEVICE_JOIN
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_DEVICE_JOIN
+uint16_t uniffi_frasil_uniffi_checksum_method_device_join(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_DURABLELISTENER_DURABLE
 #define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_DURABLELISTENER_DURABLE
 uint16_t uniffi_frasil_uniffi_checksum_method_durablelistener_durable(void
@@ -1545,6 +1643,12 @@ uint16_t uniffi_frasil_uniffi_checksum_method_space_wait_write_ready(void
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_SPACE_INVITE
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_SPACE_INVITE
+uint16_t uniffi_frasil_uniffi_checksum_method_space_invite(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_SUBSCRIPTION_CANCEL
 #define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_SUBSCRIPTION_CANCEL
 uint16_t uniffi_frasil_uniffi_checksum_method_subscription_cancel(void
@@ -1563,6 +1667,36 @@ uint16_t uniffi_frasil_uniffi_checksum_method_writereadylistener_failed(void
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_ADMISSIONLISTENER_CONFIRM
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_ADMISSIONLISTENER_CONFIRM
+uint16_t uniffi_frasil_uniffi_checksum_method_admissionlistener_confirm(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_INVITATION_ADMITTED
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_INVITATION_ADMITTED
+uint16_t uniffi_frasil_uniffi_checksum_method_invitation_admitted(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_INVITATION_TEXT
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_INVITATION_TEXT
+uint16_t uniffi_frasil_uniffi_checksum_method_invitation_text(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_CANCELLATION_CANCEL
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_CANCELLATION_CANCEL
+uint16_t uniffi_frasil_uniffi_checksum_method_cancellation_cancel(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_CANCELLATION_IS_CANCELLED
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_METHOD_CANCELLATION_IS_CANCELLED
+uint16_t uniffi_frasil_uniffi_checksum_method_cancellation_is_cancelled(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_CONSTRUCTOR_DEVICE_OPEN
 #define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_CONSTRUCTOR_DEVICE_OPEN
 uint16_t uniffi_frasil_uniffi_checksum_constructor_device_open(void
@@ -1572,6 +1706,12 @@ uint16_t uniffi_frasil_uniffi_checksum_constructor_device_open(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_CONSTRUCTOR_DEVICE_OPEN_IN_MEMORY
 #define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_CONSTRUCTOR_DEVICE_OPEN_IN_MEMORY
 uint16_t uniffi_frasil_uniffi_checksum_constructor_device_open_in_memory(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_CONSTRUCTOR_CANCELLATION_NEW
+#define UNIFFI_FFIDEF_UNIFFI_FRASIL_UNIFFI_CHECKSUM_CONSTRUCTOR_CANCELLATION_NEW
+uint16_t uniffi_frasil_uniffi_checksum_constructor_cancellation_new(void
 
 );
 #endif

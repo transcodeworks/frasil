@@ -1,6 +1,7 @@
 //! Frasil's client for Swift and Kotlin, through UniFFI: a device, its
-//! spaces and blob streams, and the feeds an application follows, each
-//! delivered to a listener the application implements.
+//! spaces and blob streams, the admission of a device into a space over a
+//! nearby connection, and the feeds an application follows, each delivered
+//! to a listener the application implements.
 //!
 //! IDs cross as lowercase hexadecimal, as `frasil`'s IDs show and parse.
 //! A feed runs on the device's runtime until its [`Subscription`] is
@@ -11,6 +12,12 @@
 //! `bindings/kotlin`; `scripts/bindings.sh` generates both from this crate.
 
 uniffi::setup_scaffolding!();
+
+mod admission;
+mod cancel;
+
+pub use admission::{AdmissionListener, Invitation};
+pub use cancel::Cancellation;
 
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use tokio::runtime::{Handle, Runtime};
@@ -60,6 +67,15 @@ impl core::fmt::Display for FrasilError {
 }
 
 impl std::error::Error for FrasilError {}
+
+/// What a listener that answers threw, when it was not a `FrasilError`.
+impl From<uniffi::UnexpectedUniFFICallbackError> for FrasilError {
+    fn from(error: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        Self::Failed {
+            reason: error.reason,
+        }
+    }
+}
 
 impl From<frasil::Error> for FrasilError {
     fn from(error: frasil::Error) -> Self {
@@ -993,6 +1009,30 @@ pub trait CheckpointListener: Send + Sync {
     fn reported(&self, report: CheckpointReport);
 }
 
+/// What a device opens with. Each field left out takes the default's
+/// value. None of it is stored: give it at each open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct DeviceOptions {
+    /// Whether the device binds its own endpoints on loopback alone, with
+    /// no relay: nothing leaves the machine. For tests and examples.
+    #[uniffi(default = false)]
+    pub loopback: bool,
+}
+
+impl DeviceOptions {
+    /// The crate's options for these, or its defaults for none.
+    pub(crate) fn of(options: Option<Self>) -> frasil::Options {
+        let mut crossed = frasil::Options::new();
+        let Some(options) = options else {
+            return crossed;
+        };
+        if options.loopback {
+            crossed = crossed.loopback();
+        }
+        crossed
+    }
+}
+
 /// A device: its keys, its store and its connections.
 #[derive(uniffi::Object)]
 pub struct Device {
@@ -1003,23 +1043,36 @@ pub struct Device {
 #[uniffi::export(async_runtime = "tokio")]
 impl Device {
     /// Opens the device whose store is the directory `path`, creating it on
-    /// first use, under its 32-byte unlock key.
-    #[uniffi::constructor]
-    pub async fn open(path: String, unlock_key: Vec<u8>) -> Result<Arc<Self>> {
+    /// first use, under its 32-byte unlock key, with `options` or the
+    /// defaults.
+    #[uniffi::constructor(default(options = None))]
+    pub async fn open(
+        path: String,
+        unlock_key: Vec<u8>,
+        options: Option<DeviceOptions>,
+    ) -> Result<Arc<Self>> {
         let key = unlock(unlock_key)?;
-        let inner =
-            run(async move { frasil::Device::open(frasil::Storage::directory(path), &key).await })
-                .await?;
+        let options = DeviceOptions::of(options);
+        let inner = run(async move {
+            frasil::Device::open_with(frasil::Storage::directory(path), &key, options).await
+        })
+        .await?;
         Ok(Self::of(inner))
     }
 
     /// Opens a device that keeps everything in memory, for tests and
-    /// devices that keep nothing.
-    #[uniffi::constructor]
-    pub async fn open_in_memory(unlock_key: Vec<u8>) -> Result<Arc<Self>> {
+    /// devices that keep nothing, with `options` or the defaults.
+    #[uniffi::constructor(default(options = None))]
+    pub async fn open_in_memory(
+        unlock_key: Vec<u8>,
+        options: Option<DeviceOptions>,
+    ) -> Result<Arc<Self>> {
         let key = unlock(unlock_key)?;
-        let inner =
-            run(async move { frasil::Device::open(frasil::Storage::Memory, &key).await }).await?;
+        let options = DeviceOptions::of(options);
+        let inner = run(async move {
+            frasil::Device::open_with(frasil::Storage::Memory, &key, options).await
+        })
+        .await?;
         Ok(Self::of(inner))
     }
 
