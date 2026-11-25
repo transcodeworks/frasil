@@ -18,6 +18,10 @@ services:
       # closed: a space is hosted once a ticket of `frasil-relay ticket`
       # attached it. open lets anyone who reaches the peer create spaces.
       FRASIL_HOSTING: ${FRASIL_HOSTING:-closed}
+      # With open hosting and libraries on, the library that takes the
+      # spaces created without a ticket, such as open:public. The peer does
+      # not start open without one.
+      FRASIL_OPEN_LIBRARY: ${FRASIL_OPEN_LIBRARY:-}
       FRASIL_SPACE_QUOTA_BYTES: ${FRASIL_SPACE_QUOTA_BYTES:-1073741824}
       FRASIL_IROH: ${FRASIL_IROH:-on}
       FRASIL_RELAYS: ${FRASIL_RELAYS:-}

@@ -175,10 +175,14 @@ Back it up with `iroh.key`, and keep it as private: whoever holds it signs
 tickets for any library of this peer.
 
 **Opening the peer instead.** `FRASIL_HOSTING=open` takes a create with no
-ticket and attaches the space to the open library, `FRASIL_OPEN_LIBRARY`
-or `open:public` by default. Anyone who reaches the peer can then create
+ticket and attaches the space to the open library, which
+`FRASIL_OPEN_LIBRARY` names, such as `open:public`. The peer fills in no
+library of its own: with libraries on, it refuses to start open until one
+is named, so that a peer never hosts strangers' spaces by a setting nobody
+chose. Anyone who reaches the peer can then create
 as many spaces as they like, each up to `FRASIL_SPACE_QUOTA_BYTES`: bound
-the open library with `FRASIL_LIBRARY_QUOTAS`, such as `open=10000000000`,
+the open library with `FRASIL_LIBRARY_QUOTAS`, by the kind before the
+colon in its ID, such as `open=10000000000` for `open:public`,
 and with deposit tokens on give it a `space_share` of 0. Run an open peer
 only where you trust everyone who can reach it, such as a private network.
 
@@ -357,7 +361,7 @@ unset.
 | `FRASIL_NATIVE_ORIGIN` | `FRASIL_ORIGIN` | The origin native clients, which send no `Origin` header, connect to |
 | `FRASIL_ACCOUNT_URL` | none | Where a person sees their usage and quotas, for the discovery document |
 | `FRASIL_RELAYS` | none | iroh relays for devices and the peer's own endpoint: up to four HTTPS URLs, separated by spaces, listed in the discovery document |
-| `FRASIL_HOSTING` | `closed` | `closed`: a space is hosted only once a ticket attached it to a library; with libraries off, no new space. `open`: any device may create a space whose genesis it stores first, attached with libraries on to the open library; see [First run](#first-run-handing-out-access) for the risk |
+| `FRASIL_HOSTING` | `closed` | `closed`: a space is hosted only once a ticket attached it to a library; with libraries off, no new space. `open`: any device may create a space whose genesis it stores first, attached with libraries on to the library `FRASIL_OPEN_LIBRARY` names, without which the peer does not start; see [First run](#first-run-handing-out-access) for the risk |
 | `FRASIL_TRUSTED_PROXIES` | none | The reverse proxies whose `X-Forwarded-For` names the client, by address or network (`10.0.0.0/8`), separated by spaces or commas, at most 64; see [Behind a reverse proxy](#behind-a-reverse-proxy) |
 | `FRASIL_SPACE_QUOTA_BYTES` | 1 GiB | Each space's quota |
 | `FRASIL_CREDENTIAL_CAP` | 256 | Live entries per space, 16 to 4,096 |
@@ -535,7 +539,8 @@ tokens off.
 Each name may also be given with the prefix `ext-`, as the specification
 names its documents. The peer refuses to start on a name it does not
 know, on a setting of an extension that is off, on `FRASIL_OPEN_LIBRARY`
-without `FRASIL_HOSTING=open`, and on `deposit-tokens` without
+without `FRASIL_HOSTING=open`, on `FRASIL_HOSTING=open` with libraries on
+and no `FRASIL_OPEN_LIBRARY`, and on `deposit-tokens` without
 `libraries`. It logs the extensions on as it starts, and `frasil-relay
 check` prints them.
 
@@ -571,7 +576,7 @@ The settings of `libraries`:
 | Variable | What |
 |---|---|
 | `FRASIL_LIBRARY_ISSUERS` | The trusted issuers' Ed25519 keys, in lowercase hex, separated by spaces; at most 16, such as an account service's. Without them, the peer trusts its operator's own issuer (`issuer.key`), whose tickets `frasil-relay ticket` prints |
-| `FRASIL_OPEN_LIBRARY` | With `FRASIL_HOSTING=open`, the library a create without a ticket attaches its space to; `open:public` by default. Refused with closed hosting |
+| `FRASIL_OPEN_LIBRARY` | With `FRASIL_HOSTING=open`, the library a create without a ticket attaches its space to, such as `open:public`. No default: open hosting is refused without it, and it is refused with closed hosting |
 | `FRASIL_LIBRARY_QUOTAS` | Default quotas by kind of library ID, as `kind=bytes` pairs separated by spaces, such as `personal=10000000000` |
 | `FRASIL_DETACHED_GRACE` | `detached_grace`, in seconds: 1 to 365 days; 30 days by default |
 | `FRASIL_OPERATOR_TOKEN` | The operator's bearer token, at least 16 bytes, for the usage, settings and hand-over routes; without it they refuse every request |
