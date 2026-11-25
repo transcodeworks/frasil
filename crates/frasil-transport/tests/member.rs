@@ -775,3 +775,73 @@ fn probation_serves_catch_up() {
         .unwrap();
     assert!(events.contains(&Event::Close(Code::Done)));
 }
+
+/// Each side sends its verdict as soon as it holds the other's proof, so an
+/// `Admit` or a `Detach` can cross the other side's `Detach` (transport.md,
+/// "The roster check"): the side that detached drops it.
+#[test]
+fn a_verdict_that_crosses_a_detach_is_dropped() {
+    let h = Handshake::load();
+    let json = &h.json;
+    let proved = || {
+        let (mut dialer, mut listener) = sessions(&h);
+        let states = labels(&json["offer"]["offered_states"]);
+        let (_, events) = dialer
+            .offer_with(
+                states.iter().map(|s| (s.clone(), h.secret(s))),
+                [1; 32],
+                &[[2; 32]; 16],
+            )
+            .unwrap();
+        deliver(&mut listener, &sends(&events));
+        let events = listener
+            .respond_with(0, h.candidates(&json["listener_candidates"]), [3; 32])
+            .unwrap();
+        let events = deliver(&mut dialer, &sends(&events));
+        deliver(&mut listener, &sends(&events));
+        (dialer, listener)
+    };
+    // The dialer admits while the listener detaches.
+    let (mut dialer, mut listener) = proved();
+    let admit = dialer.verdict(0, Verdict::Admit).unwrap();
+    let detach = listener
+        .verdict(0, Verdict::Detach(Code::MembershipEnded))
+        .unwrap();
+    assert_eq!(deliver(&mut listener, &sends(&admit)), []);
+    assert_eq!(
+        deliver(&mut dialer, &sends(&detach)),
+        [
+            Event::Detached {
+                attach: 0,
+                code: Code::MembershipEnded
+            },
+            Event::Close(Code::Done)
+        ]
+    );
+    // Both detach at the same moment.
+    let (mut dialer, mut listener) = proved();
+    let ours = dialer
+        .verdict(0, Verdict::Detach(Code::MembershipEnded))
+        .unwrap();
+    let theirs = listener
+        .verdict(0, Verdict::Detach(Code::MembershipEnded))
+        .unwrap();
+    assert_eq!(deliver(&mut listener, &sends(&ours)), []);
+    assert_eq!(deliver(&mut dialer, &sends(&theirs)), []);
+    // An `Admit` or a `Detach` for an attach never offered still does not
+    // read.
+    let stray = Admit { attach: 2 }.encode();
+    assert_eq!(
+        dialer.receive(&control(&stray)).unwrap_err().code,
+        Code::Malformed
+    );
+    let stray = frasil_transport::messages::Detach {
+        attach: 2,
+        code: Code::Done,
+    }
+    .encode();
+    assert_eq!(
+        dialer.receive(&control(&stray)).unwrap_err().code,
+        Code::Malformed
+    );
+}

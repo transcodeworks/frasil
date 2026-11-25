@@ -569,6 +569,8 @@ impl<T> MemberSession<T> {
                 *remote_admitted = true;
                 Ok(vec![Event::Admitted { attach }])
             }
+            // It crossed the `Detach` that ended the attach.
+            Some(Phase::Detached) => Ok(Vec::new()),
             _ => Err(Closed::of(ErrorClass::Malformed)),
         }
     }
@@ -577,7 +579,9 @@ impl<T> MemberSession<T> {
         let detach = Detach::read(message)?;
         let attach = u32::try_from(detach.attach).map_err(|_| Closed::of(ErrorClass::Malformed))?;
         match self.attaches.get(&attach) {
-            None | Some(Phase::Detached) => Err(Closed::of(ErrorClass::Malformed)),
+            None => Err(Closed::of(ErrorClass::Malformed)),
+            // Both sides detached the attach at the same moment.
+            Some(Phase::Detached) => Ok(Vec::new()),
             Some(_) => {
                 self.attaches.insert(attach, Phase::Detached);
                 self.settled = true;
