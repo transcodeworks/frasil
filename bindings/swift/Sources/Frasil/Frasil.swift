@@ -547,6 +547,242 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 
 /**
+ * Asks this device's person whether an admission goes on.
+ */
+public protocol AdmissionListener: AnyObject, Sendable {
+
+    /**
+     * Both screens show the six-digit `code`, and `name` is what the
+     * other device calls itself: `true` when this device's person saw
+     * that code on both. `false` refuses the admission, and so does a
+     * listener that throws.
+     *
+     * It is called once, on a thread started for it, and may wait there
+     * for the person's answer. The admission waits at most 15 minutes,
+     * the life of an admission code, and counts no answer by then as
+     * `false`. When the call that gave the listener ends first, because
+     * it was cancelled or the time passed, the answer counts for nothing
+     * and nothing waits for it: take the question off the screen and
+     * return, since the thread is the listener's until it does.
+     */
+    func confirm(code: String, name: String) throws  -> Bool
+
+}
+/**
+ * Asks this device's person whether an admission goes on.
+ */
+open class AdmissionListenerImpl: AdmissionListener, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_frasil_uniffi_fn_clone_admissionlistener(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_frasil_uniffi_fn_free_admissionlistener(handle, $0) }
+    }
+
+
+
+
+    /**
+     * Both screens show the six-digit `code`, and `name` is what the
+     * other device calls itself: `true` when this device's person saw
+     * that code on both. `false` refuses the admission, and so does a
+     * listener that throws.
+     *
+     * It is called once, on a thread started for it, and may wait there
+     * for the person's answer. The admission waits at most 15 minutes,
+     * the life of an admission code, and counts no answer by then as
+     * `false`. When the call that gave the listener ends first, because
+     * it was cancelled or the time passed, the answer counts for nothing
+     * and nothing waits for it: take the question off the screen and
+     * return, since the thread is the listener's until it does.
+     */
+open func confirm(code: String, name: String)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeFrasilError_lift) {
+    uniffi_frasil_uniffi_fn_method_admissionlistener_confirm(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(code),
+        FfiConverterString.lower(name),$0
+    )
+})
+}
+
+
+
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceAdmissionListener {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceAdmissionListener = UniffiVTableCallbackInterfaceAdmissionListener(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeAdmissionListener.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface AdmissionListener: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeAdmissionListener.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface AdmissionListener: handle missing in uniffiClone")
+            }
+        },
+        confirm: { (
+            uniffiHandle: UInt64,
+            code: RustBuffer,
+            name: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<Int8>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> Bool in
+                guard let uniffiObj = try? FfiConverterTypeAdmissionListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.confirm(
+                     code: try FfiConverterString.lift(code),
+                     name: try FfiConverterString.lift(name)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterBool.lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeFrasilError_lower
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceAdmissionListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceAdmissionListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitAdmissionListener() {
+    uniffi_frasil_uniffi_fn_init_callback_vtable_admissionlistener(UniffiCallbackInterfaceAdmissionListener.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAdmissionListener: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<AdmissionListener>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = AdmissionListener
+
+    public static func lift(_ handle: UInt64) throws -> AdmissionListener {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return AdmissionListenerImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: AdmissionListener) -> UInt64 {
+         if let rustImpl = value as? AdmissionListenerImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AdmissionListener {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: AdmissionListener, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAdmissionListener_lift(_ handle: UInt64) throws -> AdmissionListener {
+    return try FfiConverterTypeAdmissionListener.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAdmissionListener_lower(_ value: AdmissionListener) -> UInt64 {
+    return FfiConverterTypeAdmissionListener.lower(value)
+}
+
+
+
+
+
+
+/**
  * Hears what a device holds for the first time.
  */
 public protocol ArrivalListener: AnyObject, Sendable {
@@ -1584,6 +1820,175 @@ public func FfiConverterTypeBlobs_lower(_ value: Blobs) -> UInt64 {
 
 
 /**
+ * Cancels the calls it is given to: each fails at once. One cancellation
+ * can be given to any number of calls.
+ *
+ * Swift does not end a call when its task is cancelled: the call runs on
+ * to its answer, which the cancelled task then gets. A Swift caller gives
+ * the call one of these and cancels it from the task's cancellation
+ * handler. A Kotlin coroutine that is cancelled ends the calls that take
+ * a cancellation by itself, and may be given one as well.
+ */
+public protocol CancellationProtocol: AnyObject, Sendable {
+
+    /**
+     * Cancels every call given this: those waiting fail now, and one
+     * given it later fails at once.
+     */
+    func cancel()
+
+    /**
+     * Whether it was cancelled.
+     */
+    func isCancelled()  -> Bool
+
+}
+/**
+ * Cancels the calls it is given to: each fails at once. One cancellation
+ * can be given to any number of calls.
+ *
+ * Swift does not end a call when its task is cancelled: the call runs on
+ * to its answer, which the cancelled task then gets. A Swift caller gives
+ * the call one of these and cancels it from the task's cancellation
+ * handler. A Kotlin coroutine that is cancelled ends the calls that take
+ * a cancellation by itself, and may be given one as well.
+ */
+open class Cancellation: CancellationProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_frasil_uniffi_fn_clone_cancellation(self.handle, $0) }
+    }
+    /**
+     * A cancellation that has not been asked for yet.
+     */
+public convenience init() {
+    let handle =
+        try! rustCall() {
+    uniffi_frasil_uniffi_fn_constructor_cancellation_new($0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_frasil_uniffi_fn_free_cancellation(handle, $0) }
+    }
+
+
+
+
+    /**
+     * Cancels every call given this: those waiting fail now, and one
+     * given it later fails at once.
+     */
+open func cancel()  {try! rustCall() {
+    uniffi_frasil_uniffi_fn_method_cancellation_cancel(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+
+    /**
+     * Whether it was cancelled.
+     */
+open func isCancelled() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_frasil_uniffi_fn_method_cancellation_is_cancelled(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCancellation: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = Cancellation
+
+    public static func lift(_ handle: UInt64) throws -> Cancellation {
+        return Cancellation(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: Cancellation) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Cancellation {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: Cancellation, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCancellation_lift(_ handle: UInt64) throws -> Cancellation {
+    return try FfiConverterTypeCancellation.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCancellation_lower(_ value: Cancellation) -> UInt64 {
+    return FfiConverterTypeCancellation.lower(value)
+}
+
+
+
+
+
+
+/**
  * Hears what a device reports of checkpoints.
  */
 public protocol CheckpointListener: AnyObject, Sendable {
@@ -2145,6 +2550,22 @@ public protocol DeviceProtocol: AnyObject, Sendable {
      */
     func waitingDeposits() async  -> UInt64
 
+    /**
+     * Joins a space by the text of an invitation another device shows.
+     * `name` is what the other screen shows for this device, and
+     * `listener` is asked whether this device's person saw the same
+     * admission code on both screens, within 15 minutes of this call's
+     * asking the other device. It fails for text that is no invitation,
+     * when a person did not confirm the code, and when the other device
+     * is not reachable.
+     *
+     * Cancelling it abandons the admission: `cancellation` cancelled, or
+     * the caller no longer waiting, as a cancelled coroutine. The call
+     * fails, its work stops where it stands, and a listener being asked
+     * is waited for no longer. The device has joined nothing.
+     */
+    func join(invitation: String, name: String, listener: AdmissionListener, cancellation: Cancellation?) async throws  -> Space
+
 }
 /**
  * A device: its keys, its store and its connections.
@@ -2202,13 +2623,14 @@ open class Device: DeviceProtocol, @unchecked Sendable {
 
     /**
      * Opens the device whose store is the directory `path`, creating it on
-     * first use, under its 32-byte unlock key.
+     * first use, under its 32-byte unlock key, with `options` or the
+     * defaults.
      */
-public static func `open`(path: String, unlockKey: Data)async throws  -> Device  {
+public static func `open`(path: String, unlockKey: Data, options: DeviceOptions? = nil)async throws  -> Device  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
-                uniffi_frasil_uniffi_fn_constructor_device_open(FfiConverterString.lower(path),FfiConverterData.lower(unlockKey)
+                uniffi_frasil_uniffi_fn_constructor_device_open(FfiConverterString.lower(path),FfiConverterData.lower(unlockKey),FfiConverterOptionTypeDeviceOptions.lower(options)
                 )
             },
             pollFunc: ffi_frasil_uniffi_rust_future_poll_u64,
@@ -2221,13 +2643,13 @@ public static func `open`(path: String, unlockKey: Data)async throws  -> Device 
 
     /**
      * Opens a device that keeps everything in memory, for tests and
-     * devices that keep nothing.
+     * devices that keep nothing, with `options` or the defaults.
      */
-public static func openInMemory(unlockKey: Data)async throws  -> Device  {
+public static func openInMemory(unlockKey: Data, options: DeviceOptions? = nil)async throws  -> Device  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
-                uniffi_frasil_uniffi_fn_constructor_device_open_in_memory(FfiConverterData.lower(unlockKey)
+                uniffi_frasil_uniffi_fn_constructor_device_open_in_memory(FfiConverterData.lower(unlockKey),FfiConverterOptionTypeDeviceOptions.lower(options)
                 )
             },
             pollFunc: ffi_frasil_uniffi_rust_future_poll_u64,
@@ -2635,6 +3057,37 @@ open func waitingDeposits()async  -> UInt64  {
         )
 }
 
+    /**
+     * Joins a space by the text of an invitation another device shows.
+     * `name` is what the other screen shows for this device, and
+     * `listener` is asked whether this device's person saw the same
+     * admission code on both screens, within 15 minutes of this call's
+     * asking the other device. It fails for text that is no invitation,
+     * when a person did not confirm the code, and when the other device
+     * is not reachable.
+     *
+     * Cancelling it abandons the admission: `cancellation` cancelled, or
+     * the caller no longer waiting, as a cancelled coroutine. The call
+     * fails, its work stops where it stands, and a listener being asked
+     * is waited for no longer. The device has joined nothing.
+     */
+open func join(invitation: String, name: String, listener: AdmissionListener, cancellation: Cancellation? = nil)async throws  -> Space  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_device_join(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(invitation),FfiConverterString.lower(name),FfiConverterTypeAdmissionListener_lower(listener),FfiConverterOptionTypeCancellation.lower(cancellation)
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_u64,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_u64,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_u64,
+            liftFunc: FfiConverterTypeSpace_lift,
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
 
 
 }
@@ -2929,6 +3382,191 @@ public func FfiConverterTypeDurableListener_lift(_ handle: UInt64) throws -> Dur
 #endif
 public func FfiConverterTypeDurableListener_lower(_ value: DurableListener) -> UInt64 {
     return FfiConverterTypeDurableListener.lower(value)
+}
+
+
+
+
+
+
+/**
+ * An invitation into a space, waiting for its newcomer.
+ */
+public protocol InvitationProtocol: AnyObject, Sendable {
+
+    /**
+     * Waits until the newcomer is admitted, however long one takes to
+     * come: only the comparison of the code has a time limit, 15 minutes
+     * from the newcomer's asking. It fails when either person did not
+     * confirm the code and when the connection fails.
+     *
+     * Cancelling it abandons the invitation: `cancellation` cancelled, or
+     * the caller no longer waiting, as a cancelled coroutine. The call
+     * fails, a listener being asked is waited for no longer, and a
+     * newcomer that comes, or came, is refused as if this device's
+     * person had not confirmed the code.
+     *
+     * An invitation is waited for once. A second call fails and says
+     * why: the invitation is spent, because its admission ended or
+     * because the first call was cancelled; invite again.
+     */
+    func admitted(cancellation: Cancellation?) async throws
+
+    /**
+     * The text the newcomer enters in `Device::join`: show it, or a QR
+     * code of it, or send it to the person invited. It names nothing of
+     * the space and admits no one by itself; whoever reads it learns the
+     * addresses this device listens on.
+     */
+    func text()  -> String
+
+}
+/**
+ * An invitation into a space, waiting for its newcomer.
+ */
+open class Invitation: InvitationProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_frasil_uniffi_fn_clone_invitation(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_frasil_uniffi_fn_free_invitation(handle, $0) }
+    }
+
+
+
+
+    /**
+     * Waits until the newcomer is admitted, however long one takes to
+     * come: only the comparison of the code has a time limit, 15 minutes
+     * from the newcomer's asking. It fails when either person did not
+     * confirm the code and when the connection fails.
+     *
+     * Cancelling it abandons the invitation: `cancellation` cancelled, or
+     * the caller no longer waiting, as a cancelled coroutine. The call
+     * fails, a listener being asked is waited for no longer, and a
+     * newcomer that comes, or came, is refused as if this device's
+     * person had not confirmed the code.
+     *
+     * An invitation is waited for once. A second call fails and says
+     * why: the invitation is spent, because its admission ended or
+     * because the first call was cancelled; invite again.
+     */
+open func admitted(cancellation: Cancellation? = nil)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_invitation_admitted(
+                    self.uniffiCloneHandle(),
+                    FfiConverterOptionTypeCancellation.lower(cancellation)
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_void,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_void,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
+     * The text the newcomer enters in `Device::join`: show it, or a QR
+     * code of it, or send it to the person invited. It names nothing of
+     * the space and admits no one by itself; whoever reads it learns the
+     * addresses this device listens on.
+     */
+open func text() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_frasil_uniffi_fn_method_invitation_text(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInvitation: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = Invitation
+
+    public static func lift(_ handle: UInt64) throws -> Invitation {
+        return Invitation(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: Invitation) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Invitation {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: Invitation, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInvitation_lift(_ handle: UInt64) throws -> Invitation {
+    return try FfiConverterTypeInvitation.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInvitation_lower(_ value: Invitation) -> UInt64 {
+    return FfiConverterTypeInvitation.lower(value)
 }
 
 
@@ -3298,6 +3936,20 @@ public protocol SpaceProtocol: AnyObject, Sendable {
      * `SyncBeforeWriting` when it has not synced the space by then.
      */
     func waitWriteReady(withinMs: UInt64) async throws
+
+    /**
+     * Invites a device into the space at `level`: `read` or `write`. A
+     * nearby admission makes no administrator: admit the newcomer at
+     * `write`, then `raise` it at a rank. The invitation's text goes to
+     * the newcomer, whose person enters it in `Device::join`; `name` is
+     * what the newcomer's screen shows for this device, and `listener` is
+     * asked whether this device's person saw the same admission code on
+     * both screens. The newcomer reads what is written after its
+     * admission. A device hosts one invitation at a time; a new one
+     * replaces the last. It fails unless this device administers the
+     * space.
+     */
+    func invite(level: String, name: String, listener: AdmissionListener) async throws  -> Invitation
 
 }
 /**
@@ -3801,6 +4453,35 @@ open func waitWriteReady(withinMs: UInt64)async throws   {
             completeFunc: ffi_frasil_uniffi_rust_future_complete_void,
             freeFunc: ffi_frasil_uniffi_rust_future_free_void,
             liftFunc: { $0 },
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
+     * Invites a device into the space at `level`: `read` or `write`. A
+     * nearby admission makes no administrator: admit the newcomer at
+     * `write`, then `raise` it at a rank. The invitation's text goes to
+     * the newcomer, whose person enters it in `Device::join`; `name` is
+     * what the newcomer's screen shows for this device, and `listener` is
+     * asked whether this device's person saw the same admission code on
+     * both screens. The newcomer reads what is written after its
+     * admission. A device hosts one invitation at a time; a new one
+     * replaces the last. It fails unless this device administers the
+     * space.
+     */
+open func invite(level: String, name: String, listener: AdmissionListener)async throws  -> Invitation  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_space_invite(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(level),FfiConverterString.lower(name),FfiConverterTypeAdmissionListener_lower(listener)
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_u64,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_u64,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_u64,
+            liftFunc: FfiConverterTypeInvitation_lift,
             errorHandler: FfiConverterTypeFrasilError_lift
         )
 }
@@ -4725,6 +5406,68 @@ public func FfiConverterTypeDepositTokens_lift(_ buf: RustBuffer) throws -> Depo
 #endif
 public func FfiConverterTypeDepositTokens_lower(_ value: DepositTokens) -> RustBuffer {
     return FfiConverterTypeDepositTokens.lower(value)
+}
+
+
+/**
+ * What a device opens with. Each field left out takes the default's
+ * value. None of it is stored: give it at each open.
+ */
+public struct DeviceOptions: Equatable, Hashable {
+    /**
+     * Whether the device binds its own endpoints on loopback alone, with
+     * no relay: nothing leaves the machine. For tests and examples.
+     */
+    public var loopback: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Whether the device binds its own endpoints on loopback alone, with
+         * no relay: nothing leaves the machine. For tests and examples.
+         */loopback: Bool = false) {
+        self.loopback = loopback
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension DeviceOptions: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDeviceOptions: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DeviceOptions {
+        return
+            try DeviceOptions(
+                loopback: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DeviceOptions, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.loopback, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDeviceOptions_lift(_ buf: RustBuffer) throws -> DeviceOptions {
+    return try FfiConverterTypeDeviceOptions.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDeviceOptions_lower(_ value: DeviceOptions) -> RustBuffer {
+    return FfiConverterTypeDeviceOptions.lower(value)
 }
 
 
@@ -6546,6 +7289,54 @@ fileprivate struct FfiConverterOptionTypeBlobProgressListener: FfiConverterRustB
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCancellation: FfiConverterRustBuffer {
+    typealias SwiftType = Cancellation?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCancellation.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCancellation.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeDeviceOptions: FfiConverterRustBuffer {
+    typealias SwiftType = DeviceOptions?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeDeviceOptions.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeDeviceOptions.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -6867,6 +7658,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_frasil_uniffi_checksum_method_device_waiting_deposits() != 11885) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_frasil_uniffi_checksum_method_device_join() != 12471) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_frasil_uniffi_checksum_method_durablelistener_durable() != 34948) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6948,6 +7742,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_frasil_uniffi_checksum_method_space_wait_write_ready() != 61101) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_frasil_uniffi_checksum_method_space_invite() != 46348) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_frasil_uniffi_checksum_method_subscription_cancel() != 4179) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6957,13 +7754,32 @@ private let initializationResult: InitializationResult = {
     if (uniffi_frasil_uniffi_checksum_method_writereadylistener_failed() != 64503) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_frasil_uniffi_checksum_constructor_device_open() != 9228) {
+    if (uniffi_frasil_uniffi_checksum_method_admissionlistener_confirm() != 44512) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_frasil_uniffi_checksum_constructor_device_open_in_memory() != 20772) {
+    if (uniffi_frasil_uniffi_checksum_method_invitation_admitted() != 40729) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_invitation_text() != 50308) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_cancellation_cancel() != 65088) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_cancellation_is_cancelled() != 54012) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_constructor_device_open() != 9822) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_constructor_device_open_in_memory() != 44671) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_constructor_cancellation_new() != 18454) {
         return InitializationResult.apiChecksumMismatch
     }
 
+    uniffiCallbackInitAdmissionListener()
     uniffiCallbackInitArrivalListener()
     uniffiCallbackInitBlobProgressListener()
     uniffiCallbackInitBlobStatusListener()
