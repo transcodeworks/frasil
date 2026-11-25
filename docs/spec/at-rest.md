@@ -950,6 +950,14 @@ application keeps the objects it must not lose.
 2, before a write that would take its cached bytes past the budget, and
 when it finds them past the budget at upkeep.
 
+A store may have less room than the budget names, and refuse a commit of
+`object` records for want of it while the cached bytes are within the
+budget. A device MAY then drop cached objects in the same order, never an
+object the refused records are parts of, until as many stored bytes went
+as those records take, and make the commit once more. It makes it no third
+time: parts still refused are not stored, and nothing is recorded for an
+object that then has no part.
+
 Two kinds of object are held **beside the cache** while the reads that
 fetched them run: an object fetched for a read that is to store nothing
 once it ends, and an object larger than the whole budget, which is every
