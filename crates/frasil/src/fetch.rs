@@ -19,13 +19,15 @@
 //! A fetch changes nothing of what is checked: every chunk passes
 //! [`Engine::receive_part`](crate::device::Engine) before it is kept, and
 //! an object these chunks make whole is checked against its locator's
-//! digest there.
+//! digest there. A request made for a reader that stores nothing brings
+//! chunks for that reader's window alone (`reading.rs`): they pass the
+//! same checks, and the device stores none of them.
 
 use frasil_adapter::Locator;
 use frasil_events::EventId;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tokio::sync::{Notify, watch};
@@ -105,11 +107,16 @@ impl Cancel {
 pub enum FetchEnd {
     /// A chunk the other side sent failed its checks (units.md, 3.3
     /// Reading an object), or the object, once whole, did not hash to its
-    /// locator: what the device held of the object was dropped.
+    /// locator. What the device held of the object stays where the fault
+    /// is that chunk's alone: it does not check under the header it came
+    /// with, or under the header the device holds, under which a chunk
+    /// has opened. It was dropped where the object did not hash to its
+    /// locator, and where a chunk opened under each of two headers, the
+    /// one held and the one that arrived.
     Refused,
     /// The stored bytes the other side sent do not read as the object's
-    /// header gives them (transport.md, "Objects over HTTP"): what the
-    /// device held of the object was dropped.
+    /// header gives them (transport.md, "Objects over HTTP"). What the
+    /// device held of the object stays.
     Malformed,
     /// The other side of a stream sent nothing the device could keep of
     /// the chunks asked for, time after time: no answer, or chunks it
@@ -132,8 +139,15 @@ pub(crate) struct Request {
     pub chunks: Range<u64>,
     pub priority: FetchPriority,
     pub cancel: Cancel,
+    /// Whether the chunks it brings are the store's. A request of a reader
+    /// that stores nothing is not: its chunks go to the reader's window,
+    /// and the device does not mean to hold the object for it.
+    pub stores: bool,
     /// How a connection gave the request up, for its [`Fetch`].
     pub ended: Arc<watch::Sender<Option<FetchEnd>>>,
+    /// Counts the chunks that the connections which hold the request
+    /// took for the space while it waits ([`Taker::progressed`]).
+    pub progress: Arc<AtomicU64>,
 }
 
 #[cfg_attr(
@@ -151,7 +165,9 @@ impl Request {
             chunks: 0..u64::MAX,
             priority: FetchPriority::Background,
             cancel: Cancel::new(),
+            stores: true,
             ended: Arc::new(watch::channel(None).0),
+            progress: Arc::default(),
         }
     }
 }
@@ -291,7 +307,21 @@ impl Requests {
         chunks: Range<u64>,
         priority: FetchPriority,
     ) -> Fetch {
+        self.add_for(space, locator, chunks, priority, true)
+    }
+
+    /// [`add`](Self::add), saying whether the chunks the request brings
+    /// are the store's (`stores`) or a reader's window's.
+    pub(crate) fn add_for(
+        self: &Arc<Self>,
+        space: EventId,
+        locator: Locator,
+        chunks: Range<u64>,
+        priority: FetchPriority,
+        stores: bool,
+    ) -> Fetch {
         let cancel = Cancel::new();
+        let progress = Arc::<AtomicU64>::default();
         let (id, ended) = {
             let mut live = self.live();
             let ended = Arc::new(watch::channel(live.given_up(&space, &locator, None)).0);
@@ -306,7 +336,9 @@ impl Requests {
                     chunks,
                     priority,
                     cancel: cancel.clone(),
+                    stores,
                     ended: ended.clone(),
+                    progress: progress.clone(),
                 },
             );
             (id, ended)
@@ -316,6 +348,7 @@ impl Requests {
             id,
             cancel,
             ended,
+            progress,
             requests: self.clone(),
         }
     }
@@ -410,6 +443,28 @@ impl Requests {
         })
     }
 
+    /// Whether a request still wanted for an object means its chunks for
+    /// the store.
+    pub(crate) fn stores(&self, space: &EventId, locator: &Locator) -> bool {
+        self.live().requests.values().any(|request| {
+            request.space == *space
+                && request.locator[..32] == locator[..32]
+                && request.stores
+                && !request.cancel.is_cancelled()
+        })
+    }
+
+    /// Whether a request still wanted names this chunk for the store.
+    pub(crate) fn stores_chunk(&self, space: &EventId, locator: &Locator, index: u64) -> bool {
+        self.live().requests.values().any(|request| {
+            request.space == *space
+                && request.locator == *locator
+                && request.chunks.contains(&index)
+                && request.stores
+                && !request.cancel.is_cancelled()
+        })
+    }
+
     /// Whether a request still wanted names this chunk or a later one:
     /// what an object taken in order needs before the chunks asked for.
     pub(crate) fn reaches(&self, space: &EventId, locator: &Locator, index: u64) -> bool {
@@ -477,6 +532,27 @@ impl Taker {
         }
     }
 
+    /// The connection took a chunk the device did not have, for a request
+    /// of the space or an object its units name. Each request of the
+    /// space that this connection still holds, having neither given its
+    /// object up nor left its chunks unserved, counts it: its chunks are
+    /// queued behind what the connection brings, and whoever waits for
+    /// them is not stalled ([`Fetch::progress`]).
+    pub(crate) fn progressed(&self) {
+        let live = self.requests.live();
+        let Some(taking) = live.takers.get(&self.id) else {
+            return;
+        };
+        for request in live.requests.values() {
+            if request.space == self.space
+                && !taking.given_up.contains_key(&request.locator)
+                && !taking.unserved.contains(&request.id)
+            {
+                request.progress.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
     /// The connection asks no further for the chunks it asked of an
     /// object, for want of an answer it could keep, without giving the
     /// object up: a request made afterwards is asked for again. Each
@@ -539,6 +615,7 @@ pub struct Fetch {
     id: u64,
     cancel: Cancel,
     ended: Arc<watch::Sender<Option<FetchEnd>>>,
+    progress: Arc<AtomicU64>,
     requests: Arc<Requests>,
 }
 
@@ -563,6 +640,20 @@ impl Fetch {
     /// here.
     pub fn end(&self) -> Option<FetchEnd> {
         *self.ended.borrow()
+    }
+
+    /// How many chunks the connections that hold the request took for
+    /// its space since it was made, of this request or of another: a
+    /// chunk the device had already does not count. While it grows, the
+    /// request is being served or queued behind others, and not stalled.
+    pub(crate) fn progress(&self) -> u64 {
+        self.progress.load(Ordering::Relaxed)
+    }
+
+    /// Follows the request's end: the receiver changes when the space's
+    /// connections give the request up.
+    pub(crate) fn follow_end(&self) -> watch::Receiver<Option<FetchEnd>> {
+        self.ended.subscribe()
     }
 
     /// Ready once the space's connections gave the request up, with why
@@ -1209,7 +1300,9 @@ mod tests {
             chunks: 0..1,
             priority,
             cancel: Cancel::new(),
+            stores: true,
             ended: Arc::new(tokio::sync::watch::channel(None).0),
+            progress: Arc::default(),
         }
     }
 

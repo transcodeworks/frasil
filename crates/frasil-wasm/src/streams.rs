@@ -1006,8 +1006,11 @@ impl Blobs {
 
     /// Gets a blob into a sink: `push(chunk)` takes each chunk and resolves
     /// when it may take the next; `onProgress(done, total)` reports
-    /// progress. A blob this device does not hold whole is fetched first,
-    /// into its cache. Resolves once the whole blob was pushed.
+    /// progress. A blob this device does not hold whole is fetched into
+    /// its cache as it is read: each chunk is pushed once it arrived and
+    /// opened, and the last one only once every check passed on the whole
+    /// blob. A sink whose read failed part way holds a prefix of the
+    /// blob, to be discarded. Resolves once the whole blob was pushed.
     #[wasm_bindgen(js_name = getStream)]
     pub fn get_stream(
         &self,

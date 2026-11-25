@@ -296,19 +296,29 @@ mod blobs {
             if let Ok(token) = engine.held_token(&space, &entry.object).await {
                 return Ok(token);
             }
-            engine
-                .fetch_object(space, entry.object, hint.to_vec())
-                .await;
-            let mut progress = super::super::blob_stream::Reporter::silent();
-            self.fetched(
-                space,
-                entry.object,
-                entry.size,
-                crate::fetch::FetchPriority::Position,
-                &mut progress,
-            )
-            .await?;
-            engine.held_token(&space, &entry.object).await
+            // A file that was held when the fetch looked and released
+            // before its token was taken is fetched again, a few times
+            // at most.
+            let mut tries = 3;
+            loop {
+                engine
+                    .fetch_object(space, entry.object, hint.to_vec())
+                    .await;
+                let mut progress = super::super::blob_stream::Reporter::silent();
+                self.fetched(
+                    space,
+                    entry.object,
+                    entry.size,
+                    crate::fetch::FetchPriority::Position,
+                    &mut progress,
+                )
+                .await?;
+                tries -= 1;
+                match engine.held_token(&space, &entry.object).await {
+                    Err(Error::Class("Missing")) if tries > 0 => {}
+                    token => return token,
+                }
+            }
         }
 
         /// Releases a blob's file: the record of it goes, the provider is

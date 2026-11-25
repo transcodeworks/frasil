@@ -208,6 +208,9 @@ pub(crate) struct State {
     /// Which stored objects are kept and which cached, with the bytes each
     /// holds (at-rest.md, "Retention").
     pub(crate) retained: crate::retention::Retained,
+    /// The open readers of the device's objects, which hear of the parts
+    /// kept.
+    pub(crate) readers: Arc<crate::reading::Readers>,
 }
 
 /// Every key the device holds, by its hash: its ring, then each list's
@@ -318,6 +321,9 @@ struct Shared {
     /// The requests for chunks of objects made of this device and still
     /// wanted, which its connections serve.
     fetches: Arc<crate::fetch::Requests>,
+    /// The open readers of the device's objects, and the chunks held in
+    /// memory for those that store nothing.
+    readers: Arc<crate::reading::Readers>,
     /// Detected loss, as it is reported (units.md, 3.13 "Detected loss").
     losses: broadcast::Sender<Loss>,
     /// Spaces a restored device may sign in again, as each becomes so
@@ -483,6 +489,7 @@ impl Engine {
         // (units.md, 3.15 Partial replicas): the load resolves each space
         // as one.
         let streams_only = cfg!(feature = "partial-replicas") && platform.streams_only;
+        let readers: Arc<crate::reading::Readers> = Arc::default();
         let device = Self {
             shared: Arc::new(Shared {
                 erasure_settling: Mutex::new(()),
@@ -508,6 +515,7 @@ impl Engine {
                 checkpoint_policy: std::sync::Mutex::default(),
                 arrivals,
                 withdrawn: std::sync::Mutex::new(BTreeSet::new()),
+                readers: readers.clone(),
                 verified: std::sync::Mutex::new(BTreeMap::new()),
                 content_hashes: std::sync::Mutex::new(BTreeMap::new()),
                 providers: std::sync::Mutex::new(crate::held::Providers::default()),
@@ -550,6 +558,7 @@ impl Engine {
                     guests: crate::guests::GuestState::default(),
                     held: crate::held::HeldObjects::default(),
                     retained: crate::retention::Retained::default(),
+                    readers,
                 }),
                 notices,
                 fetches: Arc::default(),
@@ -1272,6 +1281,11 @@ impl Engine {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert((space, locator), hash);
+    }
+
+    /// The open readers of the device's objects.
+    pub(crate) fn shared_readers(&self) -> &Arc<crate::reading::Readers> {
+        &self.shared.readers
     }
 
     /// The objects that reads are using.
@@ -3784,8 +3798,39 @@ impl Engine {
                 .await;
             return Ok((Taken::Dropped, wants));
         }
-        match self.receive_part(space, part).await? {
-            Received::Refused => {
+        // What wanted the chunk is looked at again where the device
+        // admits it to the store, since nothing on the wire cancels an
+        // answer: a unit names its object, or a request still names the
+        // chunk, for the store or for a reader's memory.
+        let fetches = self.shared.fetches.clone();
+        let in_order = {
+            let state = self.lock().await;
+            self.receives_in_order(&state, &space, &locator)
+        };
+        let wanted = || {
+            named
+                || fetches.wants(&space, &locator, index)
+                || (in_order && fetches.reaches(&space, &locator, index))
+        };
+        let taker = session.taker_if_any();
+        let taken = || {
+            if let Some(taker) = &taker {
+                taker.progressed();
+            }
+        };
+        let asked = crate::objects::Asked {
+            wanted: &wanted,
+            stores: named || in_order || fetches.stores_chunk(&space, &locator, index),
+            taken: &taken,
+        };
+        match self.receive_part(space, part, asked).await? {
+            // A chunk that does not check under the header this side
+            // sent with it, or under the header held, under which a
+            // chunk has opened: the fault is the chunk's, and what the
+            // device holds stays. One that opens under another header
+            // than the one held, under which a chunk had opened too,
+            // took what was held with it.
+            Received::Refused | Received::BadChunk => {
                 // Not asked of this side again; every other connection
                 // of the space asks for it, and who asked for its chunks
                 // hears of it once none of them will try.
@@ -3801,8 +3846,9 @@ impl Engine {
                 });
                 Ok((Taken::Refused, Vec::new()))
             }
-            // Not kept, and so not counted as arrived: asked for again.
-            Received::Headerless | Received::Left => {
+            // Not kept, and so not counted as arrived: asked for again,
+            // and this side is not given up.
+            Received::Headerless | Received::Left | Received::Undecided => {
                 let (wants, ended) = self
                     .asking(&space, &locator, Some(named), |_, skip, _| {
                         session.chunk_again(locator, index, skip)
@@ -3811,6 +3857,15 @@ impl Engine {
                 if ended {
                     session.taker(&self.shared.fetches).unserved(&locator);
                 }
+                Ok((Taken::Dropped, wants))
+            }
+            // Nobody waits for it any more: arrived, and not kept.
+            Received::Unwanted => {
+                let wants = self
+                    .asking(&space, &locator, Some(named), |count, skip, _| {
+                        session.chunk_arrived(locator, index, count, false, false, skip)
+                    })
+                    .await;
                 Ok((Taken::Dropped, wants))
             }
             received => {
@@ -3870,9 +3925,22 @@ impl Engine {
         let replica = state.replicas.get(space);
         let in_order = self.receives_in_order(&state, space, locator);
         let receive = Self::receive_progress(&state, space, locator).map(|(chunks, _)| chunks);
+        // Of an object fetched for readers that store nothing, the
+        // header is the one their windows hold, and a chunk none of them
+        // waits for is not asked for.
+        let passes = self.passes(&state, space, locator);
+        let key = (*space, crate::replica::object_id(locator));
         let count = replica
             .and_then(|replica| replica.object_chunk_count(locator))
-            .or(receive.map(|(_, count)| count));
+            .or(receive.map(|(_, count)| count))
+            .or_else(|| {
+                let header = self.readers().header(&key).filter(|_| passes)?;
+                let size = frasil_units::objects::Header::read(&header).ok()?.size;
+                Some(frasil_units::objects::chunk_count(
+                    size,
+                    frasil_units::limits::CHUNK_BYTES as u64,
+                ))
+            });
         let written = receive.map_or(0, |(written, _)| written);
         let fetches = &self.shared.fetches;
         let skip = |index: u64| {
@@ -3881,9 +3949,13 @@ impl Engine {
             } else {
                 fetches.wants(space, locator, index)
             };
-            replica.is_some_and(|replica| replica.holds_chunk(locator, index))
+            // A chunk held that a reader could not open is asked for
+            // again.
+            (replica.is_some_and(|replica| replica.holds_chunk(locator, index))
+                && !self.readers().distrusts(&key, index))
                 || index < written
                 || !(named || wanted)
+                || (passes && !self.readers().needs(&key, index))
         };
         ask(count, &skip, in_order)
     }

@@ -51,7 +51,9 @@ const budgets = {
   // rows, and receipts.
   // 165,788 and 24,984 on 2026-11-13, each budget a tenth above: the checkpoint calls, their
   // reports and policy, and ranks.
-  glue: { raw: 182_367, gzip: 27_482 },
+  // 182,385 and 26,755 on 2026-11-24, each budget a tenth above: a blob's reader, the options of
+  // a read, keeping and dropping a blob, and the cache's budget and usage.
+  glue: { raw: 200_624, gzip: 29_431 },
   // 38,909 and 7,774 on 2026-10-27 (32,435 and 6,948 on 2026-10-22), without comments (the
   // declarations keep them); 576 and 95 of the growth are the space-files calls.
   // 62,830 and 12,750 on 2026-11-07, each budget a tenth above: observed stores and their sharing,

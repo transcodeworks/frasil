@@ -387,10 +387,15 @@ impl Blobs {
         }))
     }
 
-    /// `length` bytes of a blob from byte `offset`, fewer at its end. A
-    /// blob this device does not hold whole is fetched first, whole, into
-    /// its cache; `undefined` when it is not here and nothing is connected
-    /// that could send it.
+    /// `length` bytes of a blob from byte `offset`, fewer at its end. Of a
+    /// blob this device does not hold whole, only the chunks that hold
+    /// the range are fetched, into its cache; `undefined` when it is not
+    /// here and nothing is connected that could send it. Each chunk opens
+    /// under the blob's key before its bytes are given, and the checks
+    /// that need the whole blob do not run on a range: a member that
+    /// holds the blob's key can serve a range read other validly sealed
+    /// chunks, and nothing refutes them later, so read with `get` what
+    /// must be the blob's.
     #[wasm_bindgen(js_name = getRange)]
     pub fn get_range(&self, blob: String, offset: f64, length: f64) -> Result<Promise, JsValue> {
         let blob = id::<BlobId>(&blob)?;

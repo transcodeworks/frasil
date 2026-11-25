@@ -7,22 +7,27 @@
 //! as [`Blobs::put`] does: the plaintext, its sealed chunks and the stored
 //! bytes are held together, so a put needs a few times the blob's size in
 //! memory, and in a browser the WebAssembly memory bounds the blob. A read
-//! of a blob the device does not hold whole fetches it first, as its
-//! [`Read`] says, from the peers and members connected, reporting the share
-//! fetched; it then opens the object chunk by chunk and writes each out as
-//! it opens, so that a large blob never sits whole in memory: a get into a
-//! writer, a range read and a content hash each hold a few chunks at a
-//! time, and a range read the range too. A blob the application holds is
-//! read from its file the same way.
+//! opens the object chunk by chunk and writes each out as it opens, so that
+//! a large blob never sits whole in memory: a get into a writer, a range
+//! read and a content hash each hold a few chunks at a time, and a range
+//! read the range too. A blob the device does not hold whole is read
+//! through a reader ([`Blobs::open_reader`]) as its chunks arrive from the
+//! peers and members connected, and stored as its [`Read`] says; in a
+//! space whose blobs the application holds as files it is fetched whole
+//! first, into a file. A blob the application holds is read from its file
+//! the same way.
 //! Progress is `(bytes, total)`, and never goes back. A reference reads the
 //! same way: a peer serves its object to this space, and the key it carries
 //! opens it.
 //!
-//! Every check of units.md, 3.3 Reading an object still runs: the stored
-//! bytes hash to the blob's locator (step 0) before any plaintext goes out,
-//! each chunk opens before it is written (step 6), and a read of the whole
-//! blob checks its plaintext's ID (step 7) before it writes the last chunk.
-//! A get that fails part way has written a prefix of the blob: discard it.
+//! Every check of units.md, 3.3 Reading an object still runs. Of a blob the
+//! device holds whole, the stored bytes hash to the blob's locator (step
+//! 0) before any plaintext goes out, each chunk opens before it is written
+//! (step 6), and a read of the whole blob checks its plaintext's ID (step
+//! 7) before it writes the last chunk. Of one read as it arrives, each
+//! chunk opens before it is written, and steps 0 and 7 run on the whole
+//! before the last chunk is. A get that fails part way has written a
+//! prefix of the blob: discard it.
 
 use super::{BlobId, Blobs, Read};
 use crate::error::{Error, Result};
@@ -149,10 +154,12 @@ impl Blobs {
     }
 
     /// Writes a blob's bytes into `writer`. A blob this device does not
-    /// hold whole is fetched first, as `read` says ([`Read`]), from the
-    /// connected peers, or from members over member connections.
-    /// `on_progress(bytes, Some(size))` follows the fetch, then the
-    /// writing.
+    /// hold whole is fetched as `read` says ([`Read`]), from the connected
+    /// peers, or from members over member connections, and each chunk is
+    /// written once it arrived and opened: the last one only once every
+    /// check passed on the whole blob. A writer that failed part way holds
+    /// a prefix of the blob, to be discarded. `on_progress(bytes,
+    /// Some(size))` follows the writing.
     ///
     /// # Errors
     ///
@@ -176,30 +183,72 @@ impl Blobs {
             reported: None,
         };
         let entry = self.entry(id).await?;
-        let size = entry.size;
+        // A blob that is not whole here is read through a reader, in
+        // order: each chunk is written as it arrives and opens, and the
+        // last one once every step passed on the whole. The size reported
+        // is the header's, which each chunk that opens binds.
+        if self.reads_through(id, &entry, read).await {
+            let mut through = self.read_through(id, entry, read).await?;
+            let written = async {
+                let mut written = 0u64;
+                while let Some((size, chunk)) = through.next().await? {
+                    for piece in chunk.chunks(PIECE) {
+                        write_all(&mut writer, piece).await?;
+                        written += piece.len() as u64;
+                        progress.report(written, Some(size.max(written)));
+                    }
+                }
+                poll_fn(|cx| Pin::new(&mut writer).poll_flush(cx))
+                    .await
+                    .map_err(|error| io(&error))?;
+                Ok(written)
+            }
+            .await;
+            let written = through.end(written).await?;
+            progress.report(written, Some(written));
+            return Ok(());
+        }
         let reading = self
             .ready(&entry, read, &mut progress)
             .await?
             .ok_or(Error::Class("Missing"))?;
-        let written = async {
+        // Held whole: the size its header gives, which the checks that
+        // run before any plaintext is given bind.
+        let size = self.stored_size(&entry).await;
+        let written: Result<u64> = async {
             let mut written = 0u64;
             let mut chunks = self.plain(&entry, 0..u64::MAX).await?;
             while let Some((_, chunk)) = chunks.next().await? {
                 for piece in chunk.chunks(PIECE) {
                     write_all(&mut writer, piece).await?;
                     written += piece.len() as u64;
-                    progress.report(written, Some(size));
+                    progress.report(written, Some(size.max(written)));
                 }
             }
             poll_fn(|cx| Pin::new(&mut writer).poll_flush(cx))
                 .await
-                .map_err(|error| io(&error))
+                .map_err(|error| io(&error))?;
+            Ok(written)
         }
         .await;
         reading.done().await?;
-        written?;
-        progress.report(size, Some(size));
+        let written = written?;
+        progress.report(written, Some(written));
         Ok(())
+    }
+
+    /// The size the header of a blob's object gives, where the device
+    /// holds the object, and else the size its entry shows. The header's
+    /// is what a read goes by: the checks that run before any plaintext
+    /// of a blob held whole is given bind it (units.md, 3.3 Reading an
+    /// object), and the entry's is only what its writer wrote.
+    async fn stored_size(&self, entry: &frasil_adapter_blobs::Entry) -> u64 {
+        let engine = self.space().device.engine();
+        match self.holder(entry).await {
+            Some(holder) => engine.object_size(&holder, &entry.object).await,
+            None => None,
+        }
+        .unwrap_or(entry.size)
     }
 
     /// The SHA-256 of a blob's plaintext, a stable hash of its content for
@@ -217,6 +266,33 @@ impl Blobs {
         let entry = self.entry(id).await?;
         let engine = self.space().device.engine();
         let space = self.space().id().event();
+        if engine.content_hash(&space, &entry.object).is_none()
+            && self.reads_through(id, &entry, read).await
+        {
+            let locator = entry.object;
+            let mut through = match self.read_through(id, entry, read).await {
+                Ok(through) => through,
+                Err(Error::Class("Missing" | "Sealed")) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            let hashed = async {
+                let mut hasher = frasil_crypto::primitives::Sha256Hasher::new();
+                while let Some((_, chunk)) = through.next().await? {
+                    hasher.update(chunk);
+                }
+                Ok(hasher.finish())
+            }
+            .await;
+            let hashed = through.end(hashed).await;
+            return match hashed {
+                Ok(hash) => {
+                    engine.keep_content_hash(space, locator, hash);
+                    Ok(Some(hash))
+                }
+                Err(Error::Class("Missing" | "Sealed")) => Ok(None),
+                Err(error) => Err(error),
+            };
+        }
         let reading = match self.ready(&entry, read, &mut Reporter::silent()).await {
             Ok(Some(reading)) => reading,
             Ok(None) | Err(Error::Class("Missing")) => return Ok(None),
@@ -248,17 +324,38 @@ impl Blobs {
         }
     }
 
-    /// `len` bytes of a blob from byte `offset`, fewer at its end. A blob
-    /// this device does not hold whole is fetched first, whole, as `read`
-    /// says; `None` when the blob is not here and cannot be fetched now,
-    /// as for [`Blobs::get`]. It holds a few chunks and the range, never
-    /// the blob. Only the chunks that hold the range are opened once every
-    /// check of units.md, 3.3 has run on the whole blob since the device
-    /// opened or last fetched it: until then a range read runs them
-    /// first, in one pass over the stored chunks that keeps only the
-    /// range, so that the first range read of a blob reads all of it. A
-    /// blob the application holds is read from its file, through to its
-    /// end while the object ID is checked.
+    /// `len` bytes of a blob from byte `offset`, fewer at its end. Of a
+    /// blob this device does not hold whole, only the chunks that hold the
+    /// range are fetched, and stored as `read` says; `None` when the blob
+    /// is not here and cannot be fetched now, as for [`Blobs::get`]. Each
+    /// of those chunks opens under the blob's key before its bytes are
+    /// given, and no check that needs the whole blob runs on them
+    /// ([`Verified::Chunks`](crate::Verified::Chunks)).
+    ///
+    /// **The limit of a range read.** A member of the space that holds the
+    /// blob's key, its writer among them, can serve a range read chunks
+    /// that are validly sealed and are not the blob's, and nothing refutes
+    /// them later: the read ends without the whole-blob checks, and no
+    /// refusal follows. A peer, which holds no key, cannot. A caller that
+    /// needs the bytes to be the blob's reads the blob with [`Blobs::get`]
+    /// or [`Blobs::get_stream`], which give nothing unchecked at their
+    /// end, or reads through a [`BlobReader`](crate::BlobReader) and acts
+    /// only once [`BlobReader::verified`](crate::BlobReader::verified)
+    /// says [`Verified::Whole`](crate::Verified::Whole).
+    ///
+    /// A range at or past the blob's end is empty. To know where the end
+    /// is, a chunk must have opened under the blob's header, which binds
+    /// its size: of a blob the device holds nothing of, a range read past
+    /// the end therefore fetches one chunk, the blob's last.
+    ///
+    /// It holds a few chunks and the range, never the blob. Of a blob the
+    /// device holds whole, only the chunks that hold the range are opened
+    /// once every check of units.md, 3.3 has run on the whole blob since
+    /// the device opened or last fetched it: until then a range read runs
+    /// them first, in one pass over the stored chunks that keeps only the
+    /// range, so that the first range read of a whole blob reads all of
+    /// it. A blob the application holds is read from its file, through to
+    /// its end while the object ID is checked.
     ///
     /// # Errors
     ///
@@ -271,22 +368,56 @@ impl Blobs {
         read: &Read,
     ) -> Result<Option<Vec<u8>>> {
         let entry = self.entry(id).await?;
-        let end = offset.saturating_add(len).min(entry.size);
-        if offset >= end {
+        if len == 0 {
             return Ok(Some(Vec::new()));
+        }
+        // A blob that is not whole here is read through a reader, which
+        // fetches the chunks of the range alone.
+        if self.reads_through(id, &entry, read).await {
+            return match self.range_through(id, entry, offset, len, read).await {
+                Ok(range) => Ok(Some(range)),
+                Err(Error::Class("Missing")) => Ok(None),
+                Err(error) => Err(error),
+            };
         }
         let reading = match self.ready(&entry, read, &mut Reporter::silent()).await {
             Ok(Some(reading)) => reading,
             Ok(None) | Err(Error::Class("Missing")) => return Ok(None),
             Err(error) => return Err(error),
         };
-        let range = self.range_of(&entry, offset, end).await;
+        // Cut at the size the header gives, as a read through a reader
+        // is, and not at the size the entry shows.
+        let end = offset
+            .saturating_add(len)
+            .min(self.stored_size(&entry).await);
+        let range = self.range_of(&entry, offset, end.max(offset)).await;
         reading.done().await?;
         range
     }
 
+    /// Whether a read of an entry goes through a reader
+    /// ([`Blobs::open_reader`]): the device does not hold the blob whole,
+    /// the read may fetch, and the space's blobs are not the
+    /// application's to hold as files, where a blob fetched becomes one.
+    pub(super) async fn reads_through(
+        &self,
+        id: BlobId,
+        entry: &frasil_adapter_blobs::Entry,
+        read: &Read,
+    ) -> bool {
+        // A refusal of the blob that nothing told the application of
+        // yet is told by the next read of it.
+        self.tell_refused(id, entry);
+        if read.is_local() || self.holder(entry).await.is_some() {
+            return false;
+        }
+        let space = self.space().id().event();
+        self.space().device.engine().object_policy(&space).await != crate::held::ObjectPolicy::Held
+    }
+
     /// The bytes of an entry from `offset` to `end`, from the chunks the
-    /// device holds.
+    /// device holds. Every check has run on the whole blob before any is
+    /// given, and before an empty range says where the blob ends.
     async fn range_of(
         &self,
         entry: &frasil_adapter_blobs::Entry,
@@ -294,7 +425,11 @@ impl Blobs {
         end: u64,
     ) -> Result<Option<Vec<u8>>> {
         let chunk = frasil_units::limits::CHUNK_BYTES as u64;
-        let chunks = offset / chunk..end.div_ceil(chunk);
+        let chunks = if offset < end {
+            offset / chunk..end.div_ceil(chunk)
+        } else {
+            0..0
+        };
         let mut plain = match self.plain(entry, chunks).await {
             Ok(plain) => plain,
             Err(Error::Class("Missing")) => return Ok(None),
@@ -328,14 +463,18 @@ impl Blobs {
         entry: &frasil_adapter_blobs::Entry,
         chunks: core::ops::Range<u64>,
     ) -> Result<Plain> {
-        let reference = entry
-            .reference
-            .as_ref()
-            .map(|reference| (EventId(reference.source), reference.object_key));
+        // The object key stays in a type that is zeroed when it goes.
+        let reference = entry.reference.as_ref().map(|reference| {
+            (
+                EventId(reference.source),
+                frasil_keys::derive::Secret::new(reference.object_key),
+            )
+        });
+        let space = self.space().id().event();
         self.space()
             .device
             .engine()
-            .plain(&self.space().id().event(), &entry.object, reference, chunks)
+            .plain(&space, &entry.object, reference.as_ref(), chunks)
             .await
     }
 
@@ -347,9 +486,10 @@ impl Blobs {
     ///
     /// # Errors
     ///
-    /// `Missing` when nothing is connected that could send the object, or
-    /// when the space's connections ask for it no further for want of an
-    /// answer ([`FetchEnd::Unserved`]); `ObjectMismatch` when what they
+    /// `Missing` when nothing is connected that could send the object,
+    /// from the start or once the last connection went while it waited,
+    /// or when the space's connections ask for it no further for want of
+    /// an answer ([`FetchEnd::Unserved`]); `ObjectMismatch` when what they
     /// were sent failed its checks ([`FetchEnd::Refused`]) and `Malformed`
     /// when it did not read as the object ([`FetchEnd::Malformed`]), each
     /// as soon as every connection of the space gave the request up and
@@ -357,7 +497,7 @@ impl Blobs {
     /// space, or a member whose attach has not started, may still serve
     /// the request, and it has no end while one is awaited.
     /// [`Error::Timeout`] when nothing arrives for [`STALL`], which bounds
-    /// that wait too, or the last connection goes.
+    /// that wait too.
     ///
     /// [`FetchEnd::Unserved`]: crate::fetch::FetchEnd::Unserved
     /// [`FetchEnd::Refused`]: crate::fetch::FetchEnd::Refused
@@ -429,7 +569,12 @@ impl Blobs {
                 }
                 _ => idle += POLL,
             }
-            if idle >= STALL || !any {
+            // Nothing is connected any more that could send it: as when
+            // nothing was from the start, and as a reader's read says it.
+            if !any {
+                return Err(Error::Class("Missing"));
+            }
+            if idle >= STALL {
                 return Err(Error::Timeout);
             }
             // The request's end is heard as it is told, between two looks.
@@ -755,6 +900,36 @@ mod tests {
             .expect("the read asks for the blob");
     }
 
+    /// The last connection that could send a blob goes while a fetch of
+    /// the blob waits: the blob is missing, as when nothing was connected
+    /// from the start, and the fetch has not timed out.
+    #[cfg(all(
+        feature = "adapter-blobs",
+        any(feature = "server", feature = "iroh", feature = "server-socket")
+    ))]
+    #[tokio::test]
+    async fn a_fetch_whose_last_connection_goes_is_missing() {
+        use crate::{Device, Error, Storage};
+        use std::time::Duration;
+
+        let device = Device::open(Storage::Memory, &[1; 32]).await.unwrap();
+        let (space, blobs, id, ..) = absent_blob(&device).await;
+        let engine = device.engine().clone();
+        let of = space.id().event();
+        let connection = engine.fetches().attach(of);
+        let keeping = {
+            let blobs = blobs.clone();
+            tokio::spawn(async move { blobs.keep(id, |_, _| ()).await })
+        };
+        requested(&engine, of).await;
+        drop(connection);
+        let kept = tokio::time::timeout(Duration::from_secs(10), keeping)
+            .await
+            .expect("the fetch ends once nothing is connected")
+            .unwrap();
+        assert!(matches!(kept, Err(Error::Class("Missing"))), "{kept:?}");
+    }
+
     /// A read does not end because the connected parties gave its blob up
     /// while a connection of the space is still being made: that one
     /// serves the read once it is made, and a connection that is not made
@@ -792,7 +967,7 @@ mod tests {
         let serving = engine.fetches().attach(of);
         drop(coming);
         for part in parts {
-            engine.receive_part(of, part).await.unwrap();
+            engine.receive_sent(of, part).await.unwrap();
         }
         let read = tokio::time::timeout(Duration::from_secs(10), reading)
             .await
@@ -861,7 +1036,7 @@ mod tests {
         let _holder = engine.fetches().attach(of);
         requested(&engine, of).await;
         for part in parts {
-            engine.receive_part(of, part).await.unwrap();
+            engine.receive_sent(of, part).await.unwrap();
         }
         let got = tokio::time::timeout(Duration::from_secs(10), waiting)
             .await

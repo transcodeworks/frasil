@@ -268,26 +268,41 @@ let bytes = blobs.get(id, &Read::new().local()).await?;    // fetch nothing
 returns `None` when the blob is not here and is not fetched: the read is
 `local`, or neither a peer nor a member of the space is connected, or what
 is connected does not serve the blob for now. A read that must not wait on
-the network is `local`. A read fails with `Timeout` when nothing arrives for
+the network is `local`. A fetch whose last connection goes while it waits
+ends as it would have with nothing connected. A read fails with `Timeout`
+when nothing arrives for
 half a minute, and at once, with `ObjectMismatch` or `Malformed`, when every
 connection of the space gave the blob up because the bytes it was sent
 failed their checks, and none is still being made. A peer or a member that
 connects while a read waits serves it, and a read does not end on the
 others' failure while a peer has yet to grant the space.
 
-A read fetches the blob whole before it gives any of it, into the device's
-store, so every check of the object format runs as for any stored blob. An
-`uncached` read drops the blob again when it ends, and so does any read
-under a budget of zero or of a blob larger than the whole budget. While such
-a read runs, the device stores that blob beside its cache: the blob counts
-against no budget and evicts nothing, so what a device stores beyond its
-budget is only what running reads hold. `blob_cache_usage()` counts it with
-the cached bytes meanwhile. When two reads of one blob run at once and one
-of them is not `uncached`, the blob is left in the cache. A read that
+A read of a blob the device does not hold whole fetches the blob's chunks,
+checks each as it arrives, and puts them where the read says. `get`,
+`get_stream` and `content_hash` read the blob in order from its first byte,
+so every check of the object format has run by the time they reach its last
+chunk: `get` gives nothing before that, and `get_stream` writes each chunk
+once it has passed its own checks, and the last one once the whole has.
+`get_range` fetches only the chunks of its range, and runs no check that
+needs the whole blob. Each chunk it returns opened under the blob's key, so
+no peer can have forged it. A member of the space that holds the blob's
+key, its writer among them, can serve a range read chunks that are validly
+sealed and are not the blob's, and nothing refutes them later: the range
+read ends without the whole-blob checks, and no refusal follows. Where the
+bytes must be the blob's, read with `get` or `get_stream`, or through a
+reader and act once `BlobReader::verified()` says `Whole` (see below).
+
+By default the chunks go to the cache as they arrive. A read that fails or
+is cancelled part way leaves what it fetched there, as part of a cached
+blob: a later read completes it, `blobs.local(id)` counts its bytes, and
+the cache evicts it whole like any other. An `uncached` read stores nothing:
+the chunks pass through memory, a few at a time, and so do those of any read
+under a budget of zero or of a blob too large for the whole budget. A blob
+the device already holds part of is completed where it is, whatever the
+read says, and when an `uncached` read and one that is not read one blob at
+once, the chunks go to the cache and both read them there. A read that
 fetches nothing, because nothing is connected or the fetch gets nowhere,
-writes nothing to the store. A read that is cancelled, its future dropped
-part way, ends as any read does: what it fetched to store nothing is
-dropped at once.
+writes nothing to the store.
 
 **Keeping and dropping.** `blobs.keep(id, on_progress)` fetches a blob into
 the store and keeps it, without reading it: a download in the background,
@@ -302,7 +317,10 @@ them there, so the file's own blob stands as the reference does.
 
 **What is never evicted.** Kept blobs; a blob this device put, until an
 always-on peer holds its bytes; what Frasil stores for itself, such as
-snapshots; and a blob that a read or a fetch is using. A blob this device
+snapshots; and a blob that a read, an open reader or a fetch is using. A
+cached blob that is being read grows as its chunks arrive: the device evicts
+other blobs to make room, and when none is left to go the cache stands over
+its budget, by no more than the blobs being read, until their reads end. A blob this device
 put is kept, and `blobs.local(id)` says so, until a peer of the space has
 acknowledged the change that put the blob and then answers that it holds
 the bytes: the blob is cached from then on, unless the application asked to
@@ -350,12 +368,168 @@ cache: a file is the application's to keep or delete. A blob a read fetches
 there becomes a file, as `materialise` with an empty hint makes one; `keep`
 is that `materialise`, and `drop_local` is `release`. An `uncached` read
 that would have to fetch is refused there with `Unsupported`, since it would
-write a file.
+write a file. A reader (`open_reader`) is the exception: over a blob held as
+a file it reads the file, and over one that is not it fetches the chunks it
+reads into its own memory, whatever its `Read` says, and makes no file.
 
 The npm package and the Swift and Kotlin bindings read as `Read::new()`
 does, into the cache, under the default budget. They do not yet have
 `Options::blob_cache`, `Options::keep_all_blobs`, `Read`, `keep`,
-`drop_local`, `local` or `blob_cache_usage`.
+`drop_local`, `local`, `blob_cache_usage` or `open_reader`.
+
+## Reading a blob that is not all here
+
+`blobs.open_reader(id, &read)` gives a `BlobReader`, which reads any range
+of a blob and fetches only the chunks that hold it. A blob is sealed in
+chunks of about a mebibyte (1,048,536 bytes of content each), and each
+opens by itself, so a reader gives bytes as soon as their chunk is here and
+checked, without the rest of the blob. It is what backs a media player: a
+video starts within a chunk or two, and a seek fetches where it lands.
+
+```rust
+use frasil::{Read, Verified};
+
+let mut reader = blobs.open_reader(id, &Read::new()).await?;
+let size = reader.fetch_size().await?;          // from the blob's header
+let mut buf = vec![0; 64 * 1024];
+let n = reader.read_at(offset, &mut buf).await?; // 0 at the end
+if reader.verified() == Verified::Whole { /* every check has run */ }
+reader.close().await?;
+```
+
+- `read_at(offset, buf)` gives at least one byte unless `offset` is at or
+  past the end, and no more than the chunk `offset` lies in holds from
+  there: call it again for the rest. `read(buf)` reads at the reader's
+  position, which `seek(position)` moves.
+- The chunk a read needs is asked of the space's connections ahead of
+  everything else, and the chunks after it behind that: eight of them
+  unless `set_read_ahead(chunks)` says otherwise. A seek, or a read
+  elsewhere than in the chunk the reader stands in or the one after it,
+  cancels what the reader asked for before, so that nothing it left behind
+  is fetched ahead of the chunk it waits for. A reader that is dropped or
+  closed cancels all of it.
+- `size()` is the size the blob's header gives. The header's own checks
+  bind only its object ID to the blob; its size is bound by each chunk, so
+  `size()` is `None`, and no read answers the end of the blob, until a
+  chunk has opened under the header in that reader. `fetch_size()` fetches
+  and opens one: the chunk the reader stands in, or the blob's last when it
+  stands past the end.
+- A read fails with `Missing` while nothing is connected that could send
+  the chunk, with `Timeout` when for half a minute none of the chunks the
+  reader asked for arrives and the connections that hold its request take
+  no other chunk of the space, and with `Decrypt` or `Malformed` when
+  every connection of the space gave the chunk up because what it was sent
+  failed its checks. A read queued behind other readers' chunks on a slow
+  link is therefore not timed out; a party that only sends again what the
+  device already has does not hold a read open. Such a read may be made
+  again, and asks again: the reader has not failed, nothing of the failed
+  chunk was given, and what the reader fetched before is still there. Only
+  a refusal of the blob is for good, with `ObjectMismatch` (see below).
+  `get`, `get_stream`,
+  `get_range` and `content_hash`, which read through a reader, give
+  `ObjectMismatch` in both cases, as they do for a blob fetched whole.
+- A chunk that the device stores and that does not open fails the read
+  with `Decrypt` or `Malformed`, and nothing is dropped for it. Of a blob
+  held in part, the reader reads that chunk from the store no more and
+  the next read asks for it again: a chunk that opens takes its place. Of
+  a blob held whole whose stored bytes are the ones the stream names, the
+  fault is the blob's own: its readers fail for good with that class, and
+  its bytes stay.
+- A read through an entry that references a blob of another space with a
+  wrong object key fails with `Decrypt`, and changes nothing else: nothing
+  the device stores is dropped, in this space or the source, no party is
+  given up, and a reader of an entry with the right key reads the blob.
+- `Sealed` says the device holds no key of the state the blob's header
+  names. Where the entry names a state whose key it holds, a header that
+  names another is not the blob's: the device takes no such header from
+  a party, and a reader that finds one held from before asks again and
+  reads the blob once a chunk that opens arrives.
+- The size the stream's entry shows is what its writer wrote, and the
+  header decides what is read. A reader tells the application of an entry
+  whose key or size is not the header's with `Event::EntryMismatch`.
+
+**Backing a player.** A player asks for byte ranges, by `Range` requests or
+through a data source of its platform. Answer each from `read_at`, in a loop
+until the range is filled, and give `size()` as the length. Players read
+ahead by themselves, so the default read-ahead suits them; set it to 0 for a
+reader that jumps about, such as one that reads an index at the end of a
+file first.
+
+**Where the chunks go** is what the reader's `Read` says, as for any read.
+By default they join the cache as parts of a cached blob, and with `keep`
+they are kept. With `uncached` the reader holds them itself, sealed, in a
+window in memory: the chunk it stands in and its read-ahead, at most
+`read_ahead + 1` chunks of 1,048,576 bytes, 9 MiB by default, beside one
+opened chunk. A window takes only chunks its reader asked for, so nothing a
+peer or a member sends makes it grow. Chunks behind the reader are let go,
+and a seek back fetches them again. A blob too large for the whole budget
+is read that way under any `Read`, as it could not be cached: by the size
+its entry shows when the reader opens, and by the header's once a chunk
+has opened under it, should the entry have shown less.
+
+**What is checked, and when.** Before a reader gives any byte, the blob's
+header has passed its checks and the byte's chunk has opened under the
+blob's key, at its own place in its own blob: a chunk of another blob, or
+this blob's chunk from another place, does not open. A party without the
+space's keys, a peer included, cannot make a chunk that opens. Two checks
+remain that need the whole blob: that its stored bytes are the ones the
+stream names, and that its content is what its ID was made from. Until they
+have run, a member that holds the blob's key, its writer among them, can
+have served chunks that open and are not the blob's.
+
+`reader.verified()` says which holds:
+
+| | Meaning |
+| --- | --- |
+| `Verified::Chunks` | Each byte given came from a chunk that opened. The whole-blob checks have not run. |
+| `Verified::Whole` | Every check has run: the bytes are the blob's. |
+
+A reader becomes `Whole` in one of two ways. One that reads the blob in
+order from its first byte to its last runs the whole-blob checks as the
+bytes pass, and holds back the last chunk until they do; this works with
+`uncached` too, with nothing stored. One that seeks cannot run them itself:
+they run once the device holds the whole blob in its store, which happens
+when the reader, or any other read, has fetched every chunk into the cache
+or the blob is kept. A reader that is `uncached` and seeks therefore stays
+at `Chunks`.
+
+`Whole` is about the bytes the reader gave. A reader that holds its chunks
+in memory fetches a chunk again when it is read again, from whichever party
+serves it then, and a chunk read from the device's store may leave the
+store while the reader is open. The reader keeps the SHA-256 of each chunk
+it gave, 32 bytes a chunk, and takes at that place only the same bytes
+again: so a reader that became `Whole` and seeks back stays `Whole`, and a
+member cannot slip other bytes in after the checks. Other bytes at a place
+already given are not given: the reader fails with `ObjectMismatch`, and
+the application is told.
+
+When a whole-blob check fails, the blob is refused: every open reader of it
+fails with `ObjectMismatch` from then on, and `Event::ObjectRefused` names
+the blob. Stored bytes that are not the ones the stream names are dropped,
+and the blob is fetched again by the next read. Bytes that are the ones the
+stream names, with content that is not what the blob's ID was made from,
+stay where they are: fetching them again would bring the same, and the blob
+is refused for as long as the device is open. The event is reported by a
+task of the device's that follows the blob for each open reader. A device
+whose tasks take no such task (`Options::tasks`) reports it at the next
+call on a reader of the blob, or the next read of it.
+
+A chunk that does not open as it arrives is no refusal, and drops nothing
+the device holds. It is its sender's fault where the device can tell: the
+chunk fails under the header it came with, or under the header the device
+holds once a chunk has opened under that one. It is then not given, that
+connection asks its sender for no more of the blob, and another party is
+asked. Where the device cannot tell, because nothing has opened under what
+it holds either, or because only the object key of a reference's entry
+could have opened the chunk, the chunk is not taken, nobody is given up,
+and it is asked for again. Only a chunk that opens under another header
+than the one the device holds makes it drop what it holds of the blob,
+and only a holder of the blob's key can seal one. Content that people only
+watch or listen to can be shown at `Chunks`, since the worst a member can do
+is show a viewer something else than it showed another, and the reader says
+so when it finds out. Content that is acted on, such as a document that is
+executed, parsed as configuration, or signed off, must wait for `Whole`: read
+it with `get`, or read the reader to its end in order first.
 
 ## Blobs and an application's cache
 
@@ -386,21 +560,25 @@ sealed bytes. Frasil gives it what such a cache needs.
   opens a blob chunk by chunk, about a mebibyte at a time, and writes each
   chunk as it opens, so a large file never sits whole in memory.
   `get_range(id, offset, len, &read)` (`getRange`) returns part of a blob,
-  opening only the chunks that hold it; the device fetches the blob whole
-  first when it does not hold it. `content_hash` reads the same way. A read
+  opening only the chunks that hold it; when the device does not hold the
+  blob whole, it fetches those chunks alone. `content_hash` reads the way
+  `get_stream` does. A read
   holds a few chunks at a time, plus the range it returns, whether the
   device keeps the blob sealed, in memory, or as a file it holds. From
   Swift and Kotlin, `getToFile(id, path, listener)` writes a blob to a file
   the same way.
 
-Every check of the object format still runs. The stored bytes are checked
-against the blob's locator before any plaintext goes out; each chunk is
-authenticated before it is used; and a read of the whole blob checks the
-plaintext's ID before it gives the last chunk. A stream that fails part way
-has written a prefix of the blob: discard it. The first range read of a blob
-since the device opened, or since it last fetched the blob, reads the whole
-blob once, a few chunks at a time and keeping only the range, so that every
-check runs on it; later range reads open only their chunks. When the device
+Every check of the object format still runs on a blob the device holds
+whole. The stored bytes are checked against the blob's locator before any
+plaintext goes out; each chunk is authenticated before it is used; and a
+read of the whole blob checks the plaintext's ID before it gives the last
+chunk. A stream that fails part way has written a prefix of the blob:
+discard it. The first range read of a whole blob since the device opened,
+or since it last fetched the blob, reads the whole blob once, a few chunks
+at a time and keeping only the range, so that every check runs on it; later
+range reads open only their chunks. A range of a blob the device holds in
+part, or nothing of, is read as a reader reads it: its chunks are checked,
+and the whole-blob checks have not run (see above). When the device
 drops a blob, what it found out about its stored bytes goes with them. A range of a blob the application holds as a
 file is read through the whole file each time, so that its ID is checked;
 to seek in such a file, read the file itself (`materialise`).

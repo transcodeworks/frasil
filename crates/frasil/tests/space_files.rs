@@ -457,8 +457,13 @@ async fn a_file_without_objects_fetches_them_later_into_the_provider() {
     };
     let bobs = invited.accept().await.unwrap();
     assert_eq!(bobs.space.object_policy().await, ObjectPolicy::Held);
+    // A read of what is here alone: one that fetches would have the blob
+    // from Alice whenever the two have already met on the local network.
     assert_eq!(
-        bobs.files.get(blob, &frasil::Read::new()).await.unwrap(),
+        bobs.files
+            .get(blob, &frasil::Read::new().local())
+            .await
+            .unwrap(),
         None,
         "not embedded"
     );

@@ -861,8 +861,9 @@ mod blobs {
 
         /// A blob's bytes. A blob this device holds, kept or cached, is
         /// read from the device; one it does not hold whole is fetched
-        /// first from a connected peer or member, and then left in the
-        /// cache, kept, or dropped again as `read` says ([`Read`]).
+        /// from a connected peer or member, into the cache, kept, or
+        /// through memory alone, as `read` says ([`Read`]), and given
+        /// once every check passed on the whole.
         /// `None` when the blob is not here and is not fetched: the read
         /// is [`local`](Read::local), or neither a peer nor a member of
         /// the space is connected. A reference reads like any blob, with
@@ -885,6 +886,25 @@ mod blobs {
         /// fetched becomes a file.
         pub async fn get(&self, id: BlobId, read: &Read) -> Result<Option<Vec<u8>>> {
             let entry = self.entry(id).await?;
+            // A blob that is not whole here is read through a reader, in
+            // order, and given once every step passed on the whole.
+            if self.reads_through(id, &entry, read).await {
+                let mut through = self.read_through(id, entry, read).await?;
+                let read = async {
+                    let mut bytes = Vec::new();
+                    while let Some((_, chunk)) = through.next().await? {
+                        bytes.extend_from_slice(chunk);
+                    }
+                    Ok(bytes)
+                }
+                .await;
+                let read = through.end(read).await;
+                return match read {
+                    Ok(bytes) => Ok(Some(bytes)),
+                    Err(Error::Class("Missing")) => Ok(None),
+                    Err(error) => Err(error),
+                };
+            }
             let mut progress = crate::client::blob_stream::Reporter::silent();
             let reading = match self.ready(&entry, read, &mut progress).await {
                 Ok(Some(reading)) => reading,

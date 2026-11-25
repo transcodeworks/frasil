@@ -585,7 +585,15 @@ reader holds the object as not received and fetches it again. A reader
 that stops at a fault before it has run step 0 concludes nothing about the
 object. Until every step it runs has passed, it acts on nothing the
 plaintext says: it publishes none of it, and gives no verdict that reads
-it. A reader that holds only the object key skips step 7: step 0 binds
+it. Giving a chunk's plaintext to the application as content it reads or
+plays is neither: a reader MAY do so once steps 1 to 3 and 5 have passed
+on the header and steps 4 and 6 on that chunk, with the limit that
+[adapter-blobs.md](adapter-blobs.md), section 4, states for what is shown
+before steps 0 and 7. Steps 1 to 3 bind the header's object ID to the
+locator and nothing else of the header: its size is bound by each chunk's
+associated data (section 2.8), so such a reader relies on the header's
+size, as the object's length or to tell its end, only once a chunk has
+opened under that header. A reader that holds only the object key skips step 7: step 0 binds
 the bytes to the locator it was given, and step 6 to the key. A stream snapshot object's plaintext is then read as deterministic
 CBOR, a map with key 1 (`Malformed`); key 1 is 1 (`UnsupportedVersion`);
 keys 1 to 6 with their types, key 2 the snapshot unit's sealed type, and

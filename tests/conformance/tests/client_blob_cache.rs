@@ -495,62 +495,22 @@ async fn two_reads_of_one_blob_at_once_one_of_them_uncached() {
     assert_eq!(state(&bobs_files, ids[0]).await, BlobState::Absent);
     assert_eq!(state(&bobs_files, ids[1]).await, BlobState::Cached);
 
-    // One fetches the blob to store nothing, another that stores nothing
-    // finds it whole, and they end in either order: the blob goes with
-    // the last of them, at once, whichever fetched it.
-    for fetcher_first in [true, false] {
-        let fetcher = held_read(&bobs_files, ids[0], passing).await;
-        let joiner = held_read(&bobs_files, ids[0], passing).await;
-        let (first, last) = if fetcher_first {
-            (fetcher, joiner)
+    // Two that store nothing, each held part way, one of them ended
+    // first or cancelled: nothing of the blob is stored while they read,
+    // nor after.
+    for cancel in [false, true] {
+        let one = held_read(&bobs_files, ids[0], passing).await;
+        let other = held_read(&bobs_files, ids[0], passing).await;
+        assert_eq!(state(&bobs_files, ids[0]).await, BlobState::Absent);
+        if cancel {
+            one.0.abort();
+            assert!(one.0.await.unwrap_err().is_cancelled());
         } else {
-            (joiner, fetcher)
-        };
-        assert_eq!(finish(first).await, vec![1; SIZE]);
-        assert_ne!(
-            state(&bobs_files, ids[0]).await,
-            BlobState::Absent,
-            "a read still uses it"
-        );
-        assert_eq!(finish(last).await, vec![1; SIZE]);
-        assert_eq!(
-            state(&bobs_files, ids[0]).await,
-            BlobState::Absent,
-            "the last read that used it ended; the one that fetched it first: {fetcher_first}"
-        );
-    }
-
-    // Either of them cancelled: the blob goes once the other ends, or
-    // soon after the cancellation when it was the last.
-    for cancel_fetcher in [true, false] {
-        let fetcher = held_read(&bobs_files, ids[0], passing).await;
-        let joiner = held_read(&bobs_files, ids[0], passing).await;
-        let (cancelled, other) = if cancel_fetcher {
-            (fetcher, joiner)
-        } else {
-            (joiner, fetcher)
-        };
-        cancelled.0.abort();
-        assert!(cancelled.0.await.unwrap_err().is_cancelled());
+            assert_eq!(finish(one).await, vec![1; SIZE]);
+        }
+        assert_eq!(state(&bobs_files, ids[0]).await, BlobState::Absent);
         assert_eq!(finish(other).await, vec![1; SIZE]);
         assert_eq!(state(&bobs_files, ids[0]).await, BlobState::Absent);
-
-        let fetcher = held_read(&bobs_files, ids[0], passing).await;
-        let joiner = held_read(&bobs_files, ids[0], passing).await;
-        let (cancelled, other) = if cancel_fetcher {
-            (fetcher, joiner)
-        } else {
-            (joiner, fetcher)
-        };
-        assert_eq!(finish(other).await, vec![1; SIZE]);
-        cancelled.0.abort();
-        assert!(cancelled.0.await.unwrap_err().is_cancelled());
-        soon(async {
-            while state(&bobs_files, ids[0]).await != BlobState::Absent {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await;
     }
     assert_eq!(state(&bobs_files, ids[1]).await, BlobState::Cached);
 }
@@ -588,19 +548,12 @@ async fn finish((reading, mut reader, first): HeldRead) -> Vec<u8> {
     bytes
 }
 
-/// Less than the device's upkeep takes to come round, which looks at the
-/// cache too: what must happen at once is not left to it.
-async fn soon<T>(future: impl Future<Output = T>) -> T {
-    tokio::time::timeout(Duration::from_millis(500), future)
-        .await
-        .expect("at once, not at the next upkeep")
-}
-
-/// A read that leaves its blob in the cache and finds it held beside the
-/// cache, by a read that stores nothing, takes it into the cache: the
-/// device makes room for it then, and the cache stays within its budget.
+/// A read that leaves its blob in the cache while a read that stores
+/// nothing reads the same blob: the device makes room for the blob as it
+/// arrives, the cache stays within its budget, and the blob is left
+/// there when both ended.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_blob_taken_into_the_cache_from_beside_it_has_room_made_for_it() {
+async fn a_blob_read_into_the_cache_beside_an_uncached_read_has_room_made_for_it() {
     let peer = spawn_loopback().await.unwrap();
     let (_alice, space, files) = alice(&peer).await;
     // Room for two blobs and not three.
@@ -615,7 +568,8 @@ async fn a_blob_taken_into_the_cache_from_beside_it_has_room_made_for_it() {
 
     let passing = held_read(&bobs_files, ids[2], Read::new().uncached()).await;
     let usage = bob.blob_cache_usage().await;
-    assert!(usage.cached > two, "held beside the cache: {usage:?}");
+    assert_eq!(usage.cached, two, "nothing of it is stored: {usage:?}");
+    assert_eq!(state(&bobs_files, ids[2]).await, BlobState::Absent);
     assert_eq!(state(&bobs_files, ids[0]).await, BlobState::Cached);
 
     let cached = get(&bobs_files, ids[2], &Read::new()).await;
@@ -634,7 +588,8 @@ async fn a_blob_taken_into_the_cache_from_beside_it_has_room_made_for_it() {
 }
 
 /// A read that is to store nothing and is dropped part way, its future
-/// cancelled, leaves nothing stored: the blob it fetched goes at once.
+/// cancelled, leaves nothing stored: nothing of the blob was stored while
+/// it ran, and nothing is afterwards.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cancelled_read_that_stores_nothing_leaves_nothing_stored() {
     let peer = spawn_loopback().await.unwrap();
@@ -643,34 +598,19 @@ async fn a_cancelled_read_that_stores_nothing_leaves_nothing_stored() {
     let (bobs_files, ids) = join(&peer, &space, &files, &bob, 2).await;
     let first = get(&bobs_files, ids[1], &Read::new()).await;
     assert_eq!(first, Some(vec![2; SIZE]));
+    let before = bob.blob_cache_usage().await;
 
-    // A writer nobody reads from: the read fetches the blob, writes what
-    // fits, and waits.
-    let (writer, reader) = tokio::io::duplex(1024);
-    let reading = {
-        let blobs = bobs_files.clone();
-        let id = ids[0];
-        tokio::spawn(async move {
-            let read = Read::new().uncached();
-            blobs.get_stream(id, writer, &read, |_, _| {}).await
-        })
-    };
-    within(async {
-        while state(&bobs_files, ids[0]).await == BlobState::Absent {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
-    assert!(!reading.is_finished());
+    // A writer nobody reads to its end: the read fetches the blob, writes
+    // what fits, and waits.
+    let (reading, reader, _) = held_read(&bobs_files, ids[0], Read::new().uncached()).await;
+    assert_eq!(state(&bobs_files, ids[0]).await, BlobState::Absent);
+    assert_eq!(bob.blob_cache_usage().await, before);
     reading.abort();
     assert!(reading.await.unwrap_err().is_cancelled());
-    within(async {
-        while state(&bobs_files, ids[0]).await != BlobState::Absent {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
-    assert_eq!(bob.blob_cache_usage().await.cached, {
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(state(&bobs_files, ids[0]).await, BlobState::Absent);
+    assert_eq!(bob.blob_cache_usage().await, before);
+    assert_eq!(before.cached, {
         let kept = bobs_files.local(ids[1]).await.unwrap();
         kept.bytes
     });

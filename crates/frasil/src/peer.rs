@@ -4330,8 +4330,11 @@ impl Driver {
 
     /// A chunk the peer sent in answer to an `ObjectWant` of this
     /// connection: checked as it arrives (units.md, "Sync", objects), and
-    /// kept if it is still wanted. A chunk that fails drops what the
-    /// device held of the object, which is no longer asked of this peer.
+    /// kept if it is still wanted. A chunk that fails is this peer's
+    /// fault, and the object is no longer asked of it; what the device
+    /// held of the object stays ([`Engine::receive_part`]).
+    ///
+    /// [`Engine::receive_part`]: crate::device::Engine::receive_part
     async fn on_object_chunk(
         &mut self,
         space: EventId,
@@ -4617,10 +4620,11 @@ enum SliceFetch {
     /// It gave way to a more urgent request: it waits again, and goes on
     /// from what the device holds by then.
     GaveWay,
-    /// A chunk failed its check, and the device dropped what it held.
+    /// A chunk failed its check: the peer is asked for no more of the
+    /// object on this connection.
     Refused,
-    /// A slice did not read as the header gives it, and the device
-    /// dropped what it held.
+    /// A slice did not read as the header gives it: the peer is asked
+    /// for no more of the object on this connection.
     Malformed,
     /// The device could not keep a part.
     Failed(Error),
@@ -4816,16 +4820,61 @@ struct SliceTask {
     /// Whether this fetch kept a chunk: its own progress, whatever other
     /// fetches of the object kept meanwhile.
     kept: bool,
+    /// The connection's place among those that take the space's
+    /// requests: each chunk the fetch takes is its progress.
+    taker: Option<Arc<crate::fetch::Taker>>,
 }
 
 #[cfg(any(feature = "server", feature = "server-socket"))]
 impl SliceTask {
+    /// Whether the header the peer serves, in slice 0 of the object's
+    /// stored bytes, is another one than the device holds, in its store
+    /// or in the windows of readers that store nothing. `false` when the
+    /// device holds none, or the slice cannot be had: the peer is then
+    /// asked no further on this connection, and what is held stays.
+    async fn peer_header_differs(&self, space: &EventId, locator: &Locator) -> bool {
+        let held = self
+            .device
+            .read(space, |replica| {
+                replica.object_header(locator).map(<[u8]>::to_vec)
+            })
+            .await
+            .ok()
+            .flatten()
+            .or_else(|| {
+                self.device
+                    .readers()
+                    .header(&(*space, crate::replica::object_id(locator)))
+            });
+        let Some(held) = held else {
+            return false;
+        };
+        let abort = crate::fetch::Cancel::new();
+        let Ok(slice) = self
+            .routes
+            .get(&self.token, space, locator, 0, &abort)
+            .await
+        else {
+            return false;
+        };
+        let served = slice
+            .get(..4)
+            .and_then(|length| length.try_into().ok())
+            .map(u32::from_be_bytes)
+            .and_then(|length| usize::try_from(length).ok())
+            .and_then(|length| slice.get(4..4usize.saturating_add(length)));
+        served != Some(held.as_slice())
+    }
+
     async fn run(&mut self) -> SliceFetch {
         use crate::objects::{Received, SliceReader};
         let (space, locator) = (self.request.space, self.request.locator);
         let end = self.request.chunks.end;
+        // Whether the peer's bytes are read under the header the peer
+        // itself serves in slice 0, and not under one the device held.
+        let mut own = self.header.is_none();
         let mut reader = SliceReader::start(locator, self.header.take(), self.first..end);
-        loop {
+        'slices: loop {
             if self.request.cancel.is_cancelled() {
                 return SliceFetch::Cancelled;
             }
@@ -4886,27 +4935,93 @@ impl SliceTask {
                 return SliceFetch::Stopped;
             };
             let Ok(parts) = reader.take(&slice) else {
-                return match self.device.drop_fetched(space, &locator).await {
-                    Ok(()) => SliceFetch::Malformed,
-                    Err(error) => SliceFetch::Failed(error),
-                };
+                drop(slice);
+                // A slice that does not read under the header the device
+                // held, from a peer that serves another header: the
+                // peer's bytes are judged under its own. One that does
+                // not read under its own header is the peer's fault, and
+                // what the device holds stays.
+                if !own && self.peer_header_differs(&space, &locator).await {
+                    own = true;
+                    reader = SliceReader::start(locator, None, self.first..end);
+                    continue;
+                }
+                return SliceFetch::Malformed;
             };
             drop(slice);
+            // The chunks asked for lie past the object's end by the
+            // header the peer serves: a reader that asked by the size its
+            // entry shows hears of the header, and asks for a chunk the
+            // object has.
+            if let Some(header) = reader.beyond() {
+                let key = (space, crate::replica::object_id(&locator));
+                self.device.readers().hint(&key, header);
+            }
             for part in parts {
                 // Cancelled while the slice was on its way: none of its
                 // parts is stored for this request.
                 if self.request.cancel.is_cancelled() {
                     return SliceFetch::Cancelled;
                 }
-                match self.device.receive_part(space, part).await {
+                // Looked at again where the part is admitted to the
+                // store: the request may end between here and there, and
+                // a read that began since must not get its part.
+                let cancel = &self.request.cancel;
+                let taker = &self.taker;
+                let asked = crate::objects::Asked {
+                    wanted: &|| !cancel.is_cancelled(),
+                    stores: self.request.stores,
+                    taken: &|| {
+                        if let Some(taker) = taker {
+                            taker.progressed();
+                        }
+                    },
+                };
+                match self.device.receive_part(space, part, asked).await {
                     Ok(Received::Kept) => self.kept = true,
                     Ok(Received::Whole) => return SliceFetch::Done,
                     Ok(Received::Refused) => return SliceFetch::Refused,
+                    // The chunk does not check, and that is the peer's
+                    // fault: it is asked for no more of the object, and
+                    // what the device holds stays. A peer whose own
+                    // header is another one than the device held, under
+                    // which its bytes were cut, is first judged under its
+                    // own: its chunks then come with that header, and
+                    // the device judges them as any part under another
+                    // header ([`Engine::receive_part`]).
+                    //
+                    // [`Engine::receive_part`]: crate::device::Engine::receive_part
+                    Ok(Received::BadChunk) => {
+                        if !own && self.peer_header_differs(&space, &locator).await {
+                            own = true;
+                            reader = SliceReader::start(locator, None, self.first..end);
+                            continue 'slices;
+                        }
+                        return SliceFetch::Refused;
+                    }
                     // What the device held of the object went meanwhile,
                     // or the receive of it through a provider does not
                     // take this chunk: a later fetch starts from where
                     // the device stands then.
                     Ok(Received::Headerless | Received::Left) => return SliceFetch::Stopped,
+                    // Nothing says whether the chunk or what the device
+                    // holds is not the object's: the peer is not given
+                    // up, and a later fetch asks again. A peer whose own
+                    // header is another one than the device held is
+                    // judged under its own first, as above.
+                    Ok(Received::Undecided) => {
+                        if !own && self.peer_header_differs(&space, &locator).await {
+                            own = true;
+                            reader = SliceReader::start(locator, None, self.first..end);
+                            continue 'slices;
+                        }
+                        return SliceFetch::Stopped;
+                    }
+                    // Nobody waits for the chunk any more: another
+                    // connection brought it first. No failure of this
+                    // fetch, which goes on with what is still lacking and
+                    // is not tried again after a wait.
+                    Ok(Received::Unwanted) => {}
                     Err(error) => return SliceFetch::Failed(error),
                 }
             }
@@ -5021,6 +5136,10 @@ impl Driver {
                 closing: self.closing.clone(),
                 status: self.status.clone(),
                 kept: false,
+                taker: self
+                    .spaces
+                    .get(&space)
+                    .and_then(|attached| attached.session.taker_if_any()),
             };
             let incoming = self.incoming.clone();
             self.runtime.spawn(async move {

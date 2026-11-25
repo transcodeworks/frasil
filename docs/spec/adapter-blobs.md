@@ -256,9 +256,17 @@ or holds content only.
   that opens under the object key. A member that holds that key, the
   object's writer among them, can serve different readers different chunks under one
   header until the final check, which binds the whole plaintext to the
-  locator and the object ID. A reader reports the refusal when it comes
+  locator and the object ID. It can also seal chunks under a header of
+  another size, which names the same object ID and so passes steps 1 to
+  3: a reader then takes that size for the object's until step 0, which
+  binds the header to the locator. A reader reports the refusal when it comes
   (`ObjectMismatch`), and an application that must not show unchecked
-  bytes reads the whole object first.
+  bytes reads the whole object first. A reader that never reads the whole
+  object never runs the final check, so no refusal comes for what it
+  returned: of a range read alone, nothing later refutes a chunk that
+  such a member served. The party that serves chunks learns which chunks
+  a reader reads, and when: a peer learns it of every reader it serves,
+  without the content.
 - **References are not convergent.** An object's key derives from its
   state's key and its ID, never from the content alone, so a reference
   shows no one that two spaces hold the same file unless one references
