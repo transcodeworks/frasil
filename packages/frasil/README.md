@@ -132,7 +132,7 @@ difference: admission by code is not available in browsers yet (see
 | `space.pauseSync()`, `space.resumeSync()`, `space.isSyncPaused()`, `device.pauseSync(spaces)`, `device.resumeSync(spaces)` | pause a space's sync with always-on peers, such as every space of a suspended library: no store and no fetch while paused, the space stays readable and writable, and resuming catches up |
 | `space.createDocument()`, `space.document(id)` | Loro documents: `edit`, `text`, `read` |
 | `space.createRecords()`, `space.records(id)` | Records tables: `write`, `rows`, `row`, and `lastChange(table, key)`, who changed a row last and when they say they did |
-| `space.createBlobs()`, `space.blobs(id)` | blobs: `put`, `list`, `get`, `status` (`keysPending` while the key has not arrived), and `contentHash(id)`, the SHA-256 of a blob's content |
+| `space.createBlobs()`, `space.blobs(id)` | blobs: `put`, `list`, `get`, `status` (`absent` when a read would fetch it now, `keysPending` while the key has not arrived), and `contentHash(id)`, the SHA-256 of a blob's content |
 | `device.makePerson(unlockKey)`, `device.person()` | makes the device's person (first run, before `createSpace`), and its ID or `null` |
 | `device.personalSpace()` | the person's personal space, or `null` for a device of no person |
 | `device.joinPersonViaPeer(peerUrl, person, name, unlockKey, confirm)`, `device.admitDevice(text, name, confirm)` | a person's new device through a peer's exchange mailbox: it joins only `person`, and a device of another person that answers adds it to no list (`wrong_person`) |
@@ -148,14 +148,19 @@ difference: admission by code is not available in browsers yet (see
 | `device.waitingDeposits()` | how many deposits in device mailboxes wait to be sent again |
 | `await document.live()` | live editing with your own `LoroDoc`: `peerId`, `commit`, `suggest`, `exportSince`, `version`, `onChange(cb)` returning its stop function |
 | `document.suggest(update)`, `suggestions()`, `accept(ids)`, `dismiss(ids)`; `records.suggest(write)` and the same three | suggestions |
-| `blobs.putStream(name, readable, onProgress?)`, `blobs.getStream(id, onProgress?)` | blobs as `ReadableStream`s: `getStream` opens a blob chunk by chunk; `putStream` reads its source as a stream but seals the blob whole in memory, so WebAssembly memory bounds what it can put |
+| `blobs.get(id, { keep?, uncached?, local? })`, and the same options on `getStream`, `getRange` and `contentHash` | what becomes of a blob the read has to fetch: left in the cache (no option), kept, stored nowhere, or not fetched at all |
+| `await blobs.openReader(id, { keep?, uncached?, local?, readAhead? })` | a `BlobReader` over a blob that need not be here: `read(offset, length, { signal? })`, `stream(offset?)`, `fetchSize()`, `size`, `verified`, `close()`; it fetches only the chunks it reads |
+| `blobs.keep(id, onProgress?)`, `blobs.dropLocal(id)`, `blobs.local(id)` | download a blob and keep it, drop what this device stores of it, and where it stands here: `{ state: "kept" \| "cached" \| "absent", bytes, size }` |
+| `device.blobCacheUsage()`, `{ blobCache, keepAllBlobs }` at `Device.open` | the cache's budget and what the cached and kept blobs take; the budget in bytes, and a device that keeps every blob |
+| `MediaServer` from `@frasil/client/media` | a blob as the `src` of a `<video>` or `<audio>` element, fetched as the element asks for it |
+| `blobs.putStream(name, readable, onProgress?)`, `blobs.getStream(id, onProgress?, options?)` | blobs as `ReadableStream`s: `getStream` opens a blob chunk by chunk; `putStream` reads its source as a stream but seals the blob whole in memory, so WebAssembly memory bounds what it can put |
 | `blobs.putFile(name, file, onProgress?)` | a blob from a `Blob` or `File`, read twice through `slice` and sealed a chunk at a time, so a put holds a few chunks in WebAssembly memory whatever the file's size; a file that changes meanwhile rejects with `Changed` |
 | `device.signRequest(subject, method, url, body)`; `verifySignedRequest(request, { audience, subject, deviceLists, nonces })` | signed application requests, verified by your server (in a Worker, from `@frasil/client/module`) |
 | `device.advanced` | the direct grant, signed events, continuity, the outbox, making a person |
 | `space.onChange(cb)`, `records.onChange(cb)`, `await blobs.onChange(cb)`, `await drive.onChange(cb)` | change feeds that name the streams, rows, blobs or entries that changed, and whether this device made the change (`origin`) |
 | `space.observe(read)`, `records.observeRows(table)`, `records.observeRow(table, key)`, `drive.observe()`, `blobs.observeList()`, `blobs.observeStatus(id)`, `document.observe(read)`, `observe(read, changes)` | stores of observed reads: `get()` and `subscribe(listener)`, with a `status` of `"loading"`, `"ready"` or `"failed"` |
 | `space.documentWhenAvailable(id, withinMs)`, `recordsWhenAvailable`, `blobsWhenAvailable`, `blobs.getWhenAvailable(id, withinMs)` | waits for what has not arrived yet |
-| `blobs.status(id)`, `blobs.getRange(id, offset, length)` | where a blob's bytes stand, and part of a blob |
+| `blobs.status(id)`, `blobs.getRange(id, offset, length, options?)` | where a blob's bytes stand, and part of a blob |
 | `records.rowsRange(table, { after, limit })`, `records.rowsWithPrefix(table, prefix)` | pages of rows, and rows by key prefix |
 | `records.writeWithReceipt(write)`, `document.editWithReceipt(edit)`, `drive.batchWithReceipt(changes)` | a write with a `Receipt`: `unit`, `isDurable()`, `durable(withinMs)` |
 | `records.table<T>(name, validator?)`, `manifestToTypeScript(manifest)` | typed rows, checked by a Standard Schema validator; row types from an index's manifest |
@@ -213,11 +218,14 @@ Each framework has an entry of its own, so the main entry imports none:
 | `@frasil/client/solid` | `createObserved(store)`, an accessor under the current owner |
 
 A device fetches a blob when it is read, and leaves it in a cache of sealed
-bytes whose budget is 256 MiB: `get`, `getStream`, `getRange`, `contentHash`
-and `getWhenAvailable` fetch a blob the device does not hold, and `get`
-resolves to `undefined` when nothing connected could send it. The device
-evicts the blob read longest ago when the budget is full, and a read fetches
-an evicted blob again. A `BlobId` names immutable bytes, so it is a safe
+bytes whose budget is 256 MiB unless `Device.open` is given another: `get`,
+`getStream`, `getRange`, `contentHash` and `getWhenAvailable` fetch a blob
+the device does not hold, and `get` resolves to `undefined` when nothing
+connected could send it. The device evicts the blob read longest ago when
+the budget is full, and a read fetches an evicted blob again. A read's
+options say otherwise for one read: `{ keep: true }` keeps the blob,
+`{ uncached: true }` stores nothing of it, and `{ local: true }` fetches
+nothing ([Large blobs and media](#large-blobs-and-media)). A `BlobId` names immutable bytes, so it is a safe
 permanent key for a cache of opened bytes or object URLs; `blobs.onChange`
 says when a blob was removed, evicted or withdrawn. `getStream` opens a blob
 chunk by chunk, and gives the chunks of one the device does not hold as they
@@ -228,6 +236,221 @@ whole blob have not run on it, so read with `get` what must not be acted on
 unchecked. The guide
 [Reading, following and caching synced data](../../docs/reading-and-caching.md)
 covers each part, with a cache of object URLs.
+
+## Large blobs and media
+
+A blob is sealed in chunks of about a mebibyte, and a device can read any of
+them without the others. Three things follow: a file larger than memory is
+read in parts, a video plays without being downloaded, and the device
+decides how much of what it reads stays on its disk.
+
+### Reading without downloading
+
+`blobs.openReader(id)` gives a `BlobReader`. It fetches the chunks that hold
+what is read, from the peers and members connected, and nothing before it is
+read or asked its size.
+
+```ts
+const reader = await blobs.openReader(id);
+const size = await reader.fetchSize();
+const tail = await reader.read(size - 1024, 1024); // fetches the last chunk only
+for await (const piece of reader.stream(0)) {
+  // 262,144 bytes at a time, read no faster than this loop takes them
+}
+await reader.close();
+```
+
+- `read(offset, length, { signal })` gives the bytes, fewer at the blob's
+  end and none past it. Aborting the signal gives the read up, with what it
+  had asked of the connections, whether or not the blob's header had come;
+  the reader lives on. `fetchSize({ signal })` is given up the same way.
+- `stream(offset)` is a `ReadableStream` to the blob's end. It reads one
+  piece ahead of its consumer and no more, and cancelling it gives up the
+  read it waits for and what that asked of the connections.
+- `size` is `undefined` until a chunk has opened; `fetchSize()` fetches one.
+- `verified` is `"chunks"` while each byte given comes from a chunk that
+  opened under the blob's key at its own place, and `"whole"` once every
+  check passed: after a read in order from the first byte to the last, or
+  once the device holds the blob whole. Until then a member that holds the
+  blob's key could have served other bytes; do not act on a range as if it
+  were the file's.
+- `close()` ends it. An open reader keeps the blob from being dropped, so
+  close the ones you are done with. Calls of one reader run one after
+  another; open a reader for each thing read at once.
+
+Its options are a read's, and `readAhead`, the chunks fetched ahead of where
+it reads (8 unless given). What it fetches goes into the cache; with `keep`
+it is kept; with `uncached`, and for a blob larger than the whole cache, it
+stays in the reader's memory, nine chunks at most at the default read-ahead.
+
+### Playing a blob
+
+A `<video>` or `<audio>` element reads from a URL, asking for the ranges it
+needs. `MediaServer` mints a URL for a blob, and a service worker answers the
+element's requests for it by asking the page, which reads each range through
+a reader. The client stays in the page: it cannot run in a service worker.
+
+```ts
+import { MediaServer } from "@frasil/client/media";
+
+const media = await MediaServer.connect({ serviceWorker: "/media-sw.js" });
+
+const stop = media.serve(video, blobs, id, { type: "video/mp4" });
+await video.play();
+// when the element is done: revokes the URL, closes its readers, empties the element
+stop();
+```
+
+`media.url(blobs, id, options)` gives the URL alone, and `media.revoke(url)`
+ends it. The options are a reader's, and `type`, the media type the element
+is told. Every request gets a reader of its own, closed when the request ends
+or the element gives it up, as it does at each seek. A request left open with
+nothing read from it for half a minute, as under a paused element, has its
+reader closed too, and opened again when the element reads on;
+`MediaServer.connect({ idle })` sets that time in milliseconds. A blob's size
+is fetched once for a URL, by its first request.
+
+**The media type.** `type` is told as given only when it is `audio/…`,
+`video/…`, `image/…` other than SVG, `application/ogg` or
+`application/octet-stream`; any other type is told as
+`application/octet-stream`. Never pass a type that comes from untrusted
+metadata, such as the `mediaType` another member wrote on a blob, without
+checking it against the types your application plays. The URL is on your
+page's own origin and its bytes are whatever a member of the space put
+there: a type the browser renders or runs, with those bytes, would run in
+your origin. The list and the headers below are there so that a mistake
+does not come to that.
+
+**Several servers.** A page may connect more than one `MediaServer`, and one
+may live in the page while another lives in a worker. Each has its own port
+at the service worker, and a URL begins with the name of the server that
+minted it, so each answers its own URLs only.
+
+**Hosting the service worker.** Copy `node_modules/@frasil/client/dist/media-sw.js`
+(the export `@frasil/client/media-sw.js`) to where your site serves static
+files. A service worker answers only pages within its scope, which is the
+directory its script is served from: serve it from the site's root, or from
+the directory of the pages that play media, or send the header
+`Service-Worker-Allowed: /` with it and pass `scope: "/"`. Service workers
+need a secure context: `https:`, or `http://localhost` while developing.
+
+`connect` resolves once the worker that controls the page has taken the
+server's port. It rejects with `timeout` after ten seconds
+(`{ timeout }`, in milliseconds) when none has: no worker controls the page,
+because the script is served from outside the page's directory, the page was
+loaded with a forced reload, or the context is not secure; or the worker in
+control is another one that does not call `handleMedia`.
+
+`media-sw.js` calls `skipWaiting()` when it is installed and
+`clients.claim()` when it is activated, so that it serves the page that
+registered it without a reload. A scope has one service worker: registering
+`media-sw.js` at a scope that has a worker of yours **replaces that worker at
+once**, for every open page of the scope. If your origin has a service
+worker, do not register this script; call the handler from yours.
+
+**With a service worker of your own.** An origin's scope has one service
+worker, so call the handler from yours instead of registering the script:
+
+```ts
+import { handleMedia } from "@frasil/client/media/worker";
+
+self.addEventListener("fetch", (event) => {
+  if (handleMedia(event)) return;
+  // your own requests
+});
+self.addEventListener("message", (event) => {
+  if (handleMedia(event)) return;
+  // your own messages
+});
+```
+
+Then call `MediaServer.connect()` with no `serviceWorker`. The handler takes
+the requests under `/frasil-media/` on its own origin and the pages' messages
+that bring their ports, and leaves every other event alone: call it first,
+and return when it says `true`. It neither skips waiting nor claims clients;
+your worker decides that. Both sides take another path:
+`handleMedia(event, "/media/")` and `{ prefix: "/media/" }`. A prefix ends
+with a slash, and is given one if it does not, so `/media` takes `/media/…`
+and never `/mediafoo`.
+
+**The client in a worker.** The service worker sends an element's requests
+to the page the element is in. When the client runs in a dedicated worker,
+the page passes each port on:
+
+```ts
+// the page
+import { connectMediaPort } from "@frasil/client/media";
+await connectMediaPort((port) => worker.postMessage({ mediaPort: port }, [port]));
+
+// the worker
+import { MediaServer } from "@frasil/client/media";
+const media = new MediaServer();
+self.addEventListener("message", ({ data }) => {
+  if (data.mediaPort) media.attach(data.mediaPort);
+});
+```
+
+**What a URL gives access to.** A URL is `/frasil-media/`, 8 hex digits that
+name the server and 32 drawn at random, on the page's own origin. Nothing
+on the network answers it. The service worker sends a request only to a port
+of the page that made the request, and a page serves only the URLs it
+minted: another tab of the origin gets `404` for it, and a page of another
+origin is not controlled by the worker and reaches the network. The worker
+holds no blob, key or URL: only each page's ports, which it asks the page
+for again after the browser stopped and restarted it.
+
+A URL is for a media element or a script, and never becomes a document: the
+worker answers `404` to a navigation and to a request from a frame, an
+`<object>` or an `<embed>`, whichever page makes it. Every answer carries
+four headers:
+
+| Header | Value | So that |
+| --- | --- | --- |
+| `X-Content-Type-Options` | `nosniff` | the browser does not take the bytes for another type than the one told |
+| `Content-Security-Policy` | `sandbox; default-src 'none'` | an answer opened as a document all the same runs nothing and has no origin |
+| `Cross-Origin-Resource-Policy` | `same-origin` | no other origin embeds it |
+| `Cache-Control` | `no-store` | no cache keeps a blob's plaintext |
+
+### The cache and the browser's quota
+
+`Device.open(storage, unlockKey, { blobCache })` sets the cache's budget in
+bytes as stored, a little more than the blobs' sizes; `0` caches nothing, and
+`{ keepAllBlobs: true }` keeps every blob. `device.blobCacheUsage()` gives
+`{ budget, cached, kept }`.
+
+A browser gives an origin a quota, and refuses writes past it. Over
+`Storage.indexedDb` the budget is therefore lowered, at each open, to half of
+what `navigator.storage.estimate()` says the origin may still store: its
+quota less its usage, plus what the cache holds already. An origin already
+over its quota gets half of what its cache holds beyond the excess, and a
+budget of 0, with nothing cached, when the excess is larger than the cache.
+`blobCacheUsage()` shows the budget in force. Where the browser gives no
+estimate, or one with no quota, the budget stands as given.
+
+The estimate is not a promise, and kept blobs, documents and the rest of the
+origin's storage share the quota. When the browser refuses a chunk a read
+fetched (`QuotaExceededError`), the device drops cached blobs, the one read
+longest ago first, until as many bytes went as the chunk takes, and writes it
+again, once. If the browser still refuses, a blob with an open reader is read
+on through memory, as an `uncached` read does, and nothing more of that blob
+is stored while a reader of it is open: the read does not fail. That covers
+`openReader`, a media element, and `blobs.get(id)`, which reads a blob that
+is not whole here through a reader of its own and so gives the bytes and
+leaves the blob absent.
+
+What still fails under a full store:
+
+- `blobs.keep(id)`: a kept blob is never held in memory in place of the
+  store, so the download makes no progress and rejects, and the blob stays
+  marked as kept, to be fetched when there is room.
+- `blobs.put(data)`, and every other write: documents, rows, entries. They
+  reject with a `store` error whose `cause` is the browser's exception, and
+  the cache does not give way for them.
+- Kept blobs are never evicted to make room, nor is a blob this device put
+  that no peer holds yet.
+
+Ask the browser not to clear the origin's storage under pressure with
+`navigator.storage.persist()`.
 
 ## Entries
 
@@ -240,6 +463,9 @@ covers each part, with a cache of object URLs.
 | `@frasil/client/client` | `IndexClient` alone, for a page: loads no module |
 | `@frasil/client/module` | the bare module, which `load` is given compiled (below) |
 | `@frasil/client/react`, `/svelte`, `/solid` | the framework bindings; they load no module of their own |
+| `@frasil/client/media` | `MediaServer`, for a page or a worker: plays blobs in media elements; loads no module |
+| `@frasil/client/media/worker` | `handleMedia`, for a service worker of your own; imports nothing |
+| `@frasil/client/media-sw.js` | the media service worker as a script to host as it is |
 | `@frasil/client/frasil_wasm.wasm` | the default entry's module file, for a host that serves it itself |
 
 Use one entry for all the Frasil objects of a page or worker: two entries are
@@ -312,7 +538,11 @@ takes a `Store` of your own:
 
 A store decides nothing, and nothing in it opens without the unlock key.
 `IndexedDbStore` makes each commit one `readwrite` transaction, which keeps two
-tabs of one device from both advancing it; `MemoryStore` is for tests.
+tabs of one device from both advancing it; `MemoryStore` is for tests. A
+store with no room for a commit rejects with an error named
+`QuotaExceededError`, or one whose `cause` is, as `IndexedDbStore` does past
+the browser's quota: the device then makes room in its blob cache
+([The cache and the browser's quota](#the-cache-and-the-browsers-quota)).
 
 A browser has no place that no backup restores, so the device runs in restore
 mode `never-restored` by default; pass `{ restoreMode: "none" }` to make every
@@ -389,12 +619,13 @@ Measured at 0.1.0, in bytes:
 
 | | raw | gzip | brotli | budget (raw, gzip) |
 |---|---|---|---|---|
-| the WebAssembly module | 9,381,524 | 2,775,320 | 1,848,015 | 9,933,177, 2,934,037 |
+| the WebAssembly module | 11,440,228 | 3,451,228 | 2,271,929 | 11,955,637, 3,603,281 |
 | the module as shipped, as a file (`dist/wasm/…_bg.wasm`) | the module's | the module's | the module's | — |
-| the module inlined, base64 (`@frasil/client/embedded`) | 12,508,786 | 3,937,797 | 2,502,590 | — |
-| the index entry's module, with SQLite (`@frasil/client/index`) | 10,830,877 | 3,431,902 | 2,337,039 | — |
-| wasm-bindgen's glue | 159,829 | 23,923 | 19,560 | 168,590, 24,805 |
-| the TypeScript layer, without comments | 69,510 | 14,025 | 12,162 | 76,461, 15,428 |
+| the module inlined, base64 (`@frasil/client/embedded`) | 15,253,726 | 4,886,905 | 3,056,056 | — |
+| the index entry's module, with SQLite (`@frasil/client/index`) | 12,965,333 | 4,137,241 | 2,782,040 | — |
+| wasm-bindgen's glue | 191,606 | 28,300 | 22,938 | 200,624, 29,431 |
+| the TypeScript layer, without comments | 92,619 | 19,406 | 16,582 | 101,881, 21,347 |
+| the media service worker's script (`dist/media-sw.js`) | 5,366 | — | — | — |
 
 The module's budget covers it with ext-invite-links, ext-restricted-spaces,
 ephemeral, ext-app-requests, ext-libraries, ext-drive, space-files and
@@ -422,7 +653,12 @@ second browser granted into it directly, documents written and synced both
 ways, devices that reload from IndexedDB and catch up, a blob that another
 browser fetches over the peer's object routes, a person who returns on a
 new browser from the recovery sheet, and the index in a dedicated worker,
-queried from the page. Cargo builds into
+queried from the page. `reads.spec.ts` reads blobs the device does not hold:
+a read's options, a reader's ranges and `verified`, a cancelled stream, the
+cache within its budget, the budget under a storage estimate, and a store
+that refuses writes for quota. `media.spec.ts` asks the media service worker
+for ranges of a minted URL and compares the bytes, and plays and seeks a
+`<video>` element through it. Cargo builds into
 `CARGO_TARGET_DIR` when it is set.
 
 ## Building from source

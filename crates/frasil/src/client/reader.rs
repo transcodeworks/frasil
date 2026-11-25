@@ -528,6 +528,24 @@ impl BlobReader {
         }
     }
 
+    /// Gives up everything the reader asked of the space's connections:
+    /// the chunk a read waited for, the chunks asked for ahead of it, and
+    /// the chunk asked for with the header before any has opened. What
+    /// the reader holds stays, and so does where it stands: the next
+    /// [`read`](Self::read), [`read_at`](Self::read_at) or
+    /// [`fetch_size`](Self::fetch_size) asks again for what it needs.
+    ///
+    /// A read is given up by dropping its future, which leaves its
+    /// requests standing so that the read may be made again at no cost.
+    /// Call this after dropping one that will not be made again, as when
+    /// the user stopped a download, so that nothing is fetched for it. It
+    /// works in every state of the reader, before the blob's header is
+    /// known as after its end; [`seek`](Self::seek) lets go only of what
+    /// a jump leaves behind, and of nothing before the header is known.
+    pub fn cancel(&mut self) {
+        self.window.cancel();
+    }
+
     /// Whether a read in chunk `index` leaves where the reader stands: it
     /// is neither in the chunk it last asked from nor in the one after.
     fn jumps(&self, index: u64) -> bool {

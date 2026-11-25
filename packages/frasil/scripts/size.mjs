@@ -52,7 +52,9 @@ const budgets = {
   // 165,788 and 24,984 on 2026-11-13, each budget a tenth above: the checkpoint calls, their
   // reports and policy, and ranks.
   // 182,385 and 26,755 on 2026-11-24, each budget a tenth above: a blob's reader, the options of
-  // a read, keeping and dropping a blob, and the cache's budget and usage.
+  // a read, keeping and dropping a blob, and the cache's budget and usage. 191,606 and 28,300 on
+  // 2026-11-25, within that budget: those bindings as they are, with a reader's calls given up
+  // and a store's refusal for want of room.
   glue: { raw: 200_624, gzip: 29_431 },
   // 38,909 and 7,774 on 2026-10-27 (32,435 and 6,948 on 2026-10-22), without comments (the
   // declarations keep them); 576 and 95 of the growth are the space-files calls.
@@ -62,7 +64,11 @@ const budgets = {
   // 69,510 and 14,025 on 2026-11-12, each budget a tenth above: the default entry finds its
   // module as a file and compiles it while it downloads, and `@frasil/client/client` holds
   // `IndexClient` alone.
-  layer: { raw: 76_461, gzip: 15_428 },
+  // 92,619 and 19,406 on 2026-11-25, each budget a tenth above: the blob reader and its streams
+  // (5,192 raw), the media helper and the service worker's handler (14,129 raw), a read's
+  // options, keeping and dropping a blob, and the cache's budget under the browser's quota. The
+  // service worker's script, which repeats its handler, is not counted.
+  layer: { raw: 101_881, gzip: 21_347 },
 };
 
 /** @type {string[]} */
@@ -115,8 +121,10 @@ function row(label, bytes) {
 }
 
 const dist = join(packageDir, "dist");
+// Without the service worker's script, which repeats `media-worker.js` for a host that serves it
+// as it is.
 const layer = readdirSync(dist)
-  .filter((file) => file.endsWith(".js"))
+  .filter((file) => file.endsWith(".js") && file !== "media-sw.js")
   .map((file) => readFileSync(join(dist, file)));
 console.log(
   `${"bytes".padEnd(44)} ${"raw".padStart(9)} ${"gzip -6".padStart(9)} ${"gzip -9".padStart(9)} ${"brotli".padStart(9)}`,

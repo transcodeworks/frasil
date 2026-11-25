@@ -4,6 +4,7 @@
 // scenarios, which drive it with `page.evaluate`. `window.ready` resolves once the package is
 // loaded.
 import * as frasil from "/dist/index.js";
+import * as media from "/dist/media.js";
 
 /** Bytes as lowercase hex, to carry keys between pages. */
 function hex(bytes) {
@@ -35,6 +36,44 @@ async function until(check, what, deadline = 30_000) {
   }
 }
 
+/** `size` bytes of a pattern, which a test can name again from an offset. */
+function pattern(size) {
+  const data = new Uint8Array(size);
+  for (let index = 0; index < size; index += 1) data[index] = (index * 31 + 7) & 0xff;
+  return data;
+}
+
+/**
+ * A WAV file of `seconds` of a 220 Hz tone: 16-bit mono PCM at 8,000 samples a second, which
+ * every browser plays and seeks by arithmetic, made here so that no media file is fetched.
+ */
+function wav(seconds) {
+  const rate = 8000;
+  const samples = rate * seconds;
+  const data = new Uint8Array(44 + 2 * samples);
+  const view = new DataView(data.buffer);
+  const text = (at, value) => {
+    for (let index = 0; index < value.length; index += 1)
+      data[at + index] = value.charCodeAt(index);
+  };
+  text(0, "RIFF");
+  view.setUint32(4, 36 + 2 * samples, true);
+  text(8, "WAVEfmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true);
+  view.setUint32(28, 2 * rate, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  text(36, "data");
+  view.setUint32(40, 2 * samples, true);
+  for (let index = 0; index < samples; index += 1) {
+    view.setInt16(44 + 2 * index, 8000 * Math.sin((2 * Math.PI * 220 * index) / rate), true);
+  }
+  return data;
+}
+
 /** `undefined` for a stream this device holds no change of yet; the value otherwise. */
 async function unlessUnknown(body) {
   try {
@@ -56,6 +95,8 @@ const BODY = "body";
  */
 const agent = {
   device: undefined,
+  /** The unlock key of the device `createWith` opened. */
+  unlockKey: undefined,
   peer: undefined,
   /** Documents this page created, which exist in their space from their first edit. */
   made: new Map(),
@@ -537,6 +578,44 @@ const agent = {
     return this.peer.status();
   },
 
+  /**
+   * Opens a new device kept as `name` with `options`, over IndexedDB or, with `store`, over that
+   * store, with a space, and connects it to the test origin's peer, which takes the space.
+   * Resolves to the space.
+   */
+  async createWith(name, options, store) {
+    const unlockKey = crypto.getRandomValues(new Uint8Array(32));
+    this.unlockKey = unlockKey;
+    const storage = store ? frasil.Storage.of(store) : frasil.Storage.indexedDb(name);
+    this.device = await frasil.Device.open(storage, unlockKey, options);
+    const space = await this.createSpace();
+    await this.connect();
+    // The space has its peer from here on: a blob put now stays until that peer holds it.
+    await until(() => this.peer.status().spaces.includes(space), "the peer to take the space");
+    return space;
+  },
+
+  /**
+   * A blob of `data` in a new blob stream of `space` that this device does not hold: put,
+   * taken by the peer, and dropped here, so that a read fetches it. Resolves to the stream.
+   */
+  async absent(space, data) {
+    const held = await this.device.space(space);
+    const blobs = held.createBlobs();
+    const blob = await blobs.put(data);
+    // Dropped once the peer holds its bytes: until then the device may hold the only copy.
+    await until(async () => {
+      try {
+        await blobs.dropLocal(blob);
+        return true;
+      } catch (error) {
+        if (error.code !== "not_allowed") throw error;
+        return false;
+      }
+    }, "the peer to hold the blob");
+    return { blobs, blob };
+  },
+
   /** Waits until every change of the space this device made is durable. */
   async durable(space) {
     const held = await this.device.space(space);
@@ -595,6 +674,7 @@ const agent = {
 };
 
 window.frasil = frasil;
+window.media = media;
 window.agent = agent;
-window.helpers = { hex, bytes, until };
+window.helpers = { hex, bytes, until, digest, pattern, wav };
 window.ready = Promise.resolve(true);

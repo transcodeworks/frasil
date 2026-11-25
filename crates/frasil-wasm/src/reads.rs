@@ -339,6 +339,7 @@ fn status_out(status: BlobStatus) -> JsValue {
             .set("total", JsValue::from_f64(total as f64))
             .build(),
         BlobStatus::Withdrawn => Obj::new().set("kind", "withdrawn").build(),
+        BlobStatus::Absent => Obj::new().set("kind", "absent").build(),
         BlobStatus::KeysPending => Obj::new().set("kind", "keysPending").build(),
         _ => Obj::new().set("kind", "missing").build(),
     }
@@ -359,26 +360,27 @@ impl Blobs {
 
     /// The SHA-256 of a blob's plaintext, 32 bytes, computed on this device.
     /// A blob this device does not hold whole is fetched first, into its
-    /// cache; `undefined` when it cannot be read whole.
+    /// cache; `undefined` when it cannot be read whole. `options` says
+    /// what becomes of a blob the read fetches: `{ keep, uncached, local }`.
     #[wasm_bindgen(js_name = contentHash)]
-    pub fn content_hash(&self, blob: String) -> Result<Promise, JsValue> {
+    pub fn content_hash(&self, blob: String, options: JsValue) -> Result<Promise, JsValue> {
         let blob = id::<BlobId>(&blob)?;
+        let read = crate::retention::read_of(&options)?;
         let blobs = self.inner.clone();
         Ok(promise(async move {
-            Ok(
-                match blobs.content_hash(blob, &frasil::Read::new()).await.js()? {
-                    Some(hash) => bytes(&hash),
-                    None => JsValue::UNDEFINED,
-                },
-            )
+            Ok(match blobs.content_hash(blob, &read).await.js()? {
+                Some(hash) => bytes(&hash),
+                None => JsValue::UNDEFINED,
+            })
         }))
     }
 
     /// Where a blob's bytes stand on this device: `{ kind }`, one of
-    /// `"readable"`, `"fetching"` (with `done` and `total`), `"missing"`,
-    /// `"keysPending"` and `"withdrawn"`. `"missing"` is a blob this device
-    /// does not hold: a read fetches it while a peer or member is
-    /// connected.
+    /// `"readable"`, `"fetching"` (with `done` and `total`), `"absent"`,
+    /// `"missing"`, `"keysPending"` and `"withdrawn"`. `"absent"` is a
+    /// blob this device does not hold while a peer or a member is
+    /// connected, so that a read fetches it now; `"missing"` is one it
+    /// does not hold while none is.
     pub fn status(&self, blob: String) -> Result<Promise, JsValue> {
         let blob = id::<BlobId>(&blob)?;
         let blobs = self.inner.clone();
@@ -395,22 +397,23 @@ impl Blobs {
     /// that need the whole blob do not run on a range: a member that
     /// holds the blob's key can serve a range read other validly sealed
     /// chunks, and nothing refutes them later, so read with `get` what
-    /// must be the blob's.
+    /// must be the blob's. `options` says what becomes of the chunks the
+    /// read fetches: `{ keep, uncached, local }`.
     #[wasm_bindgen(js_name = getRange)]
-    pub fn get_range(&self, blob: String, offset: f64, length: f64) -> Result<Promise, JsValue> {
+    pub fn get_range(
+        &self,
+        blob: String,
+        offset: f64,
+        length: f64,
+        options: JsValue,
+    ) -> Result<Promise, JsValue> {
+        use crate::retention::whole;
         let blob = id::<BlobId>(&blob)?;
-        let whole = |value: f64, what: &str| {
-            (value.is_finite() && value >= 0.0 && value.fract() == 0.0)
-                .then_some(value as u64)
-                .ok_or_else(|| invalid(&format!("{what} must be a whole number of bytes.")))
-        };
         let (offset, length) = (whole(offset, "offset")?, whole(length, "length")?);
+        let read = crate::retention::read_of(&options)?;
         let blobs = self.inner.clone();
         Ok(promise(async move {
-            match blobs
-                .get_range(blob, offset, length, &frasil::Read::new())
-                .await
-            {
+            match blobs.get_range(blob, offset, length, &read).await {
                 Ok(Some(data)) => Ok(bytes(&data)),
                 Ok(None) => Ok(JsValue::UNDEFINED),
                 Err(failure) => Err(error(failure)),

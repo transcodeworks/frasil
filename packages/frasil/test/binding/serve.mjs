@@ -7,6 +7,12 @@
 // `frasil-test-tag` cookie it carries with `reconnect`, as a peer moving them to another of its
 // machines does.
 //
+// `/media-sw.js` is the package's service worker (`dist/media-sw.js`), at the root so that its scope
+// covers the runner page.
+//
+// `/composed-sw.js` is a service worker of the tests' own that calls the package's handler beside
+// its own (`test/binding/composed-sw.js`), at the root for the same reason.
+//
 // `/wrong-mime/dist/…` serves the same files with `.wasm` as `application/octet-stream`, as a server
 // that does not know the type does, to test that the package falls back from streaming.
 //
@@ -28,6 +34,7 @@ const types = {
   ".json": "application/json",
   ".html": "text/html; charset=utf-8",
   ".wasm": "application/wasm",
+  ".webm": "video/webm",
 };
 
 /** The page the scenarios drive: it loads the package and waits for `page.evaluate`. */
@@ -219,7 +226,13 @@ const server = createServer(async (incoming, outgoing) => {
     return;
   }
   const wrongMime = url.pathname.startsWith("/wrong-mime/dist/");
-  const path = wrongMime ? url.pathname.slice("/wrong-mime".length) : url.pathname;
+  const path = wrongMime
+    ? url.pathname.slice("/wrong-mime".length)
+    : url.pathname === "/media-sw.js"
+      ? "/dist/media-sw.js"
+      : url.pathname === "/composed-sw.js"
+        ? "/test/binding/composed-sw.js"
+        : url.pathname;
   const served = path.startsWith("/dist/") || path.startsWith("/test/binding/");
   const file = normalize(join(packageDir, decodeURIComponent(path)));
   if (!served || !file.startsWith(packageDir)) {

@@ -9,6 +9,11 @@ import { defineConfig } from "@playwright/test";
  *   sheet, through `frasil-relay`;
  * - `personal-space.spec.ts`: a browser knows its person's personal space, after a reload too;
  * - `reconnect.spec.ts`: a peer asks a browser to connect again, and its `PeerStatus` counts it;
+ * - `reads.spec.ts`: blobs the device does not hold, read through a read's options and through a
+ *   reader, under a cache budget, and over a store that refuses writes for quota;
+ * - `media.spec.ts`: the media service worker answers Range requests for a minted URL, a
+ *   `<video>` element plays and seeks through it, a URL never becomes a document, and servers in
+ *   the page, in a dedicated worker and behind an application's own service worker each answer;
  * - `csp.spec.ts`: the Content Security Policy experiment.
  *
  * Firefox is not listed: Playwright's build does not start on the machine this was written on.

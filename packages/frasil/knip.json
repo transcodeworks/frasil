@@ -1,9 +1,9 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
-    "src/{engine-compiled,engine-embedded,indexed,compiled,load}.ts",
+    "src/{engine-compiled,engine-embedded,indexed,compiled,load,media}.ts",
     "bench/run.mjs",
-    "test/binding/{page,index-worker}.js"
+    "test/binding/{page,index-worker,composed-sw,media-worker-host}.js"
   ],
   "project": ["src/**/*.ts", "test/**/*.{ts,js}", "scripts/*.mjs", "bench/*.mjs"],
   "ignoreBinaries": ["rustc"],

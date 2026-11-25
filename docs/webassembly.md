@@ -201,13 +201,102 @@ up to the run lengths its columns name.
 - **The store** is a JavaScript object with `get`, `scan` and `commit`,
   each returning a value or a promise. The package's `IndexedDbStore`
   makes each commit one IndexedDB transaction. A store that throws or
-  rejects fails as `store`.
+  rejects fails as `store`. A commit refused for want of room is told
+  apart: see [Blobs in a browser](#blobs-in-a-browser).
 - **The restore mode** is `never-restored` by default: a browser has no
   place that no backup restores. `none` makes every start count as a
   restore.
 - **One thread.** The device's futures are not `Send` on this target,
   since a browser's storage answers through promises. Its upkeep runs on
   the page's event loop while the device is open.
+
+## Blobs in a browser
+
+The package binds the whole of the client's reads and retention
+([Reading, following and caching synced data](reading-and-caching.md),
+"What a device keeps of its blobs" and "Reading a blob that is not all
+here"). Its [README](../packages/frasil/README.md), "Large blobs and media",
+is the guide; this is what is particular to a browser.
+
+- **A reader crosses one call at a time.** `Blobs::open_reader` becomes
+  `blobs.openReader(id, options)`, and `BlobReader::read_at` becomes
+  `reader.read(offset, length)`. A `frasil::BlobReader` takes `&mut self`,
+  so the binding lends it to the call in flight and the TypeScript layer
+  queues the calls. A call given up, by an `AbortSignal` or by cancelling
+  `reader.stream()`, drops its future inside the module and then lets go of
+  what the reader had asked of the space's connections
+  (`BlobReader::cancel`), before the blob's header is known as after it, so
+  nothing is fetched for a read nobody waits for.
+- **Reading a large blob without downloading it.** A reader fetches the
+  chunks it reads. With `{ uncached: true }`, and for a blob larger than the
+  cache's budget, they stay in WebAssembly memory, `read_ahead + 1` sealed
+  chunks at most, 9 MiB at the default, whatever the blob's size.
+- **The cache's budget and the quota.** `Options::blob_cache` is
+  `{ blobCache }` at `Device.open`, 256 MiB unless given. Over the
+  package's `IndexedDbStore` the TypeScript layer lowers it, at each open,
+  to half of what `navigator.storage.estimate()` says the origin may still
+  store (its quota less its usage, plus what the cache holds already, and
+  nothing when the origin is over its quota by more than the cache holds),
+  and leaves it as given where the browser gives no estimate or one with no
+  quota. Half leaves room for kept blobs, documents and the origin's other
+  storage, which the same quota covers.
+- **A write the browser refuses.** IndexedDB aborts a transaction past the
+  quota with a `QuotaExceededError`. `IndexedDbStore` rejects the commit
+  with a `store` error whose `cause` is that exception, and the binding
+  gives the client `StoreError::full`, as `frasil`'s own
+  `browser::IndexedDbStore` does. For the chunks a read fetched, the client
+  then drops cached blobs, the one read longest ago first, until as many
+  bytes went as the chunks take, and commits again, once; refused again, the
+  blob's open readers take the chunks into their own memory and the read
+  goes on as an `uncached` one. With no reader open, as under `keep`, the
+  chunk is refused and the download fails; a `put` and every other write
+  fail with the store's error, and evict nothing
+  ([reading-and-caching.md](reading-and-caching.md), "What a device keeps
+  of its blobs"). An application's own store says the same by rejecting
+  with an error named `QuotaExceededError`.
+- **Media elements.** A `<video>` or `<audio>` element reads from a URL,
+  and the client cannot run in a service worker, since a service worker is
+  stopped between events and holds no device. `@frasil/client/media` mints
+  a URL on the page's origin and answers it from a service worker that
+  forwards each request, with its `Range`, over a `MessagePort` to the page
+  or worker that runs the client, which reads the range through a reader
+  and gives the bytes back a piece at a time, as the element takes them.
+  The service worker keeps only each page's ports, by the page's client ID,
+  one for each `MediaServer` the page connected, and asks the page for them
+  again when it has none, as after a restart. A URL begins with the name of
+  the server that minted it, which is how the worker finds its port. It
+  answers `206` with `Content-Range`, `Accept-Ranges` and `Content-Length`
+  for one range, `200` for none or several, `416` for one past the end,
+  and a `HEAD` with no body.
+- **A URL is never a document.** The worker answers `404` to a navigation
+  and to a request whose destination is a document, a frame, an `<object>`
+  or an `<embed>`. Every answer carries `X-Content-Type-Options: nosniff`,
+  `Content-Security-Policy: sandbox; default-src 'none'`,
+  `Cross-Origin-Resource-Policy: same-origin` and `Cache-Control: no-store`.
+  The media type told is the application's when it is `audio/…`, `video/…`,
+  `image/…` other than SVG, `application/ogg` or
+  `application/octet-stream`, and `application/octet-stream` otherwise: an
+  application must still not pass a type from untrusted metadata, since the
+  URL is on its own origin.
+- **The service worker's script.** Service workers need a secure context.
+  `media-sw.js` calls `skipWaiting()` and `clients.claim()`, so registering
+  it at a scope that already has a service worker replaces that worker at
+  once; an origin with a worker of its own calls `handleMedia` from it
+  instead, first in its `fetch` and `message` listeners, with the same
+  prefix as the page, which ends with a slash and is given one if it does
+  not. `MediaServer.connect` rejects with `timeout` when no service worker
+  has taken the page's port within ten seconds.
+
+```ts
+import { MediaServer } from "@frasil/client/media";
+
+const media = await MediaServer.connect({ serviceWorker: "/media-sw.js" });
+const stop = media.serve(document.querySelector("video"), blobs, id, { type: "video/mp4" });
+```
+
+The script `media-sw.js` is in the package's `dist/`; host it where its
+scope covers the pages that play media, or call `handleMedia` from
+`@frasil/client/media/worker` in a service worker of your own.
 
 ## 32-bit sizes
 
@@ -271,7 +360,11 @@ browser's CORS preflights itself ([self-hosting.md](self-hosting.md)).
 - `scripts/check-js.sh` builds the package from a clean state, type-checks
   it, runs its unit tests in Node.js, runs the scenarios against
   `frasil-relay` and the policy check in Chromium and WebKit with
-  Playwright, checks its size budgets, and lints it. Playwright's browsers
+  Playwright, checks its size budgets, and lints it. Among the scenarios,
+  `reads.spec.ts` reads blobs the device does not hold, through a read's
+  options and through a reader, under a cache budget and over a store that
+  refuses writes for quota; `media.spec.ts` asks the media service worker
+  for ranges and plays and seeks a `<video>` element through it. Playwright's browsers
   must be installed already, WebKit included, since WebKit runs by default:
   `pnpm --dir packages/frasil exec playwright install chromium webkit`
   (from `packages/frasil`, `npx playwright install webkit`).

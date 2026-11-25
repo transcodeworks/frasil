@@ -5,7 +5,7 @@
  */
 import type { Browser, Page } from "@playwright/test";
 
-import type { Change, Review, Version } from "../../src/index.js";
+import type { Blobs, Change, Device, Options, Review, Store, Version } from "../../src/index.js";
 
 /** A device's three public keys, from `Advanced.deviceKeys`, as hex. */
 export type DeviceKeysHex = string;
@@ -185,6 +185,28 @@ declare global {
     agent: Agent;
     ready: Promise<boolean>;
   }
+}
+
+/**
+ * The page's globals as the tests of reads and media use them: the package, the media helper,
+ * the agent's device, and the helpers of `page.js`.
+ */
+export interface ReadsWindow {
+  frasil: typeof import("../../src/index.js");
+  media: typeof import("../../src/media.js");
+  agent: Agent & {
+    device: Device;
+    /** The unlock key of the device `createWith` opened. */
+    unlockKey: Uint8Array;
+    createWith(name: string, options?: Options, store?: Store): Promise<string>;
+    absent(space: string, data: Uint8Array): Promise<{ blobs: Blobs; blob: string }>;
+  };
+  helpers: {
+    until<T>(check: () => T | Promise<T>, what: string, deadline?: number): Promise<T>;
+    digest(data: Uint8Array): Promise<string>;
+    pattern(size: number): Uint8Array;
+    wav(seconds: number): Uint8Array;
+  };
 }
 
 /** A database name no other test uses. */

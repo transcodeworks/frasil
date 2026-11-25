@@ -19,6 +19,8 @@
 //!   `Document`, `Records` and `Blobs`; `frasil::Peer`; `frasil::Events`.
 //!   Asynchronous methods return promises; each clones its `frasil` handle
 //!   into its future, so no future borrows a JavaScript object.
+//! - [`retention`]: what a read does about a blob the device has to
+//!   fetch, what the device keeps of a blob, and `frasil::BlobReader`.
 //! - [`platform`]: what the device runs on in a browser: the store the
 //!   application supplies from JavaScript (IndexedDB, in the package), the
 //!   browser's clocks, and `crypto.getRandomValues` (at-rest.md, "What the
@@ -82,6 +84,8 @@ pub mod reads;
 pub mod references;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod requests;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod retention;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod space;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
