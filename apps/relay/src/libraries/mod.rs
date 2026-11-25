@@ -48,12 +48,6 @@ pub(crate) use core::usage_record;
 pub use operator::{IssuedTicket, OperatorIssuer, TicketRequest};
 pub use records::{Attachment, Copy, Hold, Library, Record, UsageRecord, Window};
 
-/// The open library a create without a ticket attaches its space to under
-/// open hosting, when the operator names none (`FRASIL_OPEN_LIBRARY`): of
-/// kind `open`, so that `FRASIL_LIBRARY_QUOTAS` bounds it apart from the
-/// operator's own libraries.
-pub const OPEN_LIBRARY: &str = "open:public";
-
 /// Where a library's copies keep their pieces among the object pieces
 /// (ext-libraries.md, 3.8 Keeping a held object): 32 bytes in place of a
 /// space ID, from a hash of the library ID, so that no space's pieces share
@@ -88,8 +82,9 @@ pub struct LibrarySettings {
     /// The operator's own hosting: a library that a create without a
     /// ticket attaches its space to, while the peer's hosting is open
     /// ([`crate::Hosting::Open`]); none by default, so that a genesis
-    /// stored without a `LibraryAttach` is `no_library`. An import is
-    /// never taken without a ticket.
+    /// stored without a `LibraryAttach` is `no_library`. No library is
+    /// open unless the operator names it. An import is never taken
+    /// without a ticket.
     pub open_library: Option<LibraryId>,
     /// The operator's bearer token for its routes: usage, settings and
     /// hand-over, under `/frasil/p1/libraries/{library}/`; none by default,

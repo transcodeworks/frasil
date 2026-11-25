@@ -43,9 +43,13 @@ pub enum Hosting {
     Closed,
     /// Any connection may create a space whose genesis it stores first.
     /// With ext-libraries.md on, such a space is attached to the open
-    /// library (ext-libraries.md, 2.4 Settings). Anyone who reaches the
-    /// peer may then fill it, one space at a time, up to the space quota
-    /// each, bounded only by the open library's quota when it has one.
+    /// library (ext-libraries.md, 2.4 Settings), which the operator names
+    /// ([`crate::libraries::LibrarySettings::open_library`]): with none
+    /// named, a create without a ticket is refused `no_library` as under
+    /// [`Hosting::Closed`], and [`Config::from_env`] refuses the setting.
+    /// Anyone who reaches the peer may then fill it, one space at a time,
+    /// up to the space quota each, bounded only by the open library's
+    /// quota when it has one.
     Open,
 }
 
@@ -489,7 +493,9 @@ impl Settings {
     /// A core peer that hosts any space a connection creates: no
     /// extension, and [`Hosting::Open`]. It is what a test or an embedding
     /// of the peer starts from when it wants the core protocol alone; an
-    /// operator's peer starts from [`Settings::default`].
+    /// operator's peer starts from [`Settings::default`]. A caller that
+    /// turns ext-libraries.md on in these settings names the open library
+    /// too, or the peer hosts no space without a ticket.
     pub fn open_core() -> Self {
         Self {
             hosting: Hosting::Open,
@@ -718,9 +724,9 @@ impl Config {
     ///   `FRASIL_LIBRARY_ISSUERS`, [`crate::run`] trusts the operator's own
     ///   issuer (crate `libraries`, `operator`);
     /// - `FRASIL_HOSTING` (`closed` or `open`, default `closed`): with
-    ///   libraries on, `open` attaches a create without a ticket to
-    ///   `FRASIL_OPEN_LIBRARY`, `open:public` by default, which is refused
-    ///   with `closed`;
+    ///   libraries on, `open` attaches a create without a ticket to the
+    ///   library `FRASIL_OPEN_LIBRARY` names, and is refused without it;
+    ///   `FRASIL_OPEN_LIBRARY` is refused with `closed`;
     /// - `FRASIL_TRUSTED_PROXIES`: the reverse proxies whose
     ///   `X-Forwarded-For` names the client, as addresses or networks
     ///   (`10.0.0.0/8`), separated by spaces or commas; none by default
@@ -1044,10 +1050,16 @@ impl Config {
             settings.libraries = crate::libraries::LibrarySettings::from_lookup(&get)?;
             match settings.hosting {
                 // A create without a ticket is the operator's own hosting
-                // (ext-libraries.md, 2.4 Settings, "open library").
+                // (ext-libraries.md, 2.4 Settings, "open library"): the
+                // operator says which library takes it.
                 Hosting::Open if settings.libraries.open_library.is_none() => {
-                    settings.libraries.open_library =
-                        frasil_libraries::LibraryId::new(crate::libraries::OPEN_LIBRARY).ok();
+                    return Err(ConfigError(
+                        "FRASIL_HOSTING=open hosts every space created without a ticket, \
+                         and FRASIL_OPEN_LIBRARY names no library to attach them to: name \
+                         one, such as FRASIL_OPEN_LIBRARY=open:public, or set \
+                         FRASIL_HOSTING=closed to host only the spaces a ticket attached"
+                            .into(),
+                    ));
                 }
                 Hosting::Closed if settings.libraries.open_library.is_some() => {
                     return Err(ConfigError(
@@ -1771,15 +1783,21 @@ mod tests {
             named.settings.libraries.open_library.unwrap().as_str(),
             "operator:open"
         );
-        // Open hosting without one takes creates into `open:public`.
-        let open = config(&[("FRASIL_HOSTING", "open")]).unwrap();
-        assert_eq!(open.settings.hosting, Hosting::Open);
-        assert_eq!(
-            open.settings.libraries.open_library.unwrap().as_str(),
-            crate::libraries::OPEN_LIBRARY
-        );
+        assert_eq!(named.settings.hosting, Hosting::Open);
+        // Open hosting names its library: none is filled in, and the
+        // refusal says both ways out.
+        let error = config(&[("FRASIL_HOSTING", "open")]).unwrap_err();
+        assert!(error.0.contains("FRASIL_OPEN_LIBRARY"), "{error}");
+        assert!(error.0.contains("FRASIL_HOSTING=closed"), "{error}");
+        let error = config(&[
+            ("FRASIL_HOSTING", "open"),
+            ("FRASIL_EXTENSIONS", "libraries ephemeral"),
+        ])
+        .unwrap_err();
+        assert!(error.0.contains("FRASIL_OPEN_LIBRARY"), "{error}");
         // The core peer has no open library, whatever its hosting.
         let core = config(&[("FRASIL_EXTENSIONS", "none"), ("FRASIL_HOSTING", "open")]).unwrap();
+        assert_eq!(core.settings.hosting, Hosting::Open);
         assert!(core.settings.libraries.open_library.is_none());
         let issued = config(&[("FRASIL_LIBRARY_ISSUERS", ISSUER)]).unwrap();
         assert_eq!(issued.settings.libraries.issuers.len(), 1);
