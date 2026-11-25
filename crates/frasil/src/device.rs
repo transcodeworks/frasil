@@ -298,6 +298,8 @@ struct Shared {
     blob_cache: std::sync::atomic::AtomicU64,
     /// The objects that reads are using, which are not dropped meanwhile.
     uses: Arc<crate::retention::Uses>,
+    /// The `object` records being written without the device's lock.
+    part_writes: Arc<crate::objects::PartWrites>,
     /// Whether this device signs roster events without checking ranks,
     /// as a client that does not would: for tests of what replicas and
     /// peers judge.
@@ -509,6 +511,7 @@ impl Engine {
                 keep_all_blobs: std::sync::atomic::AtomicBool::new(false),
                 blob_cache: std::sync::atomic::AtomicU64::new(crate::retention::DEFAULT_BLOB_CACHE),
                 uses: Arc::default(),
+                part_writes: Arc::default(),
                 unchecked_ranks: std::sync::atomic::AtomicBool::new(false),
                 peer_holdings: std::sync::Mutex::default(),
                 erased_at_peer: std::sync::Mutex::default(),
@@ -1291,6 +1294,11 @@ impl Engine {
     /// The objects that reads are using.
     pub(crate) fn uses(&self) -> &Arc<crate::retention::Uses> {
         &self.shared.uses
+    }
+
+    /// The `object` records being written without the device's lock.
+    pub(crate) fn part_writes(&self) -> &Arc<crate::objects::PartWrites> {
+        &self.shared.part_writes
     }
 
     /// The budget of the blob cache, as the device was told.

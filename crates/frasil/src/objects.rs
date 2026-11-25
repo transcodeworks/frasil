@@ -31,6 +31,7 @@ use frasil_units::objects::{
     read_object_with_key, seal_object,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// The most bytes of parts that a blob's unit commits with it under the
 /// device's lock; a larger object's parts are written before it, without
@@ -44,6 +45,110 @@ const PIECE_BYTES: usize = 8 << 20;
 
 /// How many chunks a check of a whole object's digest reads at once.
 const DIGEST_BATCH: u64 = 8;
+
+/// A record of the `object` table: the space, the object's ID and the
+/// part, 0 for the header (at-rest.md, the `object` table). Its address
+/// follows from the three.
+type PartRecord = (EventId, [u8; 32], u32);
+
+/// The `object` records being written without the device's lock
+/// ([`Engine::store_parts`]), by every call that writes them now. Several
+/// calls may write one record, as when two connections fetch one object,
+/// and each write puts the same address: so a call the store refuses
+/// deletes a record only when no other call is writing it and the replica
+/// does not hold it.
+#[derive(Default)]
+pub(crate) struct PartWrites {
+    records: std::sync::Mutex<BTreeMap<PartRecord, PartWrite>>,
+}
+
+/// One record being written.
+struct PartWrite {
+    /// The calls writing it now.
+    writers: usize,
+    /// Whether one of them, or one that failed since and left the record
+    /// to them, committed it.
+    written: bool,
+}
+
+impl PartWrites {
+    fn records(&self) -> std::sync::MutexGuard<'_, BTreeMap<PartRecord, PartWrite>> {
+        self.records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Begins a call's writes of `records`. Called under the device's
+    /// lock, as [`PartWriting::fail`] is, so that no call begins to write
+    /// a record while another deletes it.
+    fn begin(self: &Arc<Self>, records: BTreeSet<PartRecord>) -> PartWriting {
+        let mut writing = self.records();
+        for record in &records {
+            writing
+                .entry(*record)
+                .or_insert(PartWrite {
+                    writers: 0,
+                    written: false,
+                })
+                .writers += 1;
+        }
+        PartWriting {
+            writes: Arc::clone(self),
+            records,
+        }
+    }
+}
+
+/// One call's writes of `object` records ([`PartWrites`]), until it is
+/// dropped.
+struct PartWriting {
+    writes: Arc<PartWrites>,
+    records: BTreeSet<PartRecord>,
+}
+
+impl PartWriting {
+    /// The call committed these records.
+    fn wrote(&self, records: &[PartRecord]) {
+        let mut writing = self.writes.records();
+        for record in records {
+            if let Some(write) = writing.get_mut(record) {
+                write.written = true;
+            }
+        }
+    }
+
+    /// Ends the call's writes, which failed: the records that were
+    /// committed, by this call or by one that failed and left them to it,
+    /// and that no other call is writing. A record another call is still
+    /// writing is left to that call.
+    fn fail(mut self) -> Vec<PartRecord> {
+        self.leave()
+    }
+
+    fn leave(&mut self) -> Vec<PartRecord> {
+        let mut writing = self.writes.records();
+        let mut left = Vec::new();
+        for record in core::mem::take(&mut self.records) {
+            let Some(write) = writing.get_mut(&record) else {
+                continue;
+            };
+            write.writers -= 1;
+            if write.writers == 0 {
+                if write.written {
+                    left.push(record);
+                }
+                writing.remove(&record);
+            }
+        }
+        left
+    }
+}
+
+impl Drop for PartWriting {
+    fn drop(&mut self) {
+        self.leave();
+    }
+}
 
 /// What a stream snapshot's plaintext holds besides its adapter state, at
 /// most: the type, the stream ID, the flags and a move record, framed
@@ -1557,7 +1662,11 @@ impl Engine {
     /// [`store_parts`](Self::store_parts): `false` when the store had no
     /// room for the parts
     /// ([`StoreError::is_full`](frasil_store::StoreError::is_full)). None
-    /// of them is kept then, and what was written of them is deleted.
+    /// of them is noted then. Of the records the call committed before
+    /// the store refused one, those the replica does not hold and no
+    /// other call is writing are deleted ([`PartWrites`]): a record the
+    /// device held before the call stays, as does all it holds when the
+    /// call wrote nothing.
     async fn store_parts_if_room(
         &self,
         space: EventId,
@@ -1567,10 +1676,26 @@ impl Engine {
         if parts.is_empty() {
             return Ok(true);
         }
-        let writer = {
+        // Each record in the order `seal` gives them, with the object
+        // and the chunk it is of: no chunk for a header.
+        let mut records: Vec<(PartRecord, Locator, Option<u64>)> = Vec::new();
+        for part in parts {
+            let id = crate::replica::object_id(&part.locator);
+            if part.header.is_some() {
+                records.push(((space, id, 0), part.locator, None));
+            }
+            let chunk = chunk_part(part.index)?;
+            records.push(((space, id, chunk), part.locator, Some(part.index)));
+        }
+        let (writer, writing) = {
             let mut state = self.lock().await;
             match state.vault.object_writer(&space.0) {
-                Some(writer) => writer,
+                Some(writer) => {
+                    let writing = self
+                        .part_writes()
+                        .begin(records.iter().map(|(record, ..)| *record).collect());
+                    (writer, writing)
+                }
                 None => {
                     return Self::keep_parts_in(&mut state, space, parts)
                         .await
@@ -1582,19 +1707,47 @@ impl Engine {
         let addresses: Vec<Vec<u8>> = sealed.iter().map(|(address, _)| address.clone()).collect();
         // In commits of a few chunks, so that a write that commits
         // meanwhile waits for one of them at most.
-        let mut sealed = sealed.into_iter().peekable();
+        let mut sealed = sealed.into_iter().zip(&records).peekable();
         while sealed.peek().is_some() {
             let mut bytes = 0;
             let mut piece = Vec::new();
-            while let Some(next) = sealed.next_if(|_| bytes < PIECE_BYTES) {
+            let mut committing = Vec::new();
+            while let Some((next, (record, ..))) = sealed.next_if(|_| bytes < PIECE_BYTES) {
                 bytes += next.1.len();
                 piece.push(next);
+                committing.push(*record);
             }
-            if !writer.commit_if_room(piece).await? {
-                // What the earlier commits wrote is no one's.
-                let _ = writer.forget(addresses).await;
-                return Ok(false);
+            if writer.commit_if_room(piece).await? {
+                writing.wrote(&committing);
+                continue;
             }
+            // Under the device's lock, so that what the replica holds
+            // does not change and no call begins to write these records
+            // until the commit below ends.
+            let state = self.lock().await;
+            let left = writing.fail();
+            let unheld: Vec<Vec<u8>> = {
+                let replica = state
+                    .replicas
+                    .get(&space)
+                    .filter(|_| writer.is_current(&state.vault));
+                records
+                    .iter()
+                    .zip(&addresses)
+                    .filter(|((record, locator, chunk), _)| {
+                        left.contains(record)
+                            && !replica.is_some_and(|replica| match chunk {
+                                Some(index) => replica.holds_chunk(locator, *index),
+                                None => replica.object_header(locator).is_some(),
+                            })
+                    })
+                    .map(|(_, address)| address.clone())
+                    .collect()
+            };
+            if !unheld.is_empty() {
+                let _ = writer.forget(unheld).await;
+            }
+            return Ok(false);
         }
         let mut state = self.lock().await;
         if !writer.is_current(&state.vault) {
