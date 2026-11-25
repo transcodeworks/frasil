@@ -261,8 +261,9 @@ await reader.close();
 ```
 
 - `read(offset, length, { signal })` gives the bytes, fewer at the blob's
-  end and none past it. Aborting the signal gives the read up; the reader
-  lives on.
+  end and none past it. Aborting the signal gives the read up, with what it
+  had asked of the connections, whether or not the blob's header had come;
+  the reader lives on. `fetchSize({ signal })` is given up the same way.
 - `stream(offset)` is a `ReadableStream` to the blob's end. It reads one
   piece ahead of its consumer and no more, and cancelling it gives up the
   read it waits for and what that asked of the connections.
@@ -305,16 +306,47 @@ ends it. The options are a reader's, and `type`, the media type the element
 is told. Every request gets a reader of its own, closed when the request ends
 or the element gives it up, as it does at each seek. A request left open with
 nothing read from it for half a minute, as under a paused element, has its
-reader closed too, and opened again when the element reads on.
+reader closed too, and opened again when the element reads on;
+`MediaServer.connect({ idle })` sets that time in milliseconds. A blob's size
+is fetched once for a URL, by its first request.
+
+**The media type.** `type` is told as given only when it is `audio/…`,
+`video/…`, `image/…` other than SVG, `application/ogg` or
+`application/octet-stream`; any other type is told as
+`application/octet-stream`. Never pass a type that comes from untrusted
+metadata, such as the `mediaType` another member wrote on a blob, without
+checking it against the types your application plays. The URL is on your
+page's own origin and its bytes are whatever a member of the space put
+there: a type the browser renders or runs, with those bytes, would run in
+your origin. The list and the headers below are there so that a mistake
+does not come to that.
+
+**Several servers.** A page may connect more than one `MediaServer`, and one
+may live in the page while another lives in a worker. Each has its own port
+at the service worker, and a URL begins with the name of the server that
+minted it, so each answers its own URLs only.
 
 **Hosting the service worker.** Copy `node_modules/@frasil/client/dist/media-sw.js`
 (the export `@frasil/client/media-sw.js`) to where your site serves static
 files. A service worker answers only pages within its scope, which is the
 directory its script is served from: serve it from the site's root, or from
 the directory of the pages that play media, or send the header
-`Service-Worker-Allowed: /` with it and pass `scope: "/"`. `connect` resolves
-once the worker controls the page; a page loaded with a forced reload is
-controlled by none and plays nothing through it.
+`Service-Worker-Allowed: /` with it and pass `scope: "/"`. Service workers
+need a secure context: `https:`, or `http://localhost` while developing.
+
+`connect` resolves once the worker that controls the page has taken the
+server's port. It rejects with `timeout` after ten seconds
+(`{ timeout }`, in milliseconds) when none has: no worker controls the page,
+because the script is served from outside the page's directory, the page was
+loaded with a forced reload, or the context is not secure; or the worker in
+control is another one that does not call `handleMedia`.
+
+`media-sw.js` calls `skipWaiting()` when it is installed and
+`clients.claim()` when it is activated, so that it serves the page that
+registered it without a reload. A scope has one service worker: registering
+`media-sw.js` at a scope that has a worker of yours **replaces that worker at
+once**, for every open page of the scope. If your origin has a service
+worker, do not register this script; call the handler from yours.
 
 **With a service worker of your own.** An origin's scope has one service
 worker, so call the handler from yours instead of registering the script:
@@ -334,8 +366,12 @@ self.addEventListener("message", (event) => {
 
 Then call `MediaServer.connect()` with no `serviceWorker`. The handler takes
 the requests under `/frasil-media/` on its own origin and the pages' messages
-that bring their ports, and leaves every other event alone. Both sides take
-another path: `handleMedia(event, "/media/")` and `{ prefix: "/media/" }`.
+that bring their ports, and leaves every other event alone: call it first,
+and return when it says `true`. It neither skips waiting nor claims clients;
+your worker decides that. Both sides take another path:
+`handleMedia(event, "/media/")` and `{ prefix: "/media/" }`. A prefix ends
+with a slash, and is given one if it does not, so `/media` takes `/media/…`
+and never `/mediafoo`.
 
 **The client in a worker.** The service worker sends an element's requests
 to the page the element is in. When the client runs in a dedicated worker,
@@ -354,15 +390,26 @@ self.addEventListener("message", ({ data }) => {
 });
 ```
 
-**What a URL gives access to.** A URL is `/frasil-media/` and 32 hex digits
-drawn at random, on the page's own origin. Nothing on the network answers
-it. The service worker sends a request only to the port of the page that
-made the request, and a page serves only the URLs it minted: another tab of
-the origin gets `404` for it, a page of another origin is not controlled by
-the worker and reaches the network, and opening the URL as a page gets
-`404`. The worker holds no blob, key or URL: only each page's port, which it
-asks the page for again after the browser stopped and restarted it. Answers
-carry `Cache-Control: no-store`.
+**What a URL gives access to.** A URL is `/frasil-media/`, 8 hex digits that
+name the server and 32 drawn at random, on the page's own origin. Nothing
+on the network answers it. The service worker sends a request only to a port
+of the page that made the request, and a page serves only the URLs it
+minted: another tab of the origin gets `404` for it, and a page of another
+origin is not controlled by the worker and reaches the network. The worker
+holds no blob, key or URL: only each page's ports, which it asks the page
+for again after the browser stopped and restarted it.
+
+A URL is for a media element or a script, and never becomes a document: the
+worker answers `404` to a navigation and to a request from a frame, an
+`<object>` or an `<embed>`, whichever page makes it. Every answer carries
+four headers:
+
+| Header | Value | So that |
+| --- | --- | --- |
+| `X-Content-Type-Options` | `nosniff` | the browser does not take the bytes for another type than the one told |
+| `Content-Security-Policy` | `sandbox; default-src 'none'` | an answer opened as a document all the same runs nothing and has no origin |
+| `Cross-Origin-Resource-Policy` | `same-origin` | no other origin embeds it |
+| `Cache-Control` | `no-store` | no cache keeps a blob's plaintext |
 
 ### The cache and the browser's quota
 
@@ -374,19 +421,36 @@ bytes as stored, a little more than the blobs' sizes; `0` caches nothing, and
 A browser gives an origin a quota, and refuses writes past it. Over
 `Storage.indexedDb` the budget is therefore lowered, at each open, to half of
 what `navigator.storage.estimate()` says the origin may still store: its
-quota less its usage, plus what the cache holds already. `blobCacheUsage()`
-shows the budget in force. Where the browser gives no estimate, or one with
-no quota, the budget stands as given.
+quota less its usage, plus what the cache holds already. An origin already
+over its quota gets half of what its cache holds beyond the excess, and a
+budget of 0, with nothing cached, when the excess is larger than the cache.
+`blobCacheUsage()` shows the budget in force. Where the browser gives no
+estimate, or one with no quota, the budget stands as given.
 
 The estimate is not a promise, and kept blobs, documents and the rest of the
 origin's storage share the quota. When the browser refuses a chunk a read
 fetched (`QuotaExceededError`), the device drops cached blobs, the one read
 longest ago first, until as many bytes went as the chunk takes, and writes it
-again. If the browser still refuses, the read goes on through memory, as an
-`uncached` read does, and nothing more of that blob is stored while it is
-being read: the read does not fail. A download with `blobs.keep(id)` has no
-reader to fall back to, and fails. Ask the browser not to clear the origin's
-storage under pressure with `navigator.storage.persist()`.
+again, once. If the browser still refuses, a blob with an open reader is read
+on through memory, as an `uncached` read does, and nothing more of that blob
+is stored while a reader of it is open: the read does not fail. That covers
+`openReader`, a media element, and `blobs.get(id)`, which reads a blob that
+is not whole here through a reader of its own and so gives the bytes and
+leaves the blob absent.
+
+What still fails under a full store:
+
+- `blobs.keep(id)`: a kept blob is never held in memory in place of the
+  store, so the download makes no progress and rejects, and the blob stays
+  marked as kept, to be fetched when there is room.
+- `blobs.put(data)`, and every other write: documents, rows, entries. They
+  reject with a `store` error whose `cause` is the browser's exception, and
+  the cache does not give way for them.
+- Kept blobs are never evicted to make room, nor is a blob this device put
+  that no peer holds yet.
+
+Ask the browser not to clear the origin's storage under pressure with
+`navigator.storage.persist()`.
 
 ## Entries
 

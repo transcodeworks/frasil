@@ -1,8 +1,9 @@
 /**
  * The media helper: a service worker answers Range requests for a URL the page minted, with the
  * bytes of a blob this device does not hold, read through a reader; and a `<video>` element
- * plays and seeks through it. The service worker is the package's script, served at the test
- * origin's root.
+ * plays and seeks through it; what a URL never becomes, a document; several servers in one page;
+ * and the handler in a service worker of an application's own. The service worker is the
+ * package's script, served at the test origin's root, unless a test says otherwise.
  */
 import { type Browser, expect, type Page, test } from "@playwright/test";
 import { devicePage, type ReadsWindow, uniqueName } from "./harness.js";
@@ -22,6 +23,10 @@ async function serving(browser: Browser): Promise<{ page: Page; errors: string[]
 }
 
 type Served = ReadsWindow & { served: import("../../src/media.js").MediaServer };
+type Blobs = import("../../src/index.js").Blobs;
+
+/** What every answer of the service worker says, as `guard` reads it in a page. */
+const GUARD = "nosniff | sandbox; default-src 'none' | same-origin | no-store";
 
 test("a minted URL answers whole and Range requests with the blob's bytes", async ({ browser }) => {
   const { page, errors, space } = await serving(browser);
@@ -31,6 +36,15 @@ test("a minted URL answers whole and Range requests with the blob's bytes", asyn
     const data = helpers.pattern(size);
     const { blobs, blob } = await agent.absent(space, data);
     const url = served.url(blobs, blob, { type: "audio/x-test", readAhead: 0 });
+    const guard = (response: Response) =>
+      [
+        "x-content-type-options",
+        "content-security-policy",
+        "cross-origin-resource-policy",
+        "cache-control",
+      ]
+        .map((name) => response.headers.get(name))
+        .join(" | ");
     const ask = async (range?: string, method = "GET") => {
       const response = await fetch(url, { method, headers: range ? { range } : {} });
       const body = new Uint8Array(await response.arrayBuffer());
@@ -43,6 +57,7 @@ test("a minted URL answers whole and Range requests with the blob's bytes", asyn
         range: response.headers.get("content-range"),
         type: response.headers.get("content-type"),
         accepts: response.headers.get("accept-ranges"),
+        guard: guard(response),
         bytes: body.length,
         right: body.every((byte, index) => byte === data[start + index]),
       };
@@ -61,15 +76,18 @@ test("a minted URL answers whole and Range requests with the blob's bytes", asyn
     seen.rangedHead = await ask("bytes=0-9", "HEAD");
     seen.whole = await ask();
     seen.several = await ask("bytes=0-1,5-6");
-    seen.post = (await fetch(url, { method: "POST" })).status;
-    seen.unknown = (await fetch(url.replace(/.$/, (last) => (last === "0" ? "1" : "0")))).status;
+    const plain = async (response: Response) => [response.status, guard(response)];
+    seen.post = await plain(await fetch(url, { method: "POST" }));
+    seen.unknown = await plain(
+      await fetch(url.replace(/.$/, (last) => (last === "0" ? "1" : "0"))),
+    );
     await helpers.until(() => served.openReaders === 0, "the readers to close");
     served.revoke(url);
-    seen.revoked = (await fetch(url)).status;
+    seen.revoked = await plain(await fetch(url));
     return { size, seen };
   }, space);
   const { size } = seen;
-  const about = { type: "audio/x-test", accepts: "bytes", right: true };
+  const about = { type: "audio/x-test", accepts: "bytes", guard: GUARD, right: true };
   const part = (first: number, last: number) => ({
     ...about,
     status: 206,
@@ -91,9 +109,9 @@ test("a minted URL answers whole and Range requests with the blob's bytes", asyn
     whole,
     // More than one range is not served in parts: the whole blob is.
     several: whole,
-    post: 405,
-    unknown: 404,
-    revoked: 404,
+    post: [405, GUARD],
+    unknown: [404, GUARD],
+    revoked: [404, GUARD],
   });
   expect(errors.filter((error) => !/40[45]|416/.test(error))).toEqual([]);
   await page.context().close();
@@ -315,6 +333,403 @@ test("a service worker the browser stopped asks the page for its port again", as
   expect(seen).toEqual({
     status: 206,
     bytes: Array.from({ length: 10 }, (_, index) => ((1_048_600 + index) * 31 + 7) & 0xff),
+  });
+  expect(errors).toEqual([]);
+  await page.context().close();
+});
+
+test("a blob of HTML is never a document: a frame, a window and a navigation get nothing", async ({
+  browser,
+}) => {
+  const { page, errors, space } = await serving(browser);
+  const seen = await page.evaluate(async (space) => {
+    const { agent, served } = window as unknown as Served;
+    const html = new TextEncoder().encode(
+      `<!doctype html><title>ran</title><p id="shown">shown</p><script>
+        localStorage.setItem("frasil-media-ran", "1");
+        try { (window.opener || window.parent).postMessage("frasil-media-ran", "*"); } catch {}
+      </script>`,
+    );
+    const { blobs, blob } = await agent.absent(space, html);
+    const url = served.url(blobs, blob, { type: "text/html" });
+    const told = { ran: false };
+    window.addEventListener("message", (event) => {
+      if (event.data === "frasil-media-ran") told.ran = true;
+    });
+    (window as unknown as { told: typeof told }).told = told;
+    // A script of the page reads the bytes, told as no document's.
+    const own = await fetch(url);
+    const text = await own.text();
+    // In a frame, an object and an embed: each is refused, and what it shows is not looked into,
+    // since the answer is sandboxed away from this page.
+    for (const tag of ["iframe", "object", "embed"] as const) {
+      const element = document.createElement(tag);
+      const settled = new Promise<void>((resolve) => {
+        element.addEventListener("load", () => resolve(), { once: true });
+        element.addEventListener("error", () => resolve(), { once: true });
+        setTimeout(resolve, 3_000);
+      });
+      element.setAttribute(tag === "object" ? "data" : "src", url);
+      document.body.append(element);
+      await settled;
+    }
+    // A link and a button to click: a window of its own, and `window.open`.
+    const link = document.createElement("a");
+    link.id = "link";
+    link.href = url;
+    link.target = "_blank";
+    link.textContent = "open";
+    const button = document.createElement("button");
+    button.id = "button";
+    button.textContent = "open";
+    button.addEventListener("click", () => window.open(url));
+    document.body.append(link, button);
+    return {
+      url,
+      status: own.status,
+      type: own.headers.get("content-type"),
+      sniff: own.headers.get("x-content-type-options"),
+      policy: own.headers.get("content-security-policy"),
+      read: text.includes("shown"),
+    };
+  }, space);
+  expect({ ...seen, url: null }).toEqual({
+    url: null,
+    status: 200,
+    type: "application/octet-stream",
+    sniff: "nosniff",
+    policy: "sandbox; default-src 'none'",
+    read: true,
+  });
+  for (const selector of ["#link", "#button"]) {
+    const [popup] = await Promise.all([page.waitForEvent("popup"), page.click(selector)]);
+    await popup.waitForLoadState().catch(() => {});
+    expect(await popup.title()).not.toBe("ran");
+    expect(await popup.locator("#shown").count()).toBe(0);
+    await popup.close();
+  }
+  // Opened as a page of its own in another tab.
+  const other = await page.context().newPage();
+  const opened = await other.goto(seen.url);
+  expect(opened?.status()).toBe(404);
+  expect(await opened?.headerValue("x-content-type-options")).toBe("nosniff");
+  expect(await other.locator("#shown").count()).toBe(0);
+  // No script of the blob ran anywhere.
+  const ran = await page.evaluate(() => ({
+    stored: localStorage.getItem("frasil-media-ran"),
+    told: (window as unknown as { told: { ran: boolean } }).told.ran,
+  }));
+  expect(ran).toEqual({ stored: null, told: false });
+  expect(errors.filter((error) => !/404/.test(error))).toEqual([]);
+  await page.context().close();
+});
+
+test("a URL revoked while its request opens is answered and does not hang", async ({ browser }) => {
+  const { page, errors, space } = await serving(browser);
+  const seen = await page.evaluate(async (space) => {
+    const { agent, helpers, media, served } = window as unknown as Served;
+    const data = helpers.pattern(3 * 1_048_536);
+    const { blobs, blob } = await agent.absent(space, data);
+    /** A stream whose readers open only once `release` was called, and say when one is asked for. */
+    const gated = () => {
+      let entered: () => void = () => {};
+      let release: () => void = () => {};
+      const inside = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let hold = false;
+      const slow = {
+        openReader: async (id: string, options: object) => {
+          if (hold) {
+            entered();
+            await gate;
+          }
+          return blobs.openReader(id, options);
+        },
+      } as unknown as Blobs;
+      return { slow, inside, release, holdNext: () => (hold = true) };
+    };
+    const within = <T>(work: Promise<T>): Promise<T | "hung"> =>
+      Promise.race([work, new Promise<"hung">((resolve) => setTimeout(resolve, 8_000, "hung"))]);
+    // Revoked while the first reader of a request opens.
+    const first = gated();
+    first.holdNext();
+    const url = served.url(first.slow, blob, { uncached: true });
+    const answering = fetch(url).then(
+      (response) => response.status,
+      () => "failed",
+    );
+    await first.inside;
+    served.revoke(url);
+    first.release();
+    const opening = await within(answering);
+    // Revoked while a request that rested opens its reader again.
+    const quick = await media.MediaServer.connect({ idle: 100 });
+    const second = gated();
+    const resting = quick.url(second.slow, blob, { uncached: true, readAhead: 0 });
+    const response = await fetch(resting);
+    const body = response.body?.getReader();
+    await body?.read();
+    await helpers.until(() => quick.openReaders === 0, "the resting reader to close", 15_000);
+    second.holdNext();
+    const rest = (async () => {
+      try {
+        for (;;) if ((await body?.read())?.done !== false) return "ended";
+      } catch {
+        return "failed";
+      }
+    })();
+    const reopening = await within(
+      Promise.race([second.inside.then(() => "reopened" as const), rest]),
+    );
+    quick.revoke(resting);
+    second.release();
+    const pulling = await within(rest);
+    quick.close();
+    return { opening, reopening, pulling, open: served.openReaders + quick.openReaders };
+  }, space);
+  // A request whose whole body the browser had taken before the reader rested ends by itself.
+  expect(seen.opening).toBe(404);
+  expect(["reopened", "ended"]).toContain(seen.reopening);
+  expect(seen.pulling).toBe(seen.reopening === "reopened" ? "failed" : "ended");
+  expect(seen.open).toBe(0);
+  expect(errors.filter((error) => !/404|could not be read/.test(error))).toEqual([]);
+  await page.context().close();
+});
+
+test("a reader that rested is opened again, and the blob's size is fetched once for a URL", async ({
+  browser,
+  browserName,
+}) => {
+  const { page, errors, space } = await serving(browser);
+  const seen = await page.evaluate(async (space) => {
+    const { agent, helpers, media } = window as unknown as Served;
+    const size = 24 * 1_048_536 + 17;
+    const data = helpers.pattern(size);
+    const { blobs, blob } = await agent.absent(space, data);
+    const quick = await media.MediaServer.connect({ idle: 150 });
+    const counts = { opens: 0, sizes: 0 };
+    const counted = {
+      openReader: async (id: string, options: object) => {
+        counts.opens += 1;
+        const reader = await blobs.openReader(id, options);
+        const fetchSize = reader.fetchSize.bind(reader);
+        reader.fetchSize = (given) => {
+          counts.sizes += 1;
+          return fetchSize(given);
+        };
+        return reader;
+      },
+    } as unknown as Blobs;
+    const url = quick.url(counted, blob, { uncached: true, readAhead: 0 });
+    const response = await fetch(url);
+    const body = response.body?.getReader();
+    let total = 0;
+    let right = true;
+    const take = async (): Promise<boolean> => {
+      const piece = await body?.read();
+      if (piece?.value === undefined) return false;
+      const start = total;
+      right &&= piece.value.every((byte, index) => byte === data[start + index]);
+      total += piece.value.length;
+      return true;
+    };
+    await take();
+    // Nothing is read from the answer: its reader closes, and the request stays open.
+    await helpers.until(() => quick.openReaders === 0, "the resting reader to close", 15_000);
+    const rested = { opens: counts.opens, total };
+    while (await take());
+    const whole = { opens: counts.opens, total, right };
+    // Requests elsewhere in the blob learn its size from the first.
+    for (const start of [20_000_000, 9_000_000, 0]) {
+      const part = await fetch(url, { headers: { range: `bytes=${start}-${start + 9}` } });
+      const bytes = new Uint8Array(await part.arrayBuffer());
+      right &&= part.status === 206 && bytes.every((byte, index) => byte === data[start + index]);
+    }
+    const head = await fetch(url, { method: "HEAD" });
+    await helpers.until(() => quick.openReaders === 0, "the readers to close");
+    quick.close();
+    return {
+      size,
+      rested,
+      whole,
+      right,
+      sizes: counts.sizes,
+      length: head.headers.get("content-length"),
+    };
+  }, space);
+  expect(seen.rested.total).toBeLessThan(seen.size);
+  // Chromium takes an answer as its consumer reads it, so the request rests and its reader is
+  // opened again. WebKit takes the whole answer at once: its request never rests.
+  const again = browserName === "chromium" ? 1 : 0;
+  expect(seen.whole).toEqual({ opens: seen.rested.opens + again, total: seen.size, right: true });
+  expect(seen.right).toBe(true);
+  expect(seen.sizes).toBe(1);
+  expect(seen.length).toBe(String(seen.size));
+  expect(errors).toEqual([]);
+  await page.context().close();
+});
+
+test("two media servers in one page each answer the URLs they minted", async ({ browser }) => {
+  const { page, errors, space } = await serving(browser);
+  const seen = await page.evaluate(async (space) => {
+    const { agent, helpers, media, served } = window as unknown as Served;
+    const one = helpers.pattern(5000);
+    const two = helpers.pattern(7000).map((byte) => byte ^ 0x5a);
+    const first = await agent.absent(space, one);
+    const second = await agent.absent(space, two);
+    const before = served.url(first.blobs, first.blob);
+    const other = await media.MediaServer.connect();
+    const mine = other.url(second.blobs, second.blob);
+    const read = async (url: string, data: Uint8Array) => {
+      const response = await fetch(url);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      return response.status === 200 && bytes.length === data.length
+        ? bytes.every((byte, index) => byte === data[index])
+        : response.status;
+    };
+    const both = [await read(before, one), await read(mine, two), await read(before, one)];
+    // A URL minted by the first after the second connected, and each read at once.
+    const after = served.url(second.blobs, second.blob);
+    const together = await Promise.all([read(after, two), read(mine, two), read(before, one)]);
+    other.close();
+    const closed = [await read(mine, two), await read(before, one)];
+    return { both, together, closed };
+  }, space);
+  expect({ ...seen, closed: null }).toEqual({
+    both: [true, true, true],
+    together: [true, true, true],
+    closed: null,
+  });
+  // The closed server's URL is no one's, or its request was under way as the server left.
+  expect([404, 503]).toContain(seen.closed[0]);
+  expect(seen.closed[1]).toBe(true);
+  expect(errors.filter((error) => !/40[34]|503/.test(error))).toEqual([]);
+  await page.context().close();
+});
+
+test("connecting rejects in time when no service worker takes the page's port", async ({
+  browser,
+}) => {
+  const { page, errors } = await devicePage(browser);
+  const seen = await page.evaluate(async () => {
+    const { media } = window as unknown as ReadsWindow;
+    const failed = (work: Promise<unknown>) =>
+      work.then(
+        () => ["connected", ""],
+        (error: { code?: string; message: string }) => [error.code, error.message],
+      );
+    const started = Date.now();
+    // No service worker at all, and one whose scope does not cover the page.
+    const none = await failed(media.MediaServer.connect({ timeout: 400 }));
+    const outside = await failed(
+      media.MediaServer.connect({ serviceWorker: "/dist/media-sw.js", timeout: 400 }),
+    );
+    return { none, outside, quick: Date.now() - started < 10_000 };
+  });
+  expect(seen.none[0]).toBe("timeout");
+  expect(seen.none[1]).toContain("No service worker came to control this page");
+  expect(seen.outside[0]).toBe("timeout");
+  expect(seen.quick).toBe(true);
+  expect(errors).toEqual([]);
+  await page.context().close();
+});
+
+test("the handler in an application's own service worker serves under its prefix", async ({
+  browser,
+}) => {
+  const { page, errors } = await devicePage(browser);
+  const seen = await page.evaluate(async (name) => {
+    const { agent, helpers, media } = window as unknown as ReadsWindow;
+    const space = await agent.createWith(name);
+    await navigator.serviceWorker.register("/composed-sw.js", { type: "module", scope: "/" });
+    // The prefix as the worker has it, with no slash at its end on either side.
+    const served = await media.MediaServer.connect({ prefix: "/played" });
+    const data = helpers.pattern(2 * 1_048_536 + 99);
+    const { blobs, blob } = await agent.absent(space, data);
+    const url = served.url(blobs, blob, { type: "video/mp4", uncached: true });
+    const part = await fetch(url, { headers: { range: "bytes=1048500-1048599" } });
+    const bytes = new Uint8Array(await part.arrayBuffer());
+    // The application's own request and message, and a path that only begins as the prefix does.
+    const ping = await fetch("/composed/ping");
+    const answered = new Promise<unknown>((resolve) => {
+      navigator.serviceWorker.addEventListener("message", (event) => {
+        if (event.data === "pong") resolve(event.data);
+      });
+    });
+    navigator.serviceWorker.controller?.postMessage("ping");
+    const beside = await fetch(`/playedfoo/${url.split("/").pop()}`);
+    await helpers.until(() => served.openReaders === 0, "the readers to close");
+    served.close();
+    return {
+      path: new URL(url).pathname.replace(/[0-9a-f]{40}$/, "…"),
+      status: part.status,
+      type: part.headers.get("content-type"),
+      sniff: part.headers.get("x-content-type-options"),
+      right: bytes.length === 100 && bytes.every((byte, index) => byte === data[1_048_500 + index]),
+      ping: [await ping.text(), ping.headers.get("x-composed")],
+      message: await answered,
+      beside: [beside.status, beside.headers.get("x-content-type-options")],
+    };
+  }, uniqueName("composed"));
+  expect(seen).toEqual({
+    path: "/played/…",
+    status: 206,
+    type: "video/mp4",
+    sniff: "nosniff",
+    right: true,
+    ping: ["pong", "yes"],
+    message: "pong",
+    // Not the handler's: the origin's own answer.
+    beside: [404, null],
+  });
+  expect(errors.filter((error) => !/404/.test(error))).toEqual([]);
+  await page.context().close();
+});
+
+test("a media server in a dedicated worker serves through the ports its page hands it", async ({
+  browser,
+}) => {
+  const { page, errors, space } = await serving(browser);
+  const seen = await page.evaluate(async (space) => {
+    const { agent, helpers, media, served } = window as unknown as Served;
+    const worker = new Worker("/test/binding/media-worker-host.js", { type: "module" });
+    const stop = await media.connectMediaPort((port) =>
+      worker.postMessage({ mediaPort: port }, [port]),
+    );
+    const minted = new Promise<string>((resolve) => {
+      worker.addEventListener("message", (event) => resolve(event.data.url), { once: true });
+    });
+    worker.postMessage("mint");
+    const url = await minted;
+    const part = await fetch(url, { headers: { range: "bytes=2000000-2000099" } });
+    const bytes = new Uint8Array(await part.arrayBuffer());
+    const whole = await fetch(url);
+    const length = (await whole.arrayBuffer()).byteLength;
+    // The page's own server answers beside the worker's.
+    const data = helpers.pattern(4000);
+    const { blobs, blob } = await agent.absent(space, data);
+    const own = await fetch(served.url(blobs, blob));
+    const mine = new Uint8Array(await own.arrayBuffer());
+    stop();
+    worker.terminate();
+    return {
+      status: part.status,
+      range: part.headers.get("content-range"),
+      right: bytes.every((byte, index) => byte === ((2_000_000 + index) * 31 + 7) % 256),
+      length,
+      own: own.status === 200 && mine.every((byte, index) => byte === data[index]),
+    };
+  }, space);
+  expect(seen).toEqual({
+    status: 206,
+    range: "bytes 2000000-2000099/3000000",
+    right: true,
+    length: 3_000_000,
+    own: true,
   });
   expect(errors).toEqual([]);
   await page.context().close();
