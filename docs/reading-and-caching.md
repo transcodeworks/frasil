@@ -193,11 +193,11 @@ connected, so a read fetches them now), missing (it does not hold them and
 nothing is connected that could send them), keys pending (the key the blob,
 or the change that adds it, is sealed under has not reached this device yet;
 connecting changes nothing until a member or a peer delivers it), or
-withdrawn. The npm package and the Swift and Kotlin bindings report absent
-as missing.
+withdrawn. The npm package reports absent as missing.
 
 A blob this device put is readable here at once; whether it has left the
-device is a separate question, and it has two halves. In Rust,
+device is a separate question, and it has two halves. In Rust, and
+in Swift and Kotlin as `isDurable` and `pending`,
 `blobs.is_durable(id)` is `false` while the change that put the blob waits
 for an acknowledgement, and `blobs.pending()` lists the stream's blobs
 still waiting. Both read the device's store, so after a reopen they say
@@ -401,10 +401,18 @@ write a file. A reader (`open_reader`) is the exception: over a blob held as
 a file it reads the file, and over one that is not it fetches the chunks it
 reads into its own memory, whatever its `Read` says, and makes no file.
 
-The npm package and the Swift and Kotlin bindings read as `Read::new()`
-does, into the cache, under the default budget. They do not yet have
-`Options::blob_cache`, `Options::keep_all_blobs`, `Read`, `keep`,
-`drop_local`, `local`, `blob_cache_usage` or `open_reader`.
+The Swift and Kotlin bindings have all of this under their own names: a
+`DeviceOptions` record at `Device.open` (`blobCache`, `keepAllBlobs`), a
+`ReadOptions` record on each read (`keep`, `uncached`, `local`), `keep`,
+`dropLocal`, `local`, `blobCacheUsage` and `openReader`; see
+`bindings/README.md`. `ReadOptions` is a record and `Read` a builder: the
+record's fields are applied in the order `keep`, `uncached`, `local`, so of
+`keep` and `uncached` together `uncached` holds.
+
+The npm package reads as `Read::new()` does, into the cache, under the
+default budget. It does not yet have `Options::blob_cache`,
+`Options::keep_all_blobs`, `Read`, `keep`, `drop_local`, `local`,
+`blob_cache_usage` or `open_reader`.
 
 ## Reading a blob that is not all here
 
@@ -483,6 +491,23 @@ until the range is filled, and give `size()` as the length. Players read
 ahead by themselves, so the default read-ahead suits them; set it to 0 for a
 reader that jumps about, such as one that reads an index at the end of a
 file first.
+
+In Swift and Kotlin the reader's `readAt(offset, length)` fills the range
+itself, up to the blob's end, and `end()` is `close`. One `readAt` gives at
+most 64 MiB, and a longer one is refused. When a chunk after the range's
+first fails, it gives the bytes before that chunk, as `read_at` gives a
+chunk at a time, and the next read reports the failure. A read stops only
+when its reader is ended, its `Cancellation` is cancelled, or the Kotlin
+coroutine that waits for it is cancelled: freeing the reader, or
+cancelling a Swift task, stops none. See `bindings/README.md`.
+
+The bindings' tests hold a sample adapter for each platform's player,
+written to be copied: an `AVAssetResourceLoaderDelegate` in
+`bindings/swift/Tests/FrasilTests/BlobResourceLoader.swift` and a Media3
+`DataSource` in `bindings/kotlin/src/test/kotlin/BlobDataSource.kt`. Each
+opens one reader for each request of the player's, so that requests at
+different places in a file do not wait for each other or drop each other's
+read-ahead.
 
 **Where the chunks go** is what the reader's `Read` says, as for any read.
 By default they join the cache as parts of a cached blob, and with `keep`
@@ -594,8 +619,8 @@ sealed bytes. Frasil gives it what such a cache needs.
   `get_stream` does. A read
   holds a few chunks at a time, plus the range it returns, whether the
   device keeps the blob sealed, in memory, or as a file it holds. From
-  Swift and Kotlin, `getToFile(id, path, listener)` writes a blob to a file
-  the same way.
+  Swift and Kotlin, `getToFile(id, path, listener, read)` writes a blob to a
+  file the same way.
 
 Every check of the object format still runs on a blob the device holds
 whole. The stored bytes are checked against the blob's locator before any

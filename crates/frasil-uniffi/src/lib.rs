@@ -1,7 +1,8 @@
 //! Frasil's client for Swift and Kotlin, through UniFFI: a device, its
 //! spaces and blob streams, the admission of a device into a space over a
-//! nearby connection, and the feeds an application follows, each delivered
-//! to a listener the application implements.
+//! nearby connection, blob reads and what the device keeps of its blobs,
+//! and the feeds an application follows, each delivered to a listener the
+//! application implements.
 //!
 //! IDs cross as lowercase hexadecimal, as `frasil`'s IDs show and parse.
 //! A feed runs on the device's runtime until its [`Subscription`] is
@@ -15,9 +16,11 @@ uniffi::setup_scaffolding!();
 
 mod admission;
 mod cancel;
+mod reads;
 
 pub use admission::{AdmissionListener, Invitation};
 pub use cancel::Cancellation;
+pub use reads::{BlobCacheUsage, BlobLocal, BlobReader, BlobState, ReadOptions, Verified};
 
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use tokio::runtime::{Handle, Runtime};
@@ -179,8 +182,12 @@ pub enum BlobStatus {
         /// The blob's size.
         total: u64,
     },
-    /// The device does not hold them, and nothing is sending them now. A
-    /// read fetches them while a peer or member is connected.
+    /// The device does not hold them, and a peer or a member of the space
+    /// is connected: a read fetches them now. The device never fetched
+    /// them, or dropped them since.
+    Absent,
+    /// The device does not hold them, and neither a peer nor a member of
+    /// the space is connected, so a read cannot fetch them now.
     Missing,
     /// The key they are sealed under has not reached this device yet.
     KeysPending,
@@ -193,6 +200,7 @@ impl From<frasil::BlobStatus> for BlobStatus {
         match status {
             frasil::BlobStatus::Readable => Self::Readable,
             frasil::BlobStatus::Fetching { done, total } => Self::Fetching { done, total },
+            frasil::BlobStatus::Absent => Self::Absent,
             frasil::BlobStatus::KeysPending => Self::KeysPending,
             frasil::BlobStatus::Withdrawn => Self::Withdrawn,
             _ => Self::Missing,
@@ -1013,6 +1021,23 @@ pub trait CheckpointListener: Send + Sync {
 /// value. None of it is stored: give it at each open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
 pub struct DeviceOptions {
+    /// The budget of the blob cache, in bytes as the device stores them: a
+    /// blob's sealed chunks and its header, a little more than its size,
+    /// across all the device's spaces. 256 MiB when left out. A device
+    /// fetches a blob when it is read and leaves it in the cache; when the
+    /// cached blobs would pass the budget it drops whole blobs, the one
+    /// read longest ago first, and a read fetches a dropped blob again.
+    /// With a budget of zero a read stores nothing once it ends. Blobs the
+    /// device keeps, blobs it put that no peer holds yet, and what Frasil
+    /// stores for itself are outside the budget.
+    #[uniffi(default = None)]
+    pub blob_cache: Option<u64>,
+    /// Whether the device fetches every blob its spaces name and keeps
+    /// each: a full copy, for a device that must read every blob with no
+    /// connection. Nothing is evicted then, the budget is not used, and
+    /// `drop_local` is refused.
+    #[uniffi(default = false)]
+    pub keep_all_blobs: bool,
     /// Whether the device binds its own endpoints on loopback alone, with
     /// no relay: nothing leaves the machine. For tests and examples.
     #[uniffi(default = false)]
@@ -1026,6 +1051,12 @@ impl DeviceOptions {
         let Some(options) = options else {
             return crossed;
         };
+        if let Some(bytes) = options.blob_cache {
+            crossed = crossed.blob_cache(bytes);
+        }
+        if options.keep_all_blobs {
+            crossed = crossed.keep_all_blobs();
+        }
         if options.loopback {
             crossed = crossed.loopback();
         }
@@ -1614,26 +1645,35 @@ impl Blobs {
     }
 
     /// A blob's bytes. A blob this device does not hold whole is fetched
-    /// first from a connected peer or member, into the device's cache; none
-    /// when it is not here and nothing is connected that could send it.
-    pub async fn get(&self, id: String) -> Result<Option<Vec<u8>>> {
+    /// first from a connected peer or member, as `read` says: into the
+    /// device's cache when it is left out. None when the blob is not here
+    /// and is not fetched: the read is `local`, or nothing is connected
+    /// that could send it.
+    #[uniffi::method(default(read = None))]
+    pub async fn get(&self, id: String, read: Option<ReadOptions>) -> Result<Option<Vec<u8>>> {
         let id = parse(&id)?;
+        let read = ReadOptions::of(read);
         let blobs = self.inner.clone();
-        Ok(run(async move { blobs.get(id, &frasil::Read::new()).await }).await?)
+        Ok(run(async move { blobs.get(id, &read).await }).await?)
     }
 
     /// Writes a blob's bytes to a new file at `path`, replacing any file
-    /// there, fetching them first from connected peers or members, into
-    /// the device's cache, while this device does not hold them whole. It
-    /// holds a few chunks at a time, never the blob. `listener` hears the fetch, then the writing.
-    /// A read that fails deletes the file.
+    /// there, fetching them first from connected peers or members, as
+    /// `read` says, into the device's cache when it is left out, while
+    /// this device does not hold them whole. It holds a few chunks at a
+    /// time, never the blob. `listener` hears the fetch, then the writing.
+    /// A read that fails deletes the file, and so does a `local` read of a
+    /// blob that is not whole here.
+    #[uniffi::method(default(read = None))]
     pub async fn get_to_file(
         &self,
         id: String,
         path: String,
         listener: Option<Arc<dyn BlobProgressListener>>,
+        read: Option<ReadOptions>,
     ) -> Result<()> {
         let id = parse(&id)?;
+        let read = ReadOptions::of(read);
         let blobs = self.inner.clone();
         run(async move {
             let file =
@@ -1648,10 +1688,8 @@ impl Blobs {
                     listener.progress(bytes, total);
                 }
             };
-            let read = blobs
-                .get_stream(id, &mut file, &frasil::Read::new(), progress)
-                .await;
-            let read = match read {
+            let written = blobs.get_stream(id, &mut file, &read, progress).await;
+            let read = match written {
                 Ok(()) => file
                     .into_inner()
                     .sync_all()
@@ -1671,8 +1709,10 @@ impl Blobs {
 
     /// `length` bytes of a blob from byte `offset`, fewer at its end. Of a
     /// blob this device does not hold whole, only the chunks that hold
-    /// the range are fetched, into the device's cache; none when it is
-    /// not here and nothing is connected that could send it. Each chunk
+    /// the range are fetched, as `read` says, into the device's cache
+    /// when it is left out; none when it is not here and is not fetched:
+    /// the read is `local`, or nothing is connected that could send it.
+    /// Each chunk
     /// opens under the blob's key before its bytes are given, and the
     /// checks that need the whole blob do not run on a range: a member
     /// that holds the blob's key can serve a range read other validly
@@ -1680,15 +1720,18 @@ impl Blobs {
     /// what must be the blob's. Of a blob the device holds whole, it
     /// opens only the chunks the range needs once every check has run on
     /// the whole blob.
-    pub async fn get_range(&self, id: String, offset: u64, length: u64) -> Result<Option<Vec<u8>>> {
+    #[uniffi::method(default(read = None))]
+    pub async fn get_range(
+        &self,
+        id: String,
+        offset: u64,
+        length: u64,
+        read: Option<ReadOptions>,
+    ) -> Result<Option<Vec<u8>>> {
         let id = parse(&id)?;
+        let read = ReadOptions::of(read);
         let blobs = self.inner.clone();
-        Ok(run(async move {
-            blobs
-                .get_range(id, offset, length, &frasil::Read::new())
-                .await
-        })
-        .await?)
+        Ok(run(async move { blobs.get_range(id, offset, length, &read).await }).await?)
     }
 
     /// Where a blob's bytes stand on this device.
@@ -1699,12 +1742,19 @@ impl Blobs {
     }
 
     /// The SHA-256 of a blob's plaintext, computed on this device. A blob
-    /// this device does not hold whole is fetched first, into the device's
-    /// cache; none when it cannot be read whole.
-    pub async fn content_hash(&self, id: String) -> Result<Option<Vec<u8>>> {
+    /// this device does not hold whole is fetched first, as `read` says,
+    /// into the device's cache when it is left out; none when it cannot
+    /// be read whole.
+    #[uniffi::method(default(read = None))]
+    pub async fn content_hash(
+        &self,
+        id: String,
+        read: Option<ReadOptions>,
+    ) -> Result<Option<Vec<u8>>> {
         let id = parse(&id)?;
+        let read = ReadOptions::of(read);
         let blobs = self.inner.clone();
-        let hash = run(async move { blobs.content_hash(id, &frasil::Read::new()).await }).await?;
+        let hash = run(async move { blobs.content_hash(id, &read).await }).await?;
         Ok(hash.map(|hash| hash.to_vec()))
     }
 

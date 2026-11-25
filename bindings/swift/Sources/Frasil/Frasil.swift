@@ -1204,6 +1204,421 @@ public func FfiConverterTypeBlobProgressListener_lower(_ value: BlobProgressList
 
 
 /**
+ * A reader over one blob, from `Blobs::open_reader`: it reads any range
+ * of the blob and fetches only the chunks that hold it, as its
+ * [`ReadOptions`] say. Nothing is fetched until it is read or asked its
+ * size. One call reads at a time: a read made while another waits takes
+ * its turn after it.
+ *
+ * Before the reader gives any byte, the blob's header has passed its
+ * checks and the byte's chunk has opened under the blob's key, at its
+ * own place in its own blob. [`BlobReader::verified`] says whether the
+ * checks that need the whole blob have run.
+ *
+ * A read stops in three ways only: [`BlobReader::end`], its
+ * [`Cancellation`], and its caller no longer waiting, as a cancelled
+ * Kotlin coroutine. Freeing the reader's handle stops none: a call in
+ * flight holds the reader until it ends, so the reader is freed after
+ * its last call. A Swift task that is cancelled stops no read either;
+ * without a `Cancellation` its read goes on to the end and holds its
+ * turn until then.
+ *
+ * End a reader that is done with: [`BlobReader::end`] stops its fetches
+ * and waits until the device has looked at its cache. A reader that is
+ * only freed ends the same way once no call holds it, and the device
+ * looks at its cache afterwards, with nothing waiting for it.
+ */
+public protocol BlobReaderProtocol: AnyObject, Sendable {
+
+    /**
+     * Ends the reader: its fetches stop, the reads waiting on it fail,
+     * what it held in memory is freed, and the device looks at its
+     * cache, so that a blob it held beside the cache for this reader
+     * alone goes. Every later call on the reader fails. (Named so that
+     * it does not meet the generated objects' own `close`, which frees
+     * the handle and ends nothing that is in flight.)
+     */
+    func end() async throws
+
+    /**
+     * The blob's size, once a chunk has opened under its header: the
+     * chunk the reader stands in, or the blob's last when it stands past
+     * the end, fetched with the header when the device does not hold
+     * them. Fails as [`read_at`](Self::read_at) does.
+     */
+    func fetchSize(cancellation: Cancellation?) async throws  -> UInt64
+
+    /**
+     * How many chunks the reader fetches ahead of where it reads: 8
+     * unless set.
+     */
+    func readAhead()  -> UInt64
+
+    /**
+     * `length` bytes of the blob from byte `offset`, fewer at its end and
+     * none at or past it. Each chunk the range lies in is fetched first
+     * when the device does not hold it, ahead of everything else asked of
+     * the space's connections, with the chunks after it behind.
+     *
+     * A read holds its whole range in memory, so `length` is at most
+     * 67,108,864 (64 MiB): a longer read is refused before anything is
+     * fetched. Read a large range in pieces; a player's requests are far
+     * smaller.
+     *
+     * When a chunk after the range's first fails, the read gives the
+     * bytes before it, fewer than asked, and loses none: read again from
+     * where it ended, and that read reports the failure. So a read that
+     * gives fewer bytes than asked has reached the blob's end or met a
+     * failure, and only a read that starts at or past the end gives
+     * none.
+     *
+     * It fails with `Missing` while the device does not hold a chunk and
+     * nothing is connected that could send it, or the reader is `local`;
+     * with `Timeout` when for half a minute nothing the reader asked for
+     * arrives; with `Decrypt` or `Malformed` for a chunk that does not
+     * open. After each of these the reader lives on and the read may be
+     * made again. `ObjectMismatch` says the blob was refused: the reader
+     * has failed for good.
+     *
+     * A read ends early, and fails, when `cancellation` is cancelled,
+     * when the reader is ended, and when its caller stops waiting for
+     * it, as a cancelled coroutine does; nothing else stops it. The
+     * bytes it had read are not given. What it had fetched stays where
+     * the reader's options put it, and the reader reads on.
+     */
+    func readAt(offset: UInt64, length: UInt64, cancellation: Cancellation?) async throws  -> Data
+
+    /**
+     * Sets how many chunks the reader fetches ahead of where it reads,
+     * at most 64, from its next read on. A reader that stores nothing
+     * holds one sealed chunk more than this in memory. Set it to 0 for a
+     * reader that jumps about.
+     */
+    func setReadAhead(chunks: UInt64)
+
+    /**
+     * The blob's size, once a chunk has opened under its header in this
+     * reader: none before the reader's first read or
+     * [`fetch_size`](Self::fetch_size). The header's size is bound by
+     * each chunk, so until one has opened it is only what the party that
+     * sent the header says. While a read holds the reader, what held
+     * before it.
+     */
+    func size()  -> UInt64?
+
+    /**
+     * Which checks have passed on what the reader gave: `Whole` once the
+     * reader has read the blob in order from its first byte to its last,
+     * or once the device holds the blob whole in its store and every
+     * check ran on it there. While a read holds the reader, what held
+     * before it.
+     */
+    func verified()  -> Verified
+
+    /**
+     * How many sealed bytes the reader holds in memory, of chunks it
+     * fetched to store nothing: at most `(read_ahead + 1) × 1,048,576`.
+     * While a read holds the reader, what held before it.
+     */
+    func windowBytes()  -> UInt64
+
+}
+/**
+ * A reader over one blob, from `Blobs::open_reader`: it reads any range
+ * of the blob and fetches only the chunks that hold it, as its
+ * [`ReadOptions`] say. Nothing is fetched until it is read or asked its
+ * size. One call reads at a time: a read made while another waits takes
+ * its turn after it.
+ *
+ * Before the reader gives any byte, the blob's header has passed its
+ * checks and the byte's chunk has opened under the blob's key, at its
+ * own place in its own blob. [`BlobReader::verified`] says whether the
+ * checks that need the whole blob have run.
+ *
+ * A read stops in three ways only: [`BlobReader::end`], its
+ * [`Cancellation`], and its caller no longer waiting, as a cancelled
+ * Kotlin coroutine. Freeing the reader's handle stops none: a call in
+ * flight holds the reader until it ends, so the reader is freed after
+ * its last call. A Swift task that is cancelled stops no read either;
+ * without a `Cancellation` its read goes on to the end and holds its
+ * turn until then.
+ *
+ * End a reader that is done with: [`BlobReader::end`] stops its fetches
+ * and waits until the device has looked at its cache. A reader that is
+ * only freed ends the same way once no call holds it, and the device
+ * looks at its cache afterwards, with nothing waiting for it.
+ */
+open class BlobReader: BlobReaderProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_frasil_uniffi_fn_clone_blobreader(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_frasil_uniffi_fn_free_blobreader(handle, $0) }
+    }
+
+
+
+
+    /**
+     * Ends the reader: its fetches stop, the reads waiting on it fail,
+     * what it held in memory is freed, and the device looks at its
+     * cache, so that a blob it held beside the cache for this reader
+     * alone goes. Every later call on the reader fails. (Named so that
+     * it does not meet the generated objects' own `close`, which frees
+     * the handle and ends nothing that is in flight.)
+     */
+open func end()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_blobreader_end(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_void,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_void,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
+     * The blob's size, once a chunk has opened under its header: the
+     * chunk the reader stands in, or the blob's last when it stands past
+     * the end, fetched with the header when the device does not hold
+     * them. Fails as [`read_at`](Self::read_at) does.
+     */
+open func fetchSize(cancellation: Cancellation? = nil)async throws  -> UInt64  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_blobreader_fetch_size(
+                    self.uniffiCloneHandle(),
+                    FfiConverterOptionTypeCancellation.lower(cancellation)
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_u64,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_u64,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_u64,
+            liftFunc: FfiConverterUInt64.lift,
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
+     * How many chunks the reader fetches ahead of where it reads: 8
+     * unless set.
+     */
+open func readAhead() -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+    uniffi_frasil_uniffi_fn_method_blobreader_read_ahead(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * `length` bytes of the blob from byte `offset`, fewer at its end and
+     * none at or past it. Each chunk the range lies in is fetched first
+     * when the device does not hold it, ahead of everything else asked of
+     * the space's connections, with the chunks after it behind.
+     *
+     * A read holds its whole range in memory, so `length` is at most
+     * 67,108,864 (64 MiB): a longer read is refused before anything is
+     * fetched. Read a large range in pieces; a player's requests are far
+     * smaller.
+     *
+     * When a chunk after the range's first fails, the read gives the
+     * bytes before it, fewer than asked, and loses none: read again from
+     * where it ended, and that read reports the failure. So a read that
+     * gives fewer bytes than asked has reached the blob's end or met a
+     * failure, and only a read that starts at or past the end gives
+     * none.
+     *
+     * It fails with `Missing` while the device does not hold a chunk and
+     * nothing is connected that could send it, or the reader is `local`;
+     * with `Timeout` when for half a minute nothing the reader asked for
+     * arrives; with `Decrypt` or `Malformed` for a chunk that does not
+     * open. After each of these the reader lives on and the read may be
+     * made again. `ObjectMismatch` says the blob was refused: the reader
+     * has failed for good.
+     *
+     * A read ends early, and fails, when `cancellation` is cancelled,
+     * when the reader is ended, and when its caller stops waiting for
+     * it, as a cancelled coroutine does; nothing else stops it. The
+     * bytes it had read are not given. What it had fetched stays where
+     * the reader's options put it, and the reader reads on.
+     */
+open func readAt(offset: UInt64, length: UInt64, cancellation: Cancellation? = nil)async throws  -> Data  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_blobreader_read_at(
+                    self.uniffiCloneHandle(),
+                    FfiConverterUInt64.lower(offset),FfiConverterUInt64.lower(length),FfiConverterOptionTypeCancellation.lower(cancellation)
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterData.lift,
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
+     * Sets how many chunks the reader fetches ahead of where it reads,
+     * at most 64, from its next read on. A reader that stores nothing
+     * holds one sealed chunk more than this in memory. Set it to 0 for a
+     * reader that jumps about.
+     */
+open func setReadAhead(chunks: UInt64)  {try! rustCall() {
+    uniffi_frasil_uniffi_fn_method_blobreader_set_read_ahead(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(chunks),$0
+    )
+}
+}
+
+    /**
+     * The blob's size, once a chunk has opened under its header in this
+     * reader: none before the reader's first read or
+     * [`fetch_size`](Self::fetch_size). The header's size is bound by
+     * each chunk, so until one has opened it is only what the party that
+     * sent the header says. While a read holds the reader, what held
+     * before it.
+     */
+open func size() -> UInt64?  {
+    return try!  FfiConverterOptionUInt64.lift(try! rustCall() {
+    uniffi_frasil_uniffi_fn_method_blobreader_size(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Which checks have passed on what the reader gave: `Whole` once the
+     * reader has read the blob in order from its first byte to its last,
+     * or once the device holds the blob whole in its store and every
+     * check ran on it there. While a read holds the reader, what held
+     * before it.
+     */
+open func verified() -> Verified  {
+    return try!  FfiConverterTypeVerified_lift(try! rustCall() {
+    uniffi_frasil_uniffi_fn_method_blobreader_verified(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * How many sealed bytes the reader holds in memory, of chunks it
+     * fetched to store nothing: at most `(read_ahead + 1) × 1,048,576`.
+     * While a read holds the reader, what held before it.
+     */
+open func windowBytes() -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+    uniffi_frasil_uniffi_fn_method_blobreader_window_bytes(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBlobReader: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = BlobReader
+
+    public static func lift(_ handle: UInt64) throws -> BlobReader {
+        return BlobReader(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: BlobReader) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BlobReader {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: BlobReader, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlobReader_lift(_ handle: UInt64) throws -> BlobReader {
+    return try FfiConverterTypeBlobReader.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlobReader_lower(_ value: BlobReader) -> UInt64 {
+    return FfiConverterTypeBlobReader.lower(value)
+}
+
+
+
+
+
+
+/**
  * Hears where a blob's bytes stand.
  */
 public protocol BlobStatusListener: AnyObject, Sendable {
@@ -1459,23 +1874,28 @@ public protocol BlobsProtocol: AnyObject, Sendable {
 
     /**
      * The SHA-256 of a blob's plaintext, computed on this device. A blob
-     * this device does not hold whole is fetched first, into the device's
-     * cache; none when it cannot be read whole.
+     * this device does not hold whole is fetched first, as `read` says,
+     * into the device's cache when it is left out; none when it cannot
+     * be read whole.
      */
-    func contentHash(id: String) async throws  -> Data?
+    func contentHash(id: String, read: ReadOptions?) async throws  -> Data?
 
     /**
      * A blob's bytes. A blob this device does not hold whole is fetched
-     * first from a connected peer or member, into the device's cache; none
-     * when it is not here and nothing is connected that could send it.
+     * first from a connected peer or member, as `read` says: into the
+     * device's cache when it is left out. None when the blob is not here
+     * and is not fetched: the read is `local`, or nothing is connected
+     * that could send it.
      */
-    func get(id: String) async throws  -> Data?
+    func get(id: String, read: ReadOptions?) async throws  -> Data?
 
     /**
      * `length` bytes of a blob from byte `offset`, fewer at its end. Of a
      * blob this device does not hold whole, only the chunks that hold
-     * the range are fetched, into the device's cache; none when it is
-     * not here and nothing is connected that could send it. Each chunk
+     * the range are fetched, as `read` says, into the device's cache
+     * when it is left out; none when it is not here and is not fetched:
+     * the read is `local`, or nothing is connected that could send it.
+     * Each chunk
      * opens under the blob's key before its bytes are given, and the
      * checks that need the whole blob do not run on a range: a member
      * that holds the blob's key can serve a range read other validly
@@ -1484,16 +1904,18 @@ public protocol BlobsProtocol: AnyObject, Sendable {
      * opens only the chunks the range needs once every check has run on
      * the whole blob.
      */
-    func getRange(id: String, offset: UInt64, length: UInt64) async throws  -> Data?
+    func getRange(id: String, offset: UInt64, length: UInt64, read: ReadOptions?) async throws  -> Data?
 
     /**
      * Writes a blob's bytes to a new file at `path`, replacing any file
-     * there, fetching them first from connected peers or members, into
-     * the device's cache, while this device does not hold them whole. It
-     * holds a few chunks at a time, never the blob. `listener` hears the fetch, then the writing.
-     * A read that fails deletes the file.
+     * there, fetching them first from connected peers or members, as
+     * `read` says, into the device's cache when it is left out, while
+     * this device does not hold them whole. It holds a few chunks at a
+     * time, never the blob. `listener` hears the fetch, then the writing.
+     * A read that fails deletes the file, and so does a `local` read of a
+     * blob that is not whole here.
      */
-    func getToFile(id: String, path: String, listener: BlobProgressListener?) async throws
+    func getToFile(id: String, path: String, listener: BlobProgressListener?, read: ReadOptions?) async throws
 
     /**
      * The stream's ID.
@@ -1524,6 +1946,60 @@ public protocol BlobsProtocol: AnyObject, Sendable {
      * Where a blob's bytes stand on this device.
      */
     func status(id: String) async throws  -> BlobStatus
+
+    /**
+     * Drops what this device stores of a blob, kept or cached: the blob
+     * is absent here, and a read fetches it again from a peer or a member
+     * that holds it. Nothing changes for anyone else, and the stream
+     * still lists the blob. It fails while the blob must stay: a read, a
+     * reader or a fetch is using it, this device put it in a space with
+     * an always-on peer and no peer is known to hold its bytes yet, or
+     * the device keeps every blob.
+     */
+    func dropLocal(id: String) async throws
+
+    /**
+     * Whether the change that put a blob is durable: `false` while it
+     * waits for an acknowledgement. It says nothing of the blob's bytes:
+     * `local` tells whether this device still keeps them for want of a
+     * peer that holds them.
+     */
+    func isDurable(id: String) async throws  -> Bool
+
+    /**
+     * Fetches a blob into this device's store and keeps it there until
+     * `drop_local`, without reading it: a download in the background,
+     * which `listener` follows. A blob the device holds already is kept
+     * from now on, and one that cannot be fetched now fails the call and
+     * stays marked: the device fetches it by itself once a peer or a
+     * member that holds it is connected.
+     */
+    func keep(id: String, listener: BlobProgressListener?) async throws
+
+    /**
+     * Where a blob stands on this device: kept, cached or absent, and how
+     * many bytes the device stores of it.
+     */
+    func local(id: String) async throws  -> BlobLocal
+
+    /**
+     * Opens a reader over a blob, which reads any range of it and fetches
+     * only the chunks it needs, as `read` says: into the cache when left
+     * out, kept with `keep`, into the reader's own memory with
+     * `uncached`, and nothing with `local`, which reads only what the
+     * device holds. A blob the device holds, whole or in part, is read
+     * from the device whatever `read` says. A blob larger than the
+     * cache's whole budget, and any blob under a budget of zero, is read
+     * through the reader's memory.
+     */
+    func openReader(id: String, read: ReadOptions?) async throws  -> BlobReader
+
+    /**
+     * The IDs of the stream's blobs whose put is not durable yet: those
+     * this device put whose change still waits for an acknowledgement,
+     * ascending.
+     */
+    func pending() async throws  -> [String]
 
 }
 /**
@@ -1584,16 +2060,17 @@ open class Blobs: BlobsProtocol, @unchecked Sendable {
 
     /**
      * The SHA-256 of a blob's plaintext, computed on this device. A blob
-     * this device does not hold whole is fetched first, into the device's
-     * cache; none when it cannot be read whole.
+     * this device does not hold whole is fetched first, as `read` says,
+     * into the device's cache when it is left out; none when it cannot
+     * be read whole.
      */
-open func contentHash(id: String)async throws  -> Data?  {
+open func contentHash(id: String, read: ReadOptions? = nil)async throws  -> Data?  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_frasil_uniffi_fn_method_blobs_content_hash(
                     self.uniffiCloneHandle(),
-                    FfiConverterString.lower(id)
+                    FfiConverterString.lower(id),FfiConverterOptionTypeReadOptions.lower(read)
                 )
             },
             pollFunc: ffi_frasil_uniffi_rust_future_poll_rust_buffer,
@@ -1606,16 +2083,18 @@ open func contentHash(id: String)async throws  -> Data?  {
 
     /**
      * A blob's bytes. A blob this device does not hold whole is fetched
-     * first from a connected peer or member, into the device's cache; none
-     * when it is not here and nothing is connected that could send it.
+     * first from a connected peer or member, as `read` says: into the
+     * device's cache when it is left out. None when the blob is not here
+     * and is not fetched: the read is `local`, or nothing is connected
+     * that could send it.
      */
-open func get(id: String)async throws  -> Data?  {
+open func get(id: String, read: ReadOptions? = nil)async throws  -> Data?  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_frasil_uniffi_fn_method_blobs_get(
                     self.uniffiCloneHandle(),
-                    FfiConverterString.lower(id)
+                    FfiConverterString.lower(id),FfiConverterOptionTypeReadOptions.lower(read)
                 )
             },
             pollFunc: ffi_frasil_uniffi_rust_future_poll_rust_buffer,
@@ -1629,8 +2108,10 @@ open func get(id: String)async throws  -> Data?  {
     /**
      * `length` bytes of a blob from byte `offset`, fewer at its end. Of a
      * blob this device does not hold whole, only the chunks that hold
-     * the range are fetched, into the device's cache; none when it is
-     * not here and nothing is connected that could send it. Each chunk
+     * the range are fetched, as `read` says, into the device's cache
+     * when it is left out; none when it is not here and is not fetched:
+     * the read is `local`, or nothing is connected that could send it.
+     * Each chunk
      * opens under the blob's key before its bytes are given, and the
      * checks that need the whole blob do not run on a range: a member
      * that holds the blob's key can serve a range read other validly
@@ -1639,13 +2120,13 @@ open func get(id: String)async throws  -> Data?  {
      * opens only the chunks the range needs once every check has run on
      * the whole blob.
      */
-open func getRange(id: String, offset: UInt64, length: UInt64)async throws  -> Data?  {
+open func getRange(id: String, offset: UInt64, length: UInt64, read: ReadOptions? = nil)async throws  -> Data?  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_frasil_uniffi_fn_method_blobs_get_range(
                     self.uniffiCloneHandle(),
-                    FfiConverterString.lower(id),FfiConverterUInt64.lower(offset),FfiConverterUInt64.lower(length)
+                    FfiConverterString.lower(id),FfiConverterUInt64.lower(offset),FfiConverterUInt64.lower(length),FfiConverterOptionTypeReadOptions.lower(read)
                 )
             },
             pollFunc: ffi_frasil_uniffi_rust_future_poll_rust_buffer,
@@ -1658,18 +2139,20 @@ open func getRange(id: String, offset: UInt64, length: UInt64)async throws  -> D
 
     /**
      * Writes a blob's bytes to a new file at `path`, replacing any file
-     * there, fetching them first from connected peers or members, into
-     * the device's cache, while this device does not hold them whole. It
-     * holds a few chunks at a time, never the blob. `listener` hears the fetch, then the writing.
-     * A read that fails deletes the file.
+     * there, fetching them first from connected peers or members, as
+     * `read` says, into the device's cache when it is left out, while
+     * this device does not hold them whole. It holds a few chunks at a
+     * time, never the blob. `listener` hears the fetch, then the writing.
+     * A read that fails deletes the file, and so does a `local` read of a
+     * blob that is not whole here.
      */
-open func getToFile(id: String, path: String, listener: BlobProgressListener?)async throws   {
+open func getToFile(id: String, path: String, listener: BlobProgressListener?, read: ReadOptions? = nil)async throws   {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_frasil_uniffi_fn_method_blobs_get_to_file(
                     self.uniffiCloneHandle(),
-                    FfiConverterString.lower(id),FfiConverterString.lower(path),FfiConverterOptionTypeBlobProgressListener.lower(listener)
+                    FfiConverterString.lower(id),FfiConverterString.lower(path),FfiConverterOptionTypeBlobProgressListener.lower(listener),FfiConverterOptionTypeReadOptions.lower(read)
                 )
             },
             pollFunc: ffi_frasil_uniffi_rust_future_poll_void,
@@ -1765,6 +2248,150 @@ open func status(id: String)async throws  -> BlobStatus  {
             completeFunc: ffi_frasil_uniffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_frasil_uniffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterTypeBlobStatus_lift,
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
+     * Drops what this device stores of a blob, kept or cached: the blob
+     * is absent here, and a read fetches it again from a peer or a member
+     * that holds it. Nothing changes for anyone else, and the stream
+     * still lists the blob. It fails while the blob must stay: a read, a
+     * reader or a fetch is using it, this device put it in a space with
+     * an always-on peer and no peer is known to hold its bytes yet, or
+     * the device keeps every blob.
+     */
+open func dropLocal(id: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_blobs_drop_local(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(id)
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_void,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_void,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
+     * Whether the change that put a blob is durable: `false` while it
+     * waits for an acknowledgement. It says nothing of the blob's bytes:
+     * `local` tells whether this device still keeps them for want of a
+     * peer that holds them.
+     */
+open func isDurable(id: String)async throws  -> Bool  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_blobs_is_durable(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(id)
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_i8,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_i8,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_i8,
+            liftFunc: FfiConverterBool.lift,
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
+     * Fetches a blob into this device's store and keeps it there until
+     * `drop_local`, without reading it: a download in the background,
+     * which `listener` follows. A blob the device holds already is kept
+     * from now on, and one that cannot be fetched now fails the call and
+     * stays marked: the device fetches it by itself once a peer or a
+     * member that holds it is connected.
+     */
+open func keep(id: String, listener: BlobProgressListener?)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_blobs_keep(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(id),FfiConverterOptionTypeBlobProgressListener.lower(listener)
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_void,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_void,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
+     * Where a blob stands on this device: kept, cached or absent, and how
+     * many bytes the device stores of it.
+     */
+open func local(id: String)async throws  -> BlobLocal  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_blobs_local(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(id)
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeBlobLocal_lift,
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
+     * Opens a reader over a blob, which reads any range of it and fetches
+     * only the chunks it needs, as `read` says: into the cache when left
+     * out, kept with `keep`, into the reader's own memory with
+     * `uncached`, and nothing with `local`, which reads only what the
+     * device holds. A blob the device holds, whole or in part, is read
+     * from the device whatever `read` says. A blob larger than the
+     * cache's whole budget, and any blob under a budget of zero, is read
+     * through the reader's memory.
+     */
+open func openReader(id: String, read: ReadOptions? = nil)async throws  -> BlobReader  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_blobs_open_reader(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(id),FfiConverterOptionTypeReadOptions.lower(read)
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_u64,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_u64,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_u64,
+            liftFunc: FfiConverterTypeBlobReader_lift,
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
+     * The IDs of the stream's blobs whose put is not durable yet: those
+     * this device put whose change still waits for an acknowledgement,
+     * ascending.
+     */
+open func pending()async throws  -> [String]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_blobs_pending(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceString.lift,
             errorHandler: FfiConverterTypeFrasilError_lift
         )
 }
@@ -2566,6 +3193,12 @@ public protocol DeviceProtocol: AnyObject, Sendable {
      */
     func join(invitation: String, name: String, listener: AdmissionListener, cancellation: Cancellation?) async throws  -> Space
 
+    /**
+     * The budget of the blob cache, and what the device's cached and
+     * kept blobs take, in stored bytes, across all its spaces.
+     */
+    func blobCacheUsage() async  -> BlobCacheUsage
+
 }
 /**
  * A device: its keys, its store and its connections.
@@ -3085,6 +3718,28 @@ open func join(invitation: String, name: String, listener: AdmissionListener, ca
             freeFunc: ffi_frasil_uniffi_rust_future_free_u64,
             liftFunc: FfiConverterTypeSpace_lift,
             errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
+     * The budget of the blob cache, and what the device's cached and
+     * kept blobs take, in stored bytes, across all its spaces.
+     */
+open func blobCacheUsage()async  -> BlobCacheUsage  {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_device_blob_cache_usage(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeBlobCacheUsage_lift,
+            errorHandler: nil
+
         )
 }
 
@@ -4994,6 +5649,171 @@ public func FfiConverterTypeBackdatedCheckpoint_lower(_ value: BackdatedCheckpoi
 
 
 /**
+ * The budget of a device's blob cache and what its blobs take, in stored
+ * bytes: a blob's sealed chunks and its header.
+ */
+public struct BlobCacheUsage: Equatable, Hashable {
+    /**
+     * The budget of the cache, as the device was opened with.
+     */
+    public var budget: UInt64
+    /**
+     * The bytes of the cached blobs, whole or in part: within the budget,
+     * but for what running reads hold beside the cache.
+     */
+    public var cached: UInt64
+    /**
+     * The bytes of the blobs the device keeps, outside the budget.
+     */
+    public var kept: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The budget of the cache, as the device was opened with.
+         */budget: UInt64,
+        /**
+         * The bytes of the cached blobs, whole or in part: within the budget,
+         * but for what running reads hold beside the cache.
+         */cached: UInt64,
+        /**
+         * The bytes of the blobs the device keeps, outside the budget.
+         */kept: UInt64) {
+        self.budget = budget
+        self.cached = cached
+        self.kept = kept
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension BlobCacheUsage: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBlobCacheUsage: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BlobCacheUsage {
+        return
+            try BlobCacheUsage(
+                budget: FfiConverterUInt64.read(from: &buf),
+                cached: FfiConverterUInt64.read(from: &buf),
+                kept: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BlobCacheUsage, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.budget, into: &buf)
+        FfiConverterUInt64.write(value.cached, into: &buf)
+        FfiConverterUInt64.write(value.kept, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlobCacheUsage_lift(_ buf: RustBuffer) throws -> BlobCacheUsage {
+    return try FfiConverterTypeBlobCacheUsage.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlobCacheUsage_lower(_ value: BlobCacheUsage) -> RustBuffer {
+    return FfiConverterTypeBlobCacheUsage.lower(value)
+}
+
+
+/**
+ * Where a blob stands on this device.
+ */
+public struct BlobLocal: Equatable, Hashable {
+    /**
+     * Kept, cached or absent.
+     */
+    public var state: BlobState
+    /**
+     * The bytes the device stores of it: its sealed chunks and header,
+     * which may be part of the blob while it is being fetched or after a
+     * reader read part of it.
+     */
+    public var bytes: UInt64
+    /**
+     * The blob's size.
+     */
+    public var size: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Kept, cached or absent.
+         */state: BlobState,
+        /**
+         * The bytes the device stores of it: its sealed chunks and header,
+         * which may be part of the blob while it is being fetched or after a
+         * reader read part of it.
+         */bytes: UInt64,
+        /**
+         * The blob's size.
+         */size: UInt64) {
+        self.state = state
+        self.bytes = bytes
+        self.size = size
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension BlobLocal: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBlobLocal: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BlobLocal {
+        return
+            try BlobLocal(
+                state: FfiConverterTypeBlobState.read(from: &buf),
+                bytes: FfiConverterUInt64.read(from: &buf),
+                size: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BlobLocal, into buf: inout [UInt8]) {
+        FfiConverterTypeBlobState.write(value.state, into: &buf)
+        FfiConverterUInt64.write(value.bytes, into: &buf)
+        FfiConverterUInt64.write(value.size, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlobLocal_lift(_ buf: RustBuffer) throws -> BlobLocal {
+    return try FfiConverterTypeBlobLocal.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlobLocal_lower(_ value: BlobLocal) -> RustBuffer {
+    return FfiConverterTypeBlobLocal.lower(value)
+}
+
+
+/**
  * What a device does about checkpoints by itself (roster.md, 3.15.7
  * Clients). Each field left out takes the default's value: proposing and
  * forgetting, at `frasil::PROPOSE_AT_ROSTER_EVENTS` roster events or
@@ -5415,6 +6235,25 @@ public func FfiConverterTypeDepositTokens_lower(_ value: DepositTokens) -> RustB
  */
 public struct DeviceOptions: Equatable, Hashable {
     /**
+     * The budget of the blob cache, in bytes as the device stores them: a
+     * blob's sealed chunks and its header, a little more than its size,
+     * across all the device's spaces. 256 MiB when left out. A device
+     * fetches a blob when it is read and leaves it in the cache; when the
+     * cached blobs would pass the budget it drops whole blobs, the one
+     * read longest ago first, and a read fetches a dropped blob again.
+     * With a budget of zero a read stores nothing once it ends. Blobs the
+     * device keeps, blobs it put that no peer holds yet, and what Frasil
+     * stores for itself are outside the budget.
+     */
+    public var blobCache: UInt64?
+    /**
+     * Whether the device fetches every blob its spaces name and keeps
+     * each: a full copy, for a device that must read every blob with no
+     * connection. Nothing is evicted then, the budget is not used, and
+     * `drop_local` is refused.
+     */
+    public var keepAllBlobs: Bool
+    /**
      * Whether the device binds its own endpoints on loopback alone, with
      * no relay: nothing leaves the machine. For tests and examples.
      */
@@ -5424,9 +6263,28 @@ public struct DeviceOptions: Equatable, Hashable {
     // declare one manually.
     public init(
         /**
+         * The budget of the blob cache, in bytes as the device stores them: a
+         * blob's sealed chunks and its header, a little more than its size,
+         * across all the device's spaces. 256 MiB when left out. A device
+         * fetches a blob when it is read and leaves it in the cache; when the
+         * cached blobs would pass the budget it drops whole blobs, the one
+         * read longest ago first, and a read fetches a dropped blob again.
+         * With a budget of zero a read stores nothing once it ends. Blobs the
+         * device keeps, blobs it put that no peer holds yet, and what Frasil
+         * stores for itself are outside the budget.
+         */blobCache: UInt64? = nil,
+        /**
+         * Whether the device fetches every blob its spaces name and keeps
+         * each: a full copy, for a device that must read every blob with no
+         * connection. Nothing is evicted then, the budget is not used, and
+         * `drop_local` is refused.
+         */keepAllBlobs: Bool = false,
+        /**
          * Whether the device binds its own endpoints on loopback alone, with
          * no relay: nothing leaves the machine. For tests and examples.
          */loopback: Bool = false) {
+        self.blobCache = blobCache
+        self.keepAllBlobs = keepAllBlobs
         self.loopback = loopback
     }
 
@@ -5446,11 +6304,15 @@ public struct FfiConverterTypeDeviceOptions: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DeviceOptions {
         return
             try DeviceOptions(
+                blobCache: FfiConverterOptionUInt64.read(from: &buf),
+                keepAllBlobs: FfiConverterBool.read(from: &buf),
                 loopback: FfiConverterBool.read(from: &buf)
         )
     }
 
     public static func write(_ value: DeviceOptions, into buf: inout [UInt8]) {
+        FfiConverterOptionUInt64.write(value.blobCache, into: &buf)
+        FfiConverterBool.write(value.keepAllBlobs, into: &buf)
         FfiConverterBool.write(value.loopback, into: &buf)
     }
 }
@@ -5931,6 +6793,105 @@ public func FfiConverterTypePendingListCheckpoint_lower(_ value: PendingListChec
     return FfiConverterTypePendingListCheckpoint.lower(value)
 }
 
+
+/**
+ * What a read does about a blob this device does not hold whole. A blob
+ * the device holds is read from the device, whatever the read says. With
+ * every field left out, the read fetches the blob and leaves it in the
+ * cache, within the device's budget.
+ *
+ * The fields are applied in the order they stand here, as
+ * `Read::new().keep().uncached().local()` applies the ones that are set:
+ * `keep` and `uncached` exclude each other, and of the two together
+ * `uncached` holds.
+ */
+public struct ReadOptions: Equatable, Hashable {
+    /**
+     * Keeps the blob: fetched or cached, it stays on the device until
+     * `drop_local`, outside the cache's budget. A read that cannot fetch
+     * the blob now still marks it kept, and the device fetches it by
+     * itself once it can.
+     */
+    public var keep: Bool
+    /**
+     * Stores nothing of a blob the read fetches: its chunks pass through
+     * memory, a few at a time. A blob the device held before, whole or in
+     * part, stays as it was.
+     */
+    public var uncached: Bool
+    /**
+     * Fetches nothing: the read gives a blob only when the device holds
+     * it whole, and never waits on the network.
+     */
+    public var local: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Keeps the blob: fetched or cached, it stays on the device until
+         * `drop_local`, outside the cache's budget. A read that cannot fetch
+         * the blob now still marks it kept, and the device fetches it by
+         * itself once it can.
+         */keep: Bool = false,
+        /**
+         * Stores nothing of a blob the read fetches: its chunks pass through
+         * memory, a few at a time. A blob the device held before, whole or in
+         * part, stays as it was.
+         */uncached: Bool = false,
+        /**
+         * Fetches nothing: the read gives a blob only when the device holds
+         * it whole, and never waits on the network.
+         */local: Bool = false) {
+        self.keep = keep
+        self.uncached = uncached
+        self.local = local
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ReadOptions: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeReadOptions: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ReadOptions {
+        return
+            try ReadOptions(
+                keep: FfiConverterBool.read(from: &buf),
+                uncached: FfiConverterBool.read(from: &buf),
+                local: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ReadOptions, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.keep, into: &buf)
+        FfiConverterBool.write(value.uncached, into: &buf)
+        FfiConverterBool.write(value.local, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeReadOptions_lift(_ buf: RustBuffer) throws -> ReadOptions {
+    return try FfiConverterTypeReadOptions.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeReadOptions_lower(_ value: ReadOptions) -> RustBuffer {
+    return FfiConverterTypeReadOptions.lower(value)
+}
+
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
@@ -6026,6 +6987,95 @@ public func FfiConverterTypeArrival_lower(_ value: Arrival) -> RustBuffer {
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * How a blob stands on this device.
+ */
+
+public enum BlobState: Equatable, Hashable {
+
+    /**
+     * The device keeps it until the application drops it. A kept blob
+     * that is not whole here yet is fetched by the device itself. A blob
+     * this device put is kept until an always-on peer holds its bytes and
+     * has acknowledged the change that put it.
+     */
+    case kept
+    /**
+     * The device holds it within its cache's budget, and may drop it.
+     */
+    case cached
+    /**
+     * The device holds nothing of it. A read fetches it.
+     */
+    case absent
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension BlobState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBlobState: FfiConverterRustBuffer {
+    typealias SwiftType = BlobState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BlobState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .kept
+
+        case 2: return .cached
+
+        case 3: return .absent
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: BlobState, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .kept:
+            writeInt(&buf, Int32(1))
+
+
+        case .cached:
+            writeInt(&buf, Int32(2))
+
+
+        case .absent:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlobState_lift(_ buf: RustBuffer) throws -> BlobState {
+    return try FfiConverterTypeBlobState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlobState_lower(_ value: BlobState) -> RustBuffer {
+    return FfiConverterTypeBlobState.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * Where a blob's bytes stand on this device.
  */
 
@@ -6047,8 +7097,14 @@ public enum BlobStatus: Equatable, Hashable {
          */total: UInt64
     )
     /**
-     * The device does not hold them, and nothing is sending them now. A
-     * read fetches them while a peer or member is connected.
+     * The device does not hold them, and a peer or a member of the space
+     * is connected: a read fetches them now. The device never fetched
+     * them, or dropped them since.
+     */
+    case absent
+    /**
+     * The device does not hold them, and neither a peer nor a member of
+     * the space is connected, so a read cannot fetch them now.
      */
     case missing
     /**
@@ -6085,11 +7141,13 @@ public struct FfiConverterTypeBlobStatus: FfiConverterRustBuffer {
         case 2: return .fetching(done: try FfiConverterUInt64.read(from: &buf), total: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 3: return .missing
+        case 3: return .absent
 
-        case 4: return .keysPending
+        case 4: return .missing
 
-        case 5: return .withdrawn
+        case 5: return .keysPending
+
+        case 6: return .withdrawn
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -6109,16 +7167,20 @@ public struct FfiConverterTypeBlobStatus: FfiConverterRustBuffer {
             FfiConverterUInt64.write(total, into: &buf)
 
 
-        case .missing:
+        case .absent:
             writeInt(&buf, Int32(3))
 
 
-        case .keysPending:
+        case .missing:
             writeInt(&buf, Int32(4))
 
 
-        case .withdrawn:
+        case .keysPending:
             writeInt(&buf, Int32(5))
+
+
+        case .withdrawn:
+            writeInt(&buf, Int32(6))
 
         }
     }
@@ -7166,6 +8228,87 @@ public func FfiConverterTypeLossReport_lower(_ value: LossReport) -> RustBuffer 
 }
 
 
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Which checks of the object format have passed on what a [`BlobReader`]
+ * gave (units.md, 3.3 Reading an object).
+ */
+
+public enum Verified: Equatable, Hashable {
+
+    /**
+     * Every byte given came from a chunk that opened under the blob's
+     * key at its own place. The checks that need the whole blob have not
+     * run: a member that holds the blob's key can have served chunks that
+     * are not the blob's, and the reader then fails with
+     * `ObjectMismatch`.
+     */
+    case chunks
+    /**
+     * Every check has run: the bytes are the blob's.
+     */
+    case whole
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension Verified: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVerified: FfiConverterRustBuffer {
+    typealias SwiftType = Verified
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Verified {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .chunks
+
+        case 2: return .whole
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: Verified, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .chunks:
+            writeInt(&buf, Int32(1))
+
+
+        case .whole:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVerified_lift(_ buf: RustBuffer) throws -> Verified {
+    return try FfiConverterTypeVerified.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVerified_lower(_ value: Verified) -> RustBuffer {
+    return FfiConverterTypeVerified.lower(value)
+}
+
+
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
@@ -7329,6 +8472,30 @@ fileprivate struct FfiConverterOptionTypeDeviceOptions: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeDeviceOptions.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeReadOptions: FfiConverterRustBuffer {
+    typealias SwiftType = ReadOptions?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeReadOptions.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeReadOptions.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -7559,16 +8726,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_frasil_uniffi_checksum_method_blobstatuslistener_failed() != 6018) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_frasil_uniffi_checksum_method_blobs_content_hash() != 10406) {
+    if (uniffi_frasil_uniffi_checksum_method_blobs_content_hash() != 60134) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_frasil_uniffi_checksum_method_blobs_get() != 22721) {
+    if (uniffi_frasil_uniffi_checksum_method_blobs_get() != 16401) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_frasil_uniffi_checksum_method_blobs_get_range() != 59637) {
+    if (uniffi_frasil_uniffi_checksum_method_blobs_get_range() != 23578) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_frasil_uniffi_checksum_method_blobs_get_to_file() != 51323) {
+    if (uniffi_frasil_uniffi_checksum_method_blobs_get_to_file() != 4855) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_frasil_uniffi_checksum_method_blobs_id() != 54424) {
@@ -7584,6 +8751,24 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_frasil_uniffi_checksum_method_blobs_status() != 56819) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobs_drop_local() != 32582) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobs_is_durable() != 30158) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobs_keep() != 24271) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobs_local() != 22191) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobs_open_reader() != 48650) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobs_pending() != 50728) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_frasil_uniffi_checksum_method_checkpointlistener_reported() != 61045) {
@@ -7659,6 +8844,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_frasil_uniffi_checksum_method_device_join() != 12471) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_device_blob_cache_usage() != 31009) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_frasil_uniffi_checksum_method_durablelistener_durable() != 34948) {
@@ -7767,6 +8955,30 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_frasil_uniffi_checksum_method_cancellation_is_cancelled() != 54012) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobreader_end() != 41762) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobreader_fetch_size() != 58659) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobreader_read_ahead() != 65365) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobreader_read_at() != 34873) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobreader_set_read_ahead() != 13727) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobreader_size() != 12325) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobreader_verified() != 59574) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_blobreader_window_bytes() != 14590) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_frasil_uniffi_checksum_constructor_device_open() != 9822) {
