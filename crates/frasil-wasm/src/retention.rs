@@ -267,11 +267,11 @@ impl Shared {
     }
 }
 
-/// Lets go of everything the reader asked of the space's connections,
-/// and of what it held in memory for them: a move past the end asks for
-/// nothing.
+/// Lets go of everything a reader asked of the space's connections, for a
+/// call that was given up, in whatever state the reader is: before the
+/// blob's header is known as after it.
 fn let_go(reader: &mut frasil::BlobReader) {
-    reader.seek(u64::MAX);
+    reader.cancel();
 }
 
 /// A reader over one blob, as `Blobs.openReader` gives it. Freed, it ends

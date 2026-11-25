@@ -95,6 +95,8 @@ const BODY = "body";
  */
 const agent = {
   device: undefined,
+  /** The unlock key of the device `createWith` opened. */
+  unlockKey: undefined,
   peer: undefined,
   /** Documents this page created, which exist in their space from their first edit. */
   made: new Map(),
@@ -583,6 +585,7 @@ const agent = {
    */
   async createWith(name, options, store) {
     const unlockKey = crypto.getRandomValues(new Uint8Array(32));
+    this.unlockKey = unlockKey;
     const storage = store ? frasil.Storage.of(store) : frasil.Storage.indexedDb(name);
     this.device = await frasil.Device.open(storage, unlockKey, options);
     const space = await this.createSpace();
