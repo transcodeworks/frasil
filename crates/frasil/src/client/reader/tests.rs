@@ -16,6 +16,7 @@ use frasil_units::limits::{CHUNK_BYTES, SEALED_CHUNK_BYTES};
 use std::time::Duration;
 
 mod arrival;
+mod cancel;
 mod closing;
 mod ends;
 mod faults;
