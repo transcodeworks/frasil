@@ -159,6 +159,27 @@ impl ObjectWriter {
         Ok(())
     }
 
+    /// [`commit`](Self::commit), for records the device can do without:
+    /// `false` when the store had no room for them
+    /// ([`StoreError::is_full`](frasil_store::StoreError::is_full)), and
+    /// wrote none.
+    pub async fn commit_if_room(&self, puts: Vec<(Vec<u8>, Vec<u8>)>) -> Result<bool> {
+        if puts.is_empty() {
+            return Ok(true);
+        }
+        match self
+            .platform
+            .store
+            .commit(&Commit::new(puts, Vec::new()))
+            .await
+        {
+            Ok(true) => Ok(true),
+            Ok(false) => Err(Error::Conflict),
+            Err(error) if error.is_full() => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// Deletes records this writer committed, best effort.
     pub async fn forget(&self, addresses: Vec<Vec<u8>>) -> Result<()> {
         self.platform

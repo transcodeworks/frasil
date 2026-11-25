@@ -50,6 +50,14 @@
 //! follows the last read that used it. What the device holds beyond its
 //! budget is therefore only what running reads hold.
 //!
+//! The budget is the device's own count. A store may hold less: one that
+//! refuses the parts of an object another party sent for want of room
+//! ([`StoreError::full`](frasil_store::StoreError::full)) makes the device
+//! drop cached objects until as many bytes went as the parts take
+//! ([`Engine::make_room`]), and write once more. Parts still refused are
+//! stored nowhere: the object's open readers take them into their own
+//! memory, and with no reader the store's failure is the fetch's.
+//!
 //! An object goes whole or not at all: its `retention` record and every
 //! part are deleted in one commit, and the device then forgets what it
 //! found out about the stored bytes, so that whatever it holds of the
@@ -1793,6 +1801,44 @@ impl Engine {
             self.unrecord(state, space, id).await?;
         }
         Ok(())
+    }
+
+    /// Drops cached objects, as [`evict_in`](Self::evict_in) does, until
+    /// as many stored bytes went as `parts` take, for a store that had no
+    /// room for them though the cache was within its budget: the medium
+    /// holds less than the budget names. Never an object the parts are
+    /// of. Whether anything went.
+    ///
+    /// # Errors
+    ///
+    /// The store's.
+    pub(crate) async fn make_room(
+        &self,
+        space: EventId,
+        parts: &[&crate::snapshots::ObjectPart],
+    ) -> Result<bool> {
+        let need: usize = parts
+            .iter()
+            .map(|part| {
+                part.chunk
+                    .len()
+                    .saturating_add(part.header.as_ref().map_or(0, Vec::len))
+            })
+            .sum();
+        let writing: BTreeSet<[u8; 32]> =
+            parts.iter().map(|part| object_id(&part.locator)).collect();
+        let mut state = self.lock().await;
+        if !state.replicas.contains_key(&space) {
+            return Ok(false);
+        }
+        let before = state.retained.cached;
+        // As if the budget ended where the cache stands now.
+        let incoming = self
+            .blob_cache()
+            .saturating_sub(before)
+            .saturating_add(need as u64);
+        self.evict_in(&mut state, incoming, &writing).await?;
+        Ok(state.retained.cached < before)
     }
 
     /// [`evict_in`](Self::evict_in) with nothing more to come: at upkeep,
