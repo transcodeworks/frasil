@@ -144,8 +144,9 @@ pub struct SyncSession {
     /// The session's place among the connections still being made, until
     /// it takes the requests or is known not to.
     expected: Option<Arc<Expected>>,
-    /// Objects the other side announced in `ObjectHave` that this side did
-    /// not hold whole then: asked for once the device finds them missing.
+    /// Objects the other side announced in `ObjectHave`: asked for once
+    /// the device finds them missing, or a request names their chunks,
+    /// for as long as the session lasts.
     announced: BTreeSet<Locator>,
     /// Objects whose chunks from the other side failed their checks: not
     /// asked of it again on this session (units.md, "Sync", objects).
@@ -428,15 +429,13 @@ impl SyncSession {
         );
     }
 
-    /// The objects the other side announced that this side has not yet
-    /// been found to hold whole.
+    /// The objects the other side announced on this session, less those
+    /// it was refused for. They say what the other side holds, whatever
+    /// this side holds: an object this side fetched whole and dropped
+    /// since, or held when it was announced, is asked of the other side
+    /// like one it never held.
     pub fn announced(&self) -> &BTreeSet<Locator> {
         &self.announced
-    }
-
-    /// Forgets announced objects this side now holds whole.
-    pub fn forget_announced(&mut self, held: impl Fn(&Locator) -> bool) {
-        self.announced.retain(|locator| !held(locator));
     }
 
     /// After a chunk of an object asked for arrived: `ObjectWant`s for the

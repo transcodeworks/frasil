@@ -2711,12 +2711,6 @@ impl Engine {
     /// or new units may name objects announced before.
     pub(crate) async fn want_announced(&self, session: &mut SyncSession) -> Vec<SyncMessage> {
         let space = session.space();
-        {
-            let state = self.lock().await;
-            if let Some(replica) = state.replicas.get(&space) {
-                session.forget_announced(|locator| replica.holds_object(locator));
-            }
-        }
         if session.announced().is_empty() {
             return Vec::new();
         }
