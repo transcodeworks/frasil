@@ -1,13 +1,17 @@
 import frasil.Arrival
 import frasil.ArrivalListener
+import frasil.BlobLocal
+import frasil.BlobState
 import frasil.BlobStatus
 import frasil.BlobStatusListener
 import frasil.CheckpointListener
 import frasil.CheckpointPolicy
 import frasil.CheckpointReport
 import frasil.Device
+import frasil.DeviceOptions
 import frasil.DurableListener
 import frasil.FrasilException
+import frasil.ReadOptions
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -30,7 +34,7 @@ private suspend fun <T> CopyOnWriteArrayList<T>.until(check: (T) -> Boolean): T 
 
 class SmokeTest {
     @Test fun aDeviceHoldsASpaceAndItsBlobs() = runBlocking {
-        val device = Device.openInMemory(ByteArray(32) { 1 })
+        val device = Device.openInMemory(ByteArray(32) { 1 }, DeviceOptions(blobCache = 1uL shl 20))
         val arrived = CopyOnWriteArrayList<Arrival>()
         val arrivals = device.arrivals(object : ArrivalListener {
             override fun arrived(arrival: Arrival) { arrived.add(arrival) }
@@ -71,6 +75,42 @@ class SmokeTest {
         assertContentEquals(bytes, read.readBytes())
         read.delete()
         arrived.until { it == Arrival.Stream(space.id(), blobs.id()) }
+
+        // A blob this device put, in a space with no peer: kept, outside the
+        // cache's budget, and its change waits for an acknowledgement.
+        val local = blobs.local(blob)
+        assertEquals(BlobState.KEPT, local.state)
+        assertEquals(bytes.size.toULong(), local.size)
+        assertTrue(local.bytes > local.size)
+        val usage = device.blobCacheUsage()
+        assertEquals(1uL shl 20, usage.budget)
+        assertEquals(0uL, usage.cached)
+        assertTrue(usage.kept >= local.bytes)
+        assertFalse(blobs.isDurable(blob))
+        assertEquals(listOf(blob, fromFile).sorted(), blobs.pending().sorted())
+        blobs.keep(blob, null)
+        assertContentEquals(bytes, blobs.get(blob, ReadOptions(local = true)))
+
+        // A reader over it reads any range, and every check has run on a blob
+        // that is whole here.
+        val reader = blobs.openReader(blob)
+        assertEquals(bytes.size.toULong(), reader.fetchSize())
+        assertContentEquals("from".toByteArray(), reader.readAt(6uL, 4uL))
+        assertContentEquals("Kotlin".toByteArray(), reader.readAt(11uL, 100uL))
+        assertEquals(0, reader.readAt(100uL, 1uL).size)
+        assertEquals(bytes.size.toULong(), reader.size())
+        assertEquals(8uL, reader.readAhead())
+        reader.setReadAhead(1000uL)
+        assertEquals(64uL, reader.readAhead())
+        assertEquals(0uL, reader.windowBytes())
+        reader.end()
+        reader.close()
+
+        // Dropped, with nothing connected that could send it again: missing.
+        blobs.dropLocal(blob)
+        assertEquals(BlobLocal(BlobState.ABSENT, 0uL, local.size), blobs.local(blob))
+        assertEquals(BlobStatus.Missing, blobs.status(blob))
+        assertNull(blobs.get(blob))
 
         space.pauseSync()
         assertTrue(space.isSyncPaused())

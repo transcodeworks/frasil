@@ -374,7 +374,11 @@ mod tests {
     }
 
     async fn device(key: u8) -> Arc<Device> {
-        let options = DeviceOptions { loopback: true };
+        let options = DeviceOptions {
+            blob_cache: None,
+            keep_all_blobs: false,
+            loopback: true,
+        };
         Device::open_in_memory(vec![key; 32], Some(options))
             .await
             .unwrap()
