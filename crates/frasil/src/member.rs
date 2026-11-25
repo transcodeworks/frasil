@@ -152,6 +152,11 @@ enum Local {
 /// The most messages of a sync stream an attach keeps until this side's
 /// roster check has run.
 const EARLY_MESSAGES: usize = 16;
+/// The most bytes those messages hold together: room for heads, a head
+/// statement and what the device has, and not for a part of an object,
+/// which a device that never identifies itself could otherwise have every
+/// attach hold.
+const EARLY_BYTES: usize = 64 * 1024;
 
 /// One attach of the connection.
 struct Attach {
@@ -521,14 +526,21 @@ impl Driver {
             if states.is_empty() {
                 continue;
             }
-            let (attach, events) = self
-                .session
-                .offer_with(
-                    states.into_iter().map(|(state, key)| (state, *key)),
-                    random(&self.device)?,
-                    &fillers(&self.device)?,
-                )
-                .map_err(Error::class)?;
+            let offered = self.session.offer_with(
+                states.into_iter().map(|(state, key)| (state, *key)),
+                random(&self.device)?,
+                &fillers(&self.device)?,
+            );
+            let (attach, events) = match offered {
+                Ok(offered) => offered,
+                // The session has no attach number left: the connection
+                // keeps what it carries and offers no more.
+                Err(frasil_transport::TransportClass::AttachLimit) => {
+                    self.to_offer.clear();
+                    return Ok(());
+                }
+                Err(class) => return Err(Error::class(class)),
+            };
             self.attaches.insert(attach, Attach::new(space, 1));
             self.handle(events).await?;
             return Ok(());
@@ -603,7 +615,10 @@ impl Driver {
     /// listener offers once attach 0 is proved.
     async fn attach_further(&mut self, space: EventId) -> Result<()> {
         let attaching = self.to_offer.contains(&space) || self.carries(&space);
-        if attaching || self.device.offered_states(&space).await.is_empty() {
+        if attaching
+            || self.declined.contains(&space)
+            || self.device.offered_states(&space).await.is_empty()
+        {
             return Ok(());
         }
         self.to_offer.push(space);
@@ -1329,7 +1344,10 @@ impl Driver {
         };
         // Before the roster check: kept, and taken by its outcome's rule.
         if state.local == Local::Pending {
-            if state.early.len() < EARLY_MESSAGES {
+            let held: usize = state.early.iter().map(|early| early.bytes.len()).sum();
+            if state.early.len() < EARLY_MESSAGES
+                && held.saturating_add(message.bytes.len()) <= EARLY_BYTES
+            {
                 state.early.push(message.clone());
             }
             return Ok(());

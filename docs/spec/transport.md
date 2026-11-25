@@ -518,8 +518,8 @@ current view** of the space:
   own view.
 - Each side sends its outcome as soon as it has one, so an `Admit` or a
   `Detach` can cross the other side's `Detach` of the same attach. A side
-  drops an `Admit` or a `Detach` that names an attach it has detached. One
-  that names an attach never offered is `Malformed`.
+  drops an `Admit` or a `Detach` that names an attach either side has
+  detached. One that names an attach never offered is `Malformed`.
 
 ### 3.6 Further attaches
 

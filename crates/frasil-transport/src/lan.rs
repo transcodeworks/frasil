@@ -46,7 +46,8 @@ pub const PACKET_BYTES: usize = 1 + 24 + PLAINTEXT_BYTES + 16;
 pub const OLDER_STATES: usize = 3;
 /// The most spaces a device announces in one interval.
 pub const MAX_SPACES: usize = 4;
-/// Seconds between a device's announcements of a space.
+/// Seconds between a device's announcements: each takes the next
+/// [`MAX_SPACES`] of its spaces in turn.
 pub const INTERVAL_SECONDS: u64 = 2;
 /// The most random jitter added to the interval, in milliseconds.
 pub const JITTER_MILLISECONDS: u64 = 500;
