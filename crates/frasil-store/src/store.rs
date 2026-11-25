@@ -67,6 +67,7 @@ pub type Sizes = Vec<(Vec<u8>, usize)>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreError {
     message: String,
+    full: bool,
 }
 
 impl StoreError {
@@ -74,7 +75,25 @@ impl StoreError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            full: false,
         }
+    }
+
+    /// A commit the medium refused because it has no room for what the
+    /// commit puts, as a browser refuses a write past its origin's quota:
+    /// nothing was written, and the store works as before. A device makes
+    /// room in its cache and commits again.
+    pub fn full(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            full: true,
+        }
+    }
+
+    /// Whether the medium had no room for what a commit puts
+    /// ([`full`](Self::full)).
+    pub fn is_full(&self) -> bool {
+        self.full
     }
 
     /// The message.

@@ -20,6 +20,7 @@ mod closing;
 mod ends;
 mod faults;
 mod keys;
+mod room;
 mod sealed;
 mod sizes;
 mod waits;
@@ -54,6 +55,11 @@ async fn absent_with(options: Options, bytes: Vec<u8>) -> Absent {
     let device = Device::open_with(Storage::Memory, &[1; 32], options)
         .await
         .unwrap();
+    absent_on(device, bytes).await
+}
+
+/// [`absent_with`] on a device opened already.
+async fn absent_on(device: Device, bytes: Vec<u8>) -> Absent {
     let engine = device.engine().clone();
     let space = device.create_space().await.unwrap();
     let of = space.id().event();

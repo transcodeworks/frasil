@@ -79,10 +79,17 @@ async fn committed(transaction: &IdbTransaction, what: &str) -> Result<(), Store
         transaction.set_onabort(Some(&reject));
     });
     JsFuture::from(settled).await.map(drop).map_err(|_| {
-        let cause = transaction
-            .error()
+        let error = transaction.error();
+        let cause = error
+            .as_ref()
             .map_or_else(|| "the transaction aborted".to_owned(), |e| e.message());
-        failed(what, cause)
+        // The browser refused the write past the origin's quota: nothing
+        // was written, and the device makes room in its cache.
+        if error.is_some_and(|e| e.name() == "QuotaExceededError") {
+            StoreError::full(format!("IndexedDB could not {what}: {cause}"))
+        } else {
+            failed(what, cause)
+        }
     })
 }
 

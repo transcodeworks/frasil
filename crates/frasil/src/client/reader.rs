@@ -49,6 +49,15 @@
 //! read that way too: by the size its entry shows when the reader opens,
 //! and by the header's once a chunk has opened under it, should the entry
 //! have shown less.
+//!
+//! **A store with no room.** A store may refuse a chunk for want of room
+//! though the cache is within its budget, as a browser does past its
+//! origin's quota (`StoreError::full`). The device then drops cached
+//! blobs, the one read longest ago first, until as many bytes went as
+//! the chunk takes, and writes it again. If the store still has no room,
+//! the read does not fail: the reader goes on through its own memory, as
+//! an [`uncached`](Read::uncached) one does, and nothing more of the blob
+//! is stored while a reader of it is open.
 
 use super::retention::Reading;
 use super::{BlobId, Blobs, Event, Read};
@@ -750,9 +759,21 @@ impl BlobReader {
         }
     }
 
+    /// Goes on through the reader's memory once the store had no room for
+    /// a chunk fetched for it, though the device made room in its cache
+    /// and wrote again ([`Engine::make_room`](crate::device::Engine)):
+    /// the read does not fail for it.
+    async fn unstored(&mut self) -> Result<()> {
+        if self.window.demoted() {
+            self.fall_back().await?;
+        }
+        Ok(())
+    }
+
     /// Reads the rest of the blob through the reader's memory, as a
     /// reader that stores nothing does: for a blob that cannot fit the
-    /// cache by its header, though its entry showed one that could. What
+    /// cache by its header, though its entry showed one that could, and
+    /// for one the store has no room for. What
     /// the device stored of it for this reader, beside the cache, goes,
     /// unless another read means it for the cache or another reader
     /// still uses it: then it stays until the last of them ends. A chunk
@@ -918,6 +939,7 @@ impl BlobReader {
         loop {
             changed.borrow_and_update();
             self.check()?;
+            self.unstored().await?;
             let mut header = None;
             for holder in &self.holders {
                 let holding = engine.holding(holder, &locator, 0..0).await;
@@ -1123,6 +1145,7 @@ impl BlobReader {
         loop {
             changed.borrow_and_update();
             self.check()?;
+            self.unstored().await?;
             let Some((sealed, holder)) = self.sealed(index).await? else {
                 if self.local {
                     return Err(Error::Class("Missing"));

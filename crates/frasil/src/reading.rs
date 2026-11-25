@@ -118,6 +118,10 @@ struct Inner {
     /// Whether a reader is running the whole-object steps on the stored
     /// object.
     verifying: bool,
+    /// Whether the store had no room for a part of the object while it
+    /// had readers ([`Readers::pass_all`]): nothing more of it is stored
+    /// while one of them is open.
+    unstorable: bool,
 }
 
 /// What the reader of a reference opens its object with: the reference's
@@ -192,6 +196,39 @@ impl Readers {
     pub(crate) fn windows(&self, key: &Key) -> usize {
         self.watched(key)
             .map_or(0, |watched| lock(&watched.inner).windows.len())
+    }
+
+    /// Whether the object has an open reader.
+    pub(crate) fn watches(&self, key: &Key) -> bool {
+        self.watched(key)
+            .is_some_and(|watched| !lock(&watched.inner).windows.is_empty())
+    }
+
+    /// The store has no room for parts of the object: every window open
+    /// on it takes the chunks it waits for into its memory from now on,
+    /// as the window of a reader that stores nothing does, and its reader
+    /// hears of it ([`Window::demoted`]). Nothing more of the object is
+    /// stored while one of them is open.
+    pub(crate) fn pass_all(&self, key: &Key) {
+        let Some(watched) = self.watched(key) else {
+            return;
+        };
+        {
+            let mut inner = lock(&watched.inner);
+            inner.unstorable = true;
+            for held in inner.windows.values_mut() {
+                held.passing = true;
+            }
+        }
+        watched.bump();
+    }
+
+    /// Whether the store had no room for the object while the readers
+    /// open on it now, or one of them, were open
+    /// ([`pass_all`](Self::pass_all)).
+    pub(crate) fn unstorable(&self, key: &Key) -> bool {
+        self.watched(key)
+            .is_some_and(|watched| lock(&watched.inner).unstorable)
     }
 
     /// Whether a reader that stores nothing has a window on the object.
@@ -583,6 +620,17 @@ impl Window {
         if let Some(held) = lock(&self.watched.inner).windows.get_mut(&self.number) {
             held.passing = true;
         }
+    }
+
+    /// Whether the device made the window take chunks into its memory,
+    /// for a store that had no room for them ([`Readers::pass_all`]),
+    /// and its reader has not taken that up yet ([`pass`](Self::pass)).
+    pub(crate) fn demoted(&self) -> bool {
+        !self.passing
+            && lock(&self.watched.inner)
+                .windows
+                .get(&self.number)
+                .is_some_and(|held| held.passing)
     }
 
     /// Cancels every request the window made: what it holds stays.

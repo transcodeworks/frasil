@@ -1545,14 +1545,37 @@ impl Engine {
         parts: &[&ObjectPart],
         checked: bool,
     ) -> Result<()> {
+        if self.store_parts_if_room(space, parts, checked).await? {
+            Ok(())
+        } else {
+            Err(Error::Store(
+                "the store has no room for the object's parts".into(),
+            ))
+        }
+    }
+
+    /// [`store_parts`](Self::store_parts): `false` when the store had no
+    /// room for the parts
+    /// ([`StoreError::is_full`](frasil_store::StoreError::is_full)). None
+    /// of them is kept then, and what was written of them is deleted.
+    async fn store_parts_if_room(
+        &self,
+        space: EventId,
+        parts: &[&ObjectPart],
+        checked: bool,
+    ) -> Result<bool> {
         if parts.is_empty() {
-            return Ok(());
+            return Ok(true);
         }
         let writer = {
             let mut state = self.lock().await;
             match state.vault.object_writer(&space.0) {
                 Some(writer) => writer,
-                None => return Self::keep_parts_in(&mut state, space, parts).await,
+                None => {
+                    return Self::keep_parts_in(&mut state, space, parts)
+                        .await
+                        .map(|()| true);
+                }
             }
         };
         let sealed = writer.seal(parts)?;
@@ -1567,16 +1590,22 @@ impl Engine {
                 bytes += next.1.len();
                 piece.push(next);
             }
-            writer.commit(piece).await?;
+            if !writer.commit_if_room(piece).await? {
+                // What the earlier commits wrote is no one's.
+                let _ = writer.forget(addresses).await;
+                return Ok(false);
+            }
         }
         let mut state = self.lock().await;
         if !writer.is_current(&state.vault) {
             // The log was forgotten or kept in memory meanwhile: what was
             // written is no one's.
             let _ = writer.forget(addresses).await;
-            return Ok(());
+            return Ok(true);
         }
-        Self::note_parts(&mut state, space, parts, checked).await
+        Self::note_parts(&mut state, space, parts, checked)
+            .await
+            .map(|()| true)
     }
 
     /// Notes parts of objects the store or memory now holds, and uses what
@@ -1971,7 +2000,11 @@ impl Engine {
                             let header = part.header.as_deref();
                             let id = crate::replica::object_id(&part.locator);
                             let recorded = state.retained.get(&(space, id)).is_some();
-                            let means = (asked.wanted)()
+                            // The store had no room for the object, and
+                            // its readers went on through their memory:
+                            // it is not tried again while they are open.
+                            let means = !self.readers().unstorable(&(space, id))
+                                && (asked.wanted)()
                                 && self
                                     .admit(&mut state, space, &part.locator, header, asked.stores)
                                     .await?;
@@ -2037,7 +2070,39 @@ impl Engine {
             (sealed, writing)
         };
         // The chunks are sealed and written while the device goes on.
-        self.store_parts(space, &sealed, checked).await?;
+        let mut stored = self.store_parts_if_room(space, &sealed, checked).await?;
+        // A store with no room for parts another party sent: the device
+        // drops cached objects to make as much, and writes again.
+        if !stored && source == Source::Sent && self.make_room(space, &sealed).await? {
+            stored = self.store_parts_if_room(space, &sealed, checked).await?;
+        }
+        if !stored {
+            // Still none. The readers of these objects go on through
+            // their own memory, as readers that store nothing do, and
+            // take the parts there; with no reader to take them, the
+            // store's failure is the caller's.
+            let keys: BTreeSet<_> = sealed
+                .iter()
+                .map(|part| (space, crate::replica::object_id(&part.locator)))
+                .collect();
+            let read = source == Source::Sent && keys.iter().all(|key| self.readers().watches(key));
+            if !read {
+                return Err(Error::Store(
+                    "the store has no room for the object's parts".into(),
+                ));
+            }
+            let mut state = self.lock().await;
+            for key in &keys {
+                self.readers().pass_all(key);
+                // The record made for a part that is not stored after
+                // all does not stay with no part.
+                self.unrecord_empty(&mut state, key.0, key.1).await?;
+            }
+            for part in &sealed {
+                left.insert((part.locator, part.index));
+                unmeant.insert((part.locator, part.index));
+            }
+        }
         let mut state = self.lock().await;
         // Each object these parts made whole hashes to its locator, or is
         // no one's: dropped before anything uses it.
