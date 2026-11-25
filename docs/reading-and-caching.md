@@ -344,6 +344,35 @@ a peer holds it. Putting bytes the device already holds changes nothing of
 that: a kept blob put again is kept once a peer holds it, and a cached one
 is cached again then.
 
+**A store that is full.** The budget is the device's own count, and a
+store may have less room than it names, as a browser has past its origin's
+quota. When the store says it has no room for a chunk a read fetched, the
+device evicts cached blobs, the one read longest ago first and never one of
+those above, until as many bytes went as the chunk takes, and writes the
+chunk once more. If the store refuses it again, the chunk is stored
+nowhere, and what happens next depends on who reads the blob:
+
+- A blob with an open reader is read on through the readers' memory, as
+  an `uncached` reader reads, and no read fails for the store. Nothing
+  more of that blob is stored while one of those readers is open; once the
+  last has closed, the next read stores it again. A `get` of a blob that
+  is not whole here reads through a reader of its own, so it gives the
+  bytes too, and leaves the blob absent.
+- With no reader open, as under `keep`, the chunk is refused with the
+  store's error and the fetch makes no progress: `keep` fails once the
+  fetch has stopped moving, and the blob stays marked as kept, to be
+  fetched when the store has room. A kept blob is never held in memory in
+  place of the store.
+- A `put` under a full store fails with the store's error, and evicts
+  nothing.
+
+What the device held of a blob before stays as it was in each case. Only a
+store that says it is full makes the cache give way
+(`StoreError::full`): the IndexedDB store of the `browser` feature says so
+when the browser refuses a write for its quota. The SQLite and directory
+stores do not say so today, so a full disk fails the write there as any
+other store error does, and nothing is evicted for it.
+
 **An evicted blob stays away.** The device does not fetch it again by
 itself: the next read does. An older version of a file that no peer keeps
 any more cannot be fetched again, so keep the versions that must not be
