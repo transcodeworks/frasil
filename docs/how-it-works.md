@@ -216,6 +216,11 @@ sequenceDiagram
 
 - The application names its relays (`Options::relay`). Frasil names none,
   and a device with no relay reaches others only on its own network.
+- On one local network, devices with `Options::local_discovery` need no
+  relay either. Each announces the spaces it holds, four every 2 seconds
+  in turn: with N spaces, a space is announced every ceil(N / 4) × 2
+  seconds. A device that can read another's announcement dials it, and
+  their connection then carries every space the two share.
 - Changes move only while both devices are connected:
   `Space::connected_members` says who is connected now. An always-on peer
   is what keeps changes for someone who is away.

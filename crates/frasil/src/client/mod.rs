@@ -416,9 +416,12 @@ impl Options {
     }
 
     /// Finds the members of the device's spaces on the local network, and
-    /// lets them find it: once open, the device announces each space it
-    /// holds, and dials each member whose announcement it opens, with no
-    /// peer and no internet (transport.md, "Member announcements"). Two
+    /// lets them find it: once open, the device announces the spaces it
+    /// holds, four every 2 seconds in turn, and dials each member whose
+    /// announcement it opens, with no peer and no internet (transport.md,
+    /// "Member announcements"). With N spaces, each is announced once
+    /// every ceil(N / 4) × 2 seconds, and a connection that one of them
+    /// started carries every space its two devices share. Two
     /// members another device admitted then connect to each other, sync
     /// and hear each other on the ephemeral channel. With
     /// [`loopback`](Self::loopback), on the loopback interface alone. A
@@ -899,9 +902,10 @@ impl Device {
     }
 
     /// Switches local discovery on, as [`Options::local_discovery`] does at
-    /// open: the device announces each space it holds on the local network
-    /// and dials each member whose announcement it opens (transport.md,
-    /// "Member announcements"). Switching it on again does nothing.
+    /// open: the device announces the spaces it holds on the local
+    /// network, four every 2 seconds in turn, and dials each member whose
+    /// announcement it opens (transport.md, "Member announcements").
+    /// Switching it on again does nothing.
     ///
     /// # Errors
     ///

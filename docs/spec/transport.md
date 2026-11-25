@@ -516,6 +516,10 @@ current view** of the space:
   ends it as soon as either side holds the removal.
 - The verifier never asks the device what it holds. The answer is in its
   own view.
+- Each side sends its outcome as soon as it has one, so an `Admit` or a
+  `Detach` can cross the other side's `Detach` of the same attach. A side
+  drops an `Admit` or a `Detach` that names an attach either side has
+  detached. One that names an attach never offered is `Malformed`.
 
 ### 3.6 Further attaches
 
@@ -524,6 +528,23 @@ current view** of the space:
   4 and so on, the listener 1, 3, 5, all below 1,024 (`AttachLimit`).
 - `Identify` is not repeated. Each space's roster check uses the device of
   attach 0.
+- Once the other side's `Identify` has verified, a device SHOULD offer each
+  other space it holds that the other device reaches in its own current
+  view (section 3.5), and SHOULD do so again when it comes to hold another
+  space or its view of one changes, so that two devices attach every space
+  they share however they found each other. Of its own accord it offers no
+  space in which the other device is out or named nowhere, and none the
+  other side refused or detached on this connection: the other side offers
+  that space once its own view admits it.
+- A connection carries a space on one attach. An initiator does not offer a
+  space an attach of the connection carries. A responder leaves out of its
+  candidates (section 3.3) each space an attach of the connection carries,
+  and each space it is itself offering, for the first time, under a lower
+  attach number. Of two offers of one space that cross, the one with the
+  lower attach number is therefore answered, and the other refused with
+  `no_common_state`. An initiator refused for a space another attach now
+  carries does not offer it again, and detaches the refused attach with
+  `done`.
 - Each attach is detached on its own. When the last one is, the connection
   closes with `done`.
 - A member admitted from now on, and a guest, hold the states from their
@@ -1181,11 +1202,16 @@ the networks its member endpoint binds on and register with the same
 relays, so that it reaches a host that only a relay reaches.
 
 **Member announcements.** A device that has a space open, with local
-discovery switched on, sends section 2.9's member announcement every 2
-seconds, with up to 0.5 seconds of random jitter, under its current state
-of that space. It announces at most 4 spaces, one packet each, and never a
-restricted space ([ext-restricted-spaces.md](ext-restricted-spaces.md)).
-A listener:
+discovery switched on, sends section 2.9's member announcement for it
+under its current state of that space. Every 2 seconds, with up to 0.5
+seconds of random jitter, it announces at most 4 spaces, one packet each,
+and takes its spaces in turn: a device with N spaces to announce announces
+each of them once every ceil(N / 4) intervals. It never announces a
+restricted space ([ext-restricted-spaces.md](ext-restricted-spaces.md)),
+nor a space it is out of in its own view. A member connection an announcement
+starts attaches every space its two devices share (section 3.6), so a
+space waits for its turn only when no other space the two share has been
+announced. A listener:
 
 ```text
 for each packet, in order:

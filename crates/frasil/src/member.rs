@@ -10,7 +10,10 @@
 //!    Ed25519 keys and keys commitments with `Identify`, which give each
 //!    side's device ID, and each runs the roster check on that device ID
 //!    against its own current view, which admits, detaches or starts probation.
-//!    Further spaces attach on the same connection.
+//!    Further spaces attach on the same connection: once the other device
+//!    has identified itself, each side offers every other space it holds
+//!    that the other device reaches in its own view, and again as its
+//!    spaces and their rosters change (transport.md, "Further attaches").
 //! 2. **Sync** on each attach's sync stream, opened by the attach's
 //!    initiator: [`SyncSession`] behind the device, every message a
 //!    `Sync` frame scoped by the attach. A side serves nothing before it
@@ -146,12 +149,26 @@ enum Local {
     Admitted,
 }
 
+/// The most messages of a sync stream an attach keeps until this side's
+/// roster check has run.
+const EARLY_MESSAGES: usize = 16;
+/// The most bytes those messages hold together: room for heads, a head
+/// statement and what the device has, and not for a part of an object,
+/// which a device that never identifies itself could otherwise have every
+/// attach hold.
+const EARLY_BYTES: usize = 64 * 1024;
+
 /// One attach of the connection.
 struct Attach {
     space: EventId,
     sync: SyncSession,
     sender: Option<FrameSender>,
     queued: Vec<Vec<u8>>,
+    /// What the sync stream carried before this side's roster check ran,
+    /// taken once it has. The control stream and the sync stream are read
+    /// apart, so the other side's first messages can come before its
+    /// `Identify` is read.
+    early: Vec<Message>,
     local: Local,
     started: bool,
     offers: usize,
@@ -184,6 +201,7 @@ impl Attach {
             sync: SyncSession::new(space),
             sender: None,
             queued: Vec::new(),
+            early: Vec::new(),
             local: Local::Pending,
             started: false,
             offers,
@@ -205,6 +223,13 @@ struct Driver {
     attaches: BTreeMap<u32, Attach>,
     /// Spaces this side still means to attach, after attach 0.
     to_offer: Vec<EventId>,
+    /// The spaces the other side refused or detached on this connection:
+    /// this side does not offer them again of its own accord. The other
+    /// side offers one once its own view admits it.
+    declined: BTreeSet<EventId>,
+    /// The device's spaces or their rosters may have changed since this
+    /// side last looked for spaces it shares with the other device.
+    shared_due: bool,
     incoming: mpsc::UnboundedSender<Incoming>,
     opened: Instant,
     started: Instant,
@@ -295,7 +320,9 @@ fn connection_error(error: impl core::fmt::Display) -> Error {
 
 /// Runs one side of a member connection until it closes. The dialer
 /// attaches `spaces` in turn, the first as attach 0; the listener answers,
-/// and may attach `spaces` too once attach 0 is proved.
+/// and may attach `spaces` too once attach 0 is proved. Once the other
+/// device has identified itself, each side attaches too every other space
+/// the device shares with it ([`Engine::spaces_shared_with`]).
 ///
 /// # Errors
 ///
@@ -342,6 +369,8 @@ pub async fn run_member_with(
         control,
         attaches: BTreeMap::new(),
         to_offer: spaces,
+        declined: BTreeSet::new(),
+        shared_due: false,
         incoming,
         opened: Instant::now(),
         started: Instant::now(),
@@ -394,7 +423,10 @@ async fn drive(
             }
             notice = notices.recv() => match notice {
                 Ok(notice) => driver.on_notice(notice).await?,
-                Err(broadcast::error::RecvError::Lagged(_)) => driver.resync().await?,
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    driver.shared_due = true;
+                    driver.resync().await?;
+                }
                 Err(broadcast::error::RecvError::Closed) => return Ok(()),
             },
             _ = tick.tick() => {
@@ -482,6 +514,10 @@ impl Driver {
     async fn offer_one(&mut self, deferred: &mut Vec<EventId>) -> Result<()> {
         while let Some(space) = self.to_offer.first().copied() {
             self.to_offer.remove(0);
+            // The other side attached it meanwhile.
+            if self.carries(&space) {
+                continue;
+            }
             if !self.may_attach(&space).await {
                 deferred.push(space);
                 continue;
@@ -490,17 +526,86 @@ impl Driver {
             if states.is_empty() {
                 continue;
             }
-            let (attach, events) = self
-                .session
-                .offer_with(
-                    states.into_iter().map(|(state, key)| (state, *key)),
-                    random(&self.device)?,
-                    &fillers(&self.device)?,
-                )
-                .map_err(Error::class)?;
+            let offered = self.session.offer_with(
+                states.into_iter().map(|(state, key)| (state, *key)),
+                random(&self.device)?,
+                &fillers(&self.device)?,
+            );
+            let (attach, events) = match offered {
+                Ok(offered) => offered,
+                // The session has no attach number left: the connection
+                // keeps what it carries and offers no more.
+                Err(frasil_transport::TransportClass::AttachLimit) => {
+                    self.to_offer.clear();
+                    return Ok(());
+                }
+                Err(class) => return Err(Error::class(class)),
+            };
             self.attaches.insert(attach, Attach::new(space, 1));
             self.handle(events).await?;
             return Ok(());
+        }
+        Ok(())
+    }
+
+    /// Whether an attach of the connection carries a space, or an offer of
+    /// this side's for it awaits its answer.
+    fn carries(&self, space: &EventId) -> bool {
+        self.attaches.values().any(|a| a.space == *space)
+    }
+
+    /// The spaces this side leaves out of its candidates for an offer of
+    /// the other side's (transport.md, "Further attaches"): each space an
+    /// attach of the connection carries, and each space this side is
+    /// offering for the first time under a lower attach number. Of two
+    /// offers of one space sent at the same moment, the one with the lower
+    /// number is then answered and the other refused.
+    fn taken(&self, offer: u32) -> BTreeSet<EventId> {
+        let role = self.connection.role();
+        self.attaches
+            .iter()
+            .filter(|(attach, state)| {
+                self.session.state(**attach).is_some()
+                    || (frasil_transport::member::Role::of_attach(**attach) == role
+                        && **attach < offer
+                        && state.offers == 1)
+            })
+            .map(|(_, state)| state.space)
+            .collect()
+    }
+
+    /// Whether an offer of this side's awaits its answer. This side offers
+    /// one space at a time, so that a restricted space follows its parent.
+    fn offering(&self) -> bool {
+        let role = self.connection.role();
+        self.attaches.keys().any(|attach| {
+            frasil_transport::member::Role::of_attach(*attach) == role
+                && self.session.state(*attach).is_none()
+        })
+    }
+
+    /// Means to attach every space this device shares with the other
+    /// device, in its own current view, that the connection does not carry
+    /// yet (transport.md, "Further attaches"): each space it holds that the
+    /// other device reaches. A space the other device does not reach in
+    /// this view is never offered, and neither is one the other side
+    /// refused or detached on this connection. Nothing before the other
+    /// side's `Identify` has verified.
+    async fn offer_shared(&mut self) -> Result<()> {
+        self.shared_due = false;
+        let Some(remote) = self.session.remote_device().copied() else {
+            return Ok(());
+        };
+        for space in self.device.spaces_shared_with(&remote).await {
+            if !self.declined.contains(&space)
+                && !self.to_offer.contains(&space)
+                && !self.carries(&space)
+            {
+                self.to_offer.push(space);
+            }
+        }
+        if !self.to_offer.is_empty() && !self.offering() {
+            self.offer_next().await?;
         }
         Ok(())
     }
@@ -509,9 +614,11 @@ impl Driver {
     /// carries it or means to (transport.md, "Further attaches"). The
     /// listener offers once attach 0 is proved.
     async fn attach_further(&mut self, space: EventId) -> Result<()> {
-        let attaching =
-            self.to_offer.contains(&space) || self.attaches.values().any(|a| a.space == space);
-        if attaching || self.device.offered_states(&space).await.is_empty() {
+        let attaching = self.to_offer.contains(&space) || self.carries(&space);
+        if attaching
+            || self.declined.contains(&space)
+            || self.device.offered_states(&space).await.is_empty()
+        {
             return Ok(());
         }
         self.to_offer.push(space);
@@ -591,12 +698,17 @@ impl Driver {
                             .map_err(connection_error)?;
                     }
                     Event::OfferReceived { attach } => {
+                        // A space is attached once on a connection.
+                        let taken = self.taken(attach);
                         let candidates = self.device.candidate_states().await;
                         let events = self
                             .session
                             .respond_with(
                                 attach,
-                                candidates.into_iter().map(|(state, key)| (state, *key)),
+                                candidates
+                                    .into_iter()
+                                    .filter(|((space, _), _)| !taken.contains(space))
+                                    .map(|(state, key)| (state, *key)),
                                 random(&self.device)?,
                             )
                             .map_err(Error::class)?;
@@ -606,7 +718,27 @@ impl Driver {
                     Event::Refused {
                         attach, may_retry, ..
                     } => {
-                        if !self.retry(attach, may_retry).await? {
+                        // The other side's offer of the space, sent at the
+                        // same moment, attached it: this offer is no longer
+                        // wanted (transport.md, "Further attaches").
+                        let space = self.attaches.get(&attach).map(|state| state.space);
+                        let crossed = space.is_some_and(|space| {
+                            self.attaches
+                                .iter()
+                                .any(|(other, state)| *other != attach && state.space == space)
+                        });
+                        if crossed {
+                            self.remove_attach(attach);
+                            let events = self
+                                .session
+                                .detach(attach, Code::Done)
+                                .map_err(Error::class)?;
+                            pending.extend(events);
+                            Box::pin(self.offer_next()).await?;
+                        } else if !self.retry(attach, may_retry).await? {
+                            if let Some(space) = space {
+                                self.declined.insert(space);
+                            }
                             self.remove_attach(attach);
                             if attach == 0 {
                                 self.connection.close(Code::Done);
@@ -620,7 +752,19 @@ impl Driver {
                             }
                         }
                     }
-                    Event::Identified { .. } => self.hand_welcomes().await?,
+                    Event::Identified { .. } => {
+                        self.hand_welcomes().await?;
+                        // The dialer offers the spaces it shares with the
+                        // other device at once, and the listener at its
+                        // next tick, which offers what the dialer's view
+                        // left out: both at once would offer each space
+                        // twice, for one of the two to be refused.
+                        if self.connection.role() == Role::Dialer {
+                            Box::pin(self.offer_shared()).await?;
+                        } else {
+                            self.shared_due = true;
+                        }
+                    }
                     Event::CheckRoster { attach, device } => {
                         pending.extend(self.check(attach, &device).await?);
                     }
@@ -636,7 +780,16 @@ impl Driver {
                         }
                         self.share(attach).await?;
                     }
-                    Event::Detached { attach, .. } => self.remove_attach(attach),
+                    Event::Detached { attach, .. } => {
+                        let space = self.attaches.get(&attach).map(|state| state.space);
+                        self.remove_attach(attach);
+                        // Unless another attach still carries the space.
+                        if let Some(space) = space
+                            && !self.carries(&space)
+                        {
+                            self.declined.insert(space);
+                        }
+                    }
                     Event::Close(code) => {
                         self.connection.close(code);
                         return Ok(false);
@@ -700,7 +853,8 @@ impl Driver {
         entry.sync = SyncSession::new(space);
         // Being made: it takes the space's requests once it has started.
         entry.sync.expect(self.device.fetches());
-        if frasil_transport::member::Role::of_attach(attach) == self.connection.role() {
+        let own = frasil_transport::member::Role::of_attach(attach) == self.connection.role();
+        if own {
             let (sender, receiver) = self
                 .connection
                 .open_sync(Scope::Attach(attach.into()))
@@ -714,10 +868,12 @@ impl Driver {
         }
         // The next space is offered once this side's last attach is
         // proved, so that a restricted space follows its parent.
-        if attach == 0
-            || frasil_transport::member::Role::of_attach(attach) == self.connection.role()
-        {
+        if attach == 0 || own {
             Box::pin(self.offer_next()).await?;
+        } else {
+            // A restricted space of this side's may follow the parent the
+            // other side attached.
+            self.shared_due = true;
         }
         Ok(Vec::new())
     }
@@ -760,6 +916,9 @@ impl Driver {
             Verdict::Admit => {
                 state.local = Local::Admitted;
                 state.sync.set_serving(Serving::Everything);
+                // A device admitted here may reach other spaces through
+                // this one.
+                self.shared_due = true;
                 // The channel starts once both sides have sent `Admit`;
                 // the other side takes no frame before its own.
                 #[cfg(feature = "ephemeral")]
@@ -797,6 +956,15 @@ impl Driver {
             _ => self.uncount(attach),
         }
         self.state_heads(attach).await?;
+        // What the sync stream carried before this outcome.
+        let early = self
+            .attaches
+            .get_mut(&attach)
+            .map(|state| std::mem::take(&mut state.early))
+            .unwrap_or_default();
+        for message in &early {
+            self.on_sync(attach, message).await?;
+        }
         Ok(events)
     }
 
@@ -1171,10 +1339,20 @@ impl Driver {
             self.connection.close(Code::Malformed);
             return Ok(());
         }
-        let Some(remote) = self.session.remote_device().copied() else {
+        let Some(state) = self.attaches.get_mut(&attach) else {
             return Ok(());
         };
-        let Some(state) = self.attaches.get_mut(&attach) else {
+        // Before the roster check: kept, and taken by its outcome's rule.
+        if state.local == Local::Pending {
+            let held: usize = state.early.iter().map(|early| early.bytes.len()).sum();
+            if state.early.len() < EARLY_MESSAGES
+                && held.saturating_add(message.bytes.len()) <= EARLY_BYTES
+            {
+                state.early.push(message.clone());
+            }
+            return Ok(());
+        }
+        let Some(remote) = self.session.remote_device().copied() else {
             return Ok(());
         };
         let Ok(Some(units_message)) = crate::intake::read_sync(&sync.message) else {
@@ -1230,6 +1408,12 @@ impl Driver {
     /// space, and the re-check.
     async fn on_notice(&mut self, notice: Notice) -> Result<()> {
         self.hand_welcomes().await?;
+        // Events of a space the connection does not carry, as when the
+        // device joins a space or admits the other device to one: the next
+        // tick looks again for spaces it shares with the other device.
+        if !notice.placed.is_empty() && !self.carries(&notice.space) {
+            self.shared_due = true;
+        }
         let attaches: Vec<u32> = self
             .attaches
             .iter()
@@ -1464,6 +1648,9 @@ impl Driver {
             self.share(attach).await?;
         }
         self.hand_welcomes().await?;
+        if self.shared_due {
+            self.offer_shared().await?;
+        }
         Ok(true)
     }
 }

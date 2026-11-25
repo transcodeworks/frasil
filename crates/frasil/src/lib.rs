@@ -260,6 +260,8 @@
 mod adapters;
 #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
 mod admitting;
+#[cfg(test)]
+mod announce_tests;
 mod at_rest;
 #[cfg(all(feature = "browser", target_arch = "wasm32", target_os = "unknown"))]
 pub mod browser;

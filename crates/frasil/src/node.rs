@@ -5,9 +5,10 @@
 //! A [`Node`] binds a member endpoint under a random key, never one of the
 //! device's own keys, and accepts member and nearby connections on it. Each
 //! member connection runs [`run_member`]. With local discovery on, the
-//! node announces each open space every 2 seconds under its current state
-//! (`lan_key(S)`), and dials every candidate an announcement it opens
-//! gives; the member handshake decides everything. A node also keeps
+//! node announces its open spaces under their current states
+//! (`lan_key(S)`), four every 2 seconds in turn, and dials every candidate
+//! an announcement it opens gives; the member handshake decides
+//! everything. A node also keeps
 //! where it reached each member, and dials those members again when the
 //! device opens again (transport.md, "Reconnecting"), and dials each
 //! member another member's `Addresses` lists, with or without local
@@ -35,10 +36,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-
-/// The most spaces a device announces on a local network (transport.md,
-/// "Member announcements").
-const ANNOUNCED_SPACES: usize = 4;
 
 /// How often a node dials again the members it keeps tickets of that it is
 /// not connected to, after the device opens, and for how many rounds:
@@ -675,8 +672,9 @@ impl Node {
     }
 
     /// Switches local discovery on (transport.md, "Member announcements"):
-    /// announces up to 4 open spaces every 2 seconds, with jitter, and
-    /// dials each candidate an announcement it opens gives.
+    /// every 2 seconds, with jitter, announces the next 4 of the device's
+    /// spaces in turn, so each of N spaces once every ceil(N / 4)
+    /// intervals, and dials each candidate an announcement it opens gives.
     ///
     /// # Errors
     ///
@@ -699,14 +697,19 @@ impl Node {
         let announcer = self.clone();
         let announcing = socket.clone();
         self.spawn(async move {
+            // The last space announced: the next interval goes on from it.
+            let mut last = None;
             loop {
                 let states = announcer
                     .shared
                     .device
-                    .announced_states(ANNOUNCED_SPACES)
+                    .announced_states(last.as_ref())
                     .await;
                 for (_, secret) in &states {
                     let _ = announcing.announce(secret, &announcer.key(), port).await;
+                }
+                if let Some((space, _)) = states.last() {
+                    last = Some(*space);
                 }
                 let wait = next_announcement().unwrap_or(std::time::Duration::from_secs(2));
                 tokio::time::sleep(wait).await;
