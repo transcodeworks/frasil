@@ -886,6 +886,18 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_frasil_uniffi_checksum_method_blobs_status(
     ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobs_drop_local(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobs_is_durable(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobs_keep(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobs_local(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobs_open_reader(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobs_pending(
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_checkpointlistener_reported(
     ): Int
     external fun uniffi_frasil_uniffi_checksum_method_depositlistener_reported(
@@ -935,6 +947,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_frasil_uniffi_checksum_method_device_waiting_deposits(
     ): Int
     external fun uniffi_frasil_uniffi_checksum_method_device_join(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_device_blob_cache_usage(
     ): Int
     external fun uniffi_frasil_uniffi_checksum_method_durablelistener_durable(
     ): Int
@@ -1008,6 +1022,22 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_frasil_uniffi_checksum_method_cancellation_is_cancelled(
     ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobreader_end(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobreader_fetch_size(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobreader_read_ahead(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobreader_read_at(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobreader_set_read_ahead(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobreader_size(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobreader_verified(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_blobreader_window_bytes(
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_constructor_device_open(
     ): Int
     external fun uniffi_frasil_uniffi_checksum_constructor_device_open_in_memory(
@@ -1071,13 +1101,13 @@ external fun uniffi_frasil_uniffi_fn_clone_blobs(`handle`: Long,uniffi_out_err: 
 ): Long
 external fun uniffi_frasil_uniffi_fn_free_blobs(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Unit
-external fun uniffi_frasil_uniffi_fn_method_blobs_content_hash(`ptr`: Long,`id`: RustBuffer.ByValue,
+external fun uniffi_frasil_uniffi_fn_method_blobs_content_hash(`ptr`: Long,`id`: RustBuffer.ByValue,`read`: RustBuffer.ByValue,
 ): Long
-external fun uniffi_frasil_uniffi_fn_method_blobs_get(`ptr`: Long,`id`: RustBuffer.ByValue,
+external fun uniffi_frasil_uniffi_fn_method_blobs_get(`ptr`: Long,`id`: RustBuffer.ByValue,`read`: RustBuffer.ByValue,
 ): Long
-external fun uniffi_frasil_uniffi_fn_method_blobs_get_range(`ptr`: Long,`id`: RustBuffer.ByValue,`offset`: Long,`length`: Long,
+external fun uniffi_frasil_uniffi_fn_method_blobs_get_range(`ptr`: Long,`id`: RustBuffer.ByValue,`offset`: Long,`length`: Long,`read`: RustBuffer.ByValue,
 ): Long
-external fun uniffi_frasil_uniffi_fn_method_blobs_get_to_file(`ptr`: Long,`id`: RustBuffer.ByValue,`path`: RustBuffer.ByValue,`listener`: RustBuffer.ByValue,
+external fun uniffi_frasil_uniffi_fn_method_blobs_get_to_file(`ptr`: Long,`id`: RustBuffer.ByValue,`path`: RustBuffer.ByValue,`listener`: RustBuffer.ByValue,`read`: RustBuffer.ByValue,
 ): Long
 external fun uniffi_frasil_uniffi_fn_method_blobs_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
@@ -1088,6 +1118,18 @@ external fun uniffi_frasil_uniffi_fn_method_blobs_put(`ptr`: Long,`name`: RustBu
 external fun uniffi_frasil_uniffi_fn_method_blobs_put_file(`ptr`: Long,`name`: RustBuffer.ByValue,`path`: RustBuffer.ByValue,`listener`: RustBuffer.ByValue,
 ): Long
 external fun uniffi_frasil_uniffi_fn_method_blobs_status(`ptr`: Long,`id`: RustBuffer.ByValue,
+): Long
+external fun uniffi_frasil_uniffi_fn_method_blobs_drop_local(`ptr`: Long,`id`: RustBuffer.ByValue,
+): Long
+external fun uniffi_frasil_uniffi_fn_method_blobs_is_durable(`ptr`: Long,`id`: RustBuffer.ByValue,
+): Long
+external fun uniffi_frasil_uniffi_fn_method_blobs_keep(`ptr`: Long,`id`: RustBuffer.ByValue,`listener`: RustBuffer.ByValue,
+): Long
+external fun uniffi_frasil_uniffi_fn_method_blobs_local(`ptr`: Long,`id`: RustBuffer.ByValue,
+): Long
+external fun uniffi_frasil_uniffi_fn_method_blobs_open_reader(`ptr`: Long,`id`: RustBuffer.ByValue,`read`: RustBuffer.ByValue,
+): Long
+external fun uniffi_frasil_uniffi_fn_method_blobs_pending(`ptr`: Long,
 ): Long
 external fun uniffi_frasil_uniffi_fn_clone_checkpointlistener(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Long
@@ -1158,6 +1200,8 @@ external fun uniffi_frasil_uniffi_fn_method_device_trust_deposit_keys(`ptr`: Lon
 external fun uniffi_frasil_uniffi_fn_method_device_waiting_deposits(`ptr`: Long,
 ): Long
 external fun uniffi_frasil_uniffi_fn_method_device_join(`ptr`: Long,`invitation`: RustBuffer.ByValue,`name`: RustBuffer.ByValue,`listener`: Long,`cancellation`: RustBuffer.ByValue,
+): Long
+external fun uniffi_frasil_uniffi_fn_method_device_blob_cache_usage(`ptr`: Long,
 ): Long
 external fun uniffi_frasil_uniffi_fn_clone_durablelistener(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Long
@@ -1273,6 +1317,26 @@ external fun uniffi_frasil_uniffi_fn_method_cancellation_cancel(`ptr`: Long,unif
 ): Unit
 external fun uniffi_frasil_uniffi_fn_method_cancellation_is_cancelled(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Byte
+external fun uniffi_frasil_uniffi_fn_clone_blobreader(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Long
+external fun uniffi_frasil_uniffi_fn_free_blobreader(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Unit
+external fun uniffi_frasil_uniffi_fn_method_blobreader_end(`ptr`: Long,
+): Long
+external fun uniffi_frasil_uniffi_fn_method_blobreader_fetch_size(`ptr`: Long,`cancellation`: RustBuffer.ByValue,
+): Long
+external fun uniffi_frasil_uniffi_fn_method_blobreader_read_ahead(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Long
+external fun uniffi_frasil_uniffi_fn_method_blobreader_read_at(`ptr`: Long,`offset`: Long,`length`: Long,`cancellation`: RustBuffer.ByValue,
+): Long
+external fun uniffi_frasil_uniffi_fn_method_blobreader_set_read_ahead(`ptr`: Long,`chunks`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Unit
+external fun uniffi_frasil_uniffi_fn_method_blobreader_size(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+external fun uniffi_frasil_uniffi_fn_method_blobreader_verified(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+external fun uniffi_frasil_uniffi_fn_method_blobreader_window_bytes(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+): Long
 external fun ffi_frasil_uniffi_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
 external fun ffi_frasil_uniffi_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus,
@@ -1404,16 +1468,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_frasil_uniffi_checksum_method_blobstatuslistener_failed() != 6018) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_content_hash() != 10406) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_content_hash() != 60134) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get() != 22721) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get() != 16401) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get_range() != 59637) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get_range() != 23578) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get_to_file() != 51323) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_get_to_file() != 4855) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_frasil_uniffi_checksum_method_blobs_id() != 54424) {
@@ -1429,6 +1493,24 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_frasil_uniffi_checksum_method_blobs_status() != 56819) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_drop_local() != 32582) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_is_durable() != 30158) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_keep() != 24271) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_local() != 22191) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_open_reader() != 48650) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobs_pending() != 50728) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_frasil_uniffi_checksum_method_checkpointlistener_reported() != 61045) {
@@ -1504,6 +1586,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_frasil_uniffi_checksum_method_device_join() != 12471) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_device_blob_cache_usage() != 31009) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_frasil_uniffi_checksum_method_durablelistener_durable() != 34948) {
@@ -1612,6 +1697,30 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_frasil_uniffi_checksum_method_cancellation_is_cancelled() != 54012) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobreader_end() != 41762) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobreader_fetch_size() != 58659) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobreader_read_ahead() != 65365) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobreader_read_at() != 34873) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobreader_set_read_ahead() != 13727) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobreader_size() != 12325) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobreader_verified() != 59574) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_blobreader_window_bytes() != 14590) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_frasil_uniffi_checksum_constructor_device_open() != 9822) {
@@ -3079,6 +3188,587 @@ public object FfiConverterTypeBlobProgressListener: FfiConverter<BlobProgressLis
 
 
 /**
+ * A reader over one blob, from `Blobs::open_reader`: it reads any range
+ * of the blob and fetches only the chunks that hold it, as its
+ * [`ReadOptions`] say. Nothing is fetched until it is read or asked its
+ * size. One call reads at a time: a read made while another waits takes
+ * its turn after it.
+ *
+ * Before the reader gives any byte, the blob's header has passed its
+ * checks and the byte's chunk has opened under the blob's key, at its
+ * own place in its own blob. [`BlobReader::verified`] says whether the
+ * checks that need the whole blob have run.
+ *
+ * A read stops in three ways only: [`BlobReader::end`], its
+ * [`Cancellation`], and its caller no longer waiting, as a cancelled
+ * Kotlin coroutine. Freeing the reader's handle stops none: a call in
+ * flight holds the reader until it ends, so the reader is freed after
+ * its last call. A Swift task that is cancelled stops no read either;
+ * without a `Cancellation` its read goes on to the end and holds its
+ * turn until then.
+ *
+ * End a reader that is done with: [`BlobReader::end`] stops its fetches
+ * and waits until the device has looked at its cache. A reader that is
+ * only freed ends the same way once no call holds it, and the device
+ * looks at its cache afterwards, with nothing waiting for it.
+ */
+public interface BlobReaderInterface {
+
+    /**
+     * Ends the reader: its fetches stop, the reads waiting on it fail,
+     * what it held in memory is freed, and the device looks at its
+     * cache, so that a blob it held beside the cache for this reader
+     * alone goes. Every later call on the reader fails. (Named so that
+     * it does not meet the generated objects' own `close`, which frees
+     * the handle and ends nothing that is in flight.)
+     */
+    suspend fun `end`()
+
+    /**
+     * The blob's size, once a chunk has opened under its header: the
+     * chunk the reader stands in, or the blob's last when it stands past
+     * the end, fetched with the header when the device does not hold
+     * them. Fails as [`read_at`](Self::read_at) does.
+     */
+    suspend fun `fetchSize`(`cancellation`: Cancellation? = null): kotlin.ULong
+
+    /**
+     * How many chunks the reader fetches ahead of where it reads: 8
+     * unless set.
+     */
+    fun `readAhead`(): kotlin.ULong
+
+    /**
+     * `length` bytes of the blob from byte `offset`, fewer at its end and
+     * none at or past it. Each chunk the range lies in is fetched first
+     * when the device does not hold it, ahead of everything else asked of
+     * the space's connections, with the chunks after it behind.
+     *
+     * A read holds its whole range in memory, so `length` is at most
+     * 67,108,864 (64 MiB): a longer read is refused before anything is
+     * fetched. Read a large range in pieces; a player's requests are far
+     * smaller.
+     *
+     * When a chunk after the range's first fails, the read gives the
+     * bytes before it, fewer than asked, and loses none: read again from
+     * where it ended, and that read reports the failure. So a read that
+     * gives fewer bytes than asked has reached the blob's end or met a
+     * failure, and only a read that starts at or past the end gives
+     * none.
+     *
+     * It fails with `Missing` while the device does not hold a chunk and
+     * nothing is connected that could send it, or the reader is `local`;
+     * with `Timeout` when for half a minute nothing the reader asked for
+     * arrives; with `Decrypt` or `Malformed` for a chunk that does not
+     * open. After each of these the reader lives on and the read may be
+     * made again. `ObjectMismatch` says the blob was refused: the reader
+     * has failed for good.
+     *
+     * A read ends early, and fails, when `cancellation` is cancelled,
+     * when the reader is ended, and when its caller stops waiting for
+     * it, as a cancelled coroutine does; nothing else stops it. The
+     * bytes it had read are not given. What it had fetched stays where
+     * the reader's options put it, and the reader reads on.
+     */
+    suspend fun `readAt`(`offset`: kotlin.ULong, `length`: kotlin.ULong, `cancellation`: Cancellation? = null): kotlin.ByteArray
+
+    /**
+     * Sets how many chunks the reader fetches ahead of where it reads,
+     * at most 64, from its next read on. A reader that stores nothing
+     * holds one sealed chunk more than this in memory. Set it to 0 for a
+     * reader that jumps about.
+     */
+    fun `setReadAhead`(`chunks`: kotlin.ULong)
+
+    /**
+     * The blob's size, once a chunk has opened under its header in this
+     * reader: none before the reader's first read or
+     * [`fetch_size`](Self::fetch_size). The header's size is bound by
+     * each chunk, so until one has opened it is only what the party that
+     * sent the header says. While a read holds the reader, what held
+     * before it.
+     */
+    fun `size`(): kotlin.ULong?
+
+    /**
+     * Which checks have passed on what the reader gave: `Whole` once the
+     * reader has read the blob in order from its first byte to its last,
+     * or once the device holds the blob whole in its store and every
+     * check ran on it there. While a read holds the reader, what held
+     * before it.
+     */
+    fun `verified`(): Verified
+
+    /**
+     * How many sealed bytes the reader holds in memory, of chunks it
+     * fetched to store nothing: at most `(read_ahead + 1) × 1,048,576`.
+     * While a read holds the reader, what held before it.
+     */
+    fun `windowBytes`(): kotlin.ULong
+
+    companion object
+}
+
+/**
+ * A reader over one blob, from `Blobs::open_reader`: it reads any range
+ * of the blob and fetches only the chunks that hold it, as its
+ * [`ReadOptions`] say. Nothing is fetched until it is read or asked its
+ * size. One call reads at a time: a read made while another waits takes
+ * its turn after it.
+ *
+ * Before the reader gives any byte, the blob's header has passed its
+ * checks and the byte's chunk has opened under the blob's key, at its
+ * own place in its own blob. [`BlobReader::verified`] says whether the
+ * checks that need the whole blob have run.
+ *
+ * A read stops in three ways only: [`BlobReader::end`], its
+ * [`Cancellation`], and its caller no longer waiting, as a cancelled
+ * Kotlin coroutine. Freeing the reader's handle stops none: a call in
+ * flight holds the reader until it ends, so the reader is freed after
+ * its last call. A Swift task that is cancelled stops no read either;
+ * without a `Cancellation` its read goes on to the end and holds its
+ * turn until then.
+ *
+ * End a reader that is done with: [`BlobReader::end`] stops its fetches
+ * and waits until the device has looked at its cache. A reader that is
+ * only freed ends the same way once no call holds it, and the device
+ * looks at its cache afterwards, with nothing waiting for it.
+ */
+open class BlobReader: Disposable, AutoCloseable, BlobReaderInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_frasil_uniffi_fn_free_blobreader(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_frasil_uniffi_fn_clone_blobreader(handle, status)
+        }
+    }
+
+
+    /**
+     * Ends the reader: its fetches stop, the reads waiting on it fail,
+     * what it held in memory is freed, and the device looks at its
+     * cache, so that a blob it held beside the cache for this reader
+     * alone goes. Every later call on the reader fails. (Named so that
+     * it does not meet the generated objects' own `close`, which frees
+     * the handle and ends nothing that is in flight.)
+     */
+    @Throws(FrasilException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `end`() {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_frasil_uniffi_fn_method_blobreader_end(
+                uniffiHandle,
+
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+
+        // Error FFI converter
+        FrasilException.ErrorHandler,
+    )
+    }
+
+
+    /**
+     * The blob's size, once a chunk has opened under its header: the
+     * chunk the reader stands in, or the blob's last when it stands past
+     * the end, fetched with the header when the device does not hold
+     * them. Fails as [`read_at`](Self::read_at) does.
+     */
+    @Throws(FrasilException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `fetchSize`(`cancellation`: Cancellation?) : kotlin.ULong {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_frasil_uniffi_fn_method_blobreader_fetch_size(
+                uniffiHandle,
+                FfiConverterOptionalTypeCancellation.lower(`cancellation`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_u64(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_complete_u64(future, continuation) },
+        { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_u64(future) },
+        // lift function
+        { FfiConverterULong.lift(it) },
+        // Error FFI converter
+        FrasilException.ErrorHandler,
+    )
+    }
+
+
+    /**
+     * How many chunks the reader fetches ahead of where it reads: 8
+     * unless set.
+     */override fun `readAhead`(): kotlin.ULong {
+            return FfiConverterULong.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_frasil_uniffi_fn_method_blobreader_read_ahead(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+
+    /**
+     * `length` bytes of the blob from byte `offset`, fewer at its end and
+     * none at or past it. Each chunk the range lies in is fetched first
+     * when the device does not hold it, ahead of everything else asked of
+     * the space's connections, with the chunks after it behind.
+     *
+     * A read holds its whole range in memory, so `length` is at most
+     * 67,108,864 (64 MiB): a longer read is refused before anything is
+     * fetched. Read a large range in pieces; a player's requests are far
+     * smaller.
+     *
+     * When a chunk after the range's first fails, the read gives the
+     * bytes before it, fewer than asked, and loses none: read again from
+     * where it ended, and that read reports the failure. So a read that
+     * gives fewer bytes than asked has reached the blob's end or met a
+     * failure, and only a read that starts at or past the end gives
+     * none.
+     *
+     * It fails with `Missing` while the device does not hold a chunk and
+     * nothing is connected that could send it, or the reader is `local`;
+     * with `Timeout` when for half a minute nothing the reader asked for
+     * arrives; with `Decrypt` or `Malformed` for a chunk that does not
+     * open. After each of these the reader lives on and the read may be
+     * made again. `ObjectMismatch` says the blob was refused: the reader
+     * has failed for good.
+     *
+     * A read ends early, and fails, when `cancellation` is cancelled,
+     * when the reader is ended, and when its caller stops waiting for
+     * it, as a cancelled coroutine does; nothing else stops it. The
+     * bytes it had read are not given. What it had fetched stays where
+     * the reader's options put it, and the reader reads on.
+     */
+    @Throws(FrasilException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `readAt`(`offset`: kotlin.ULong, `length`: kotlin.ULong, `cancellation`: Cancellation?) : kotlin.ByteArray {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_frasil_uniffi_fn_method_blobreader_read_at(
+                uniffiHandle,
+                FfiConverterULong.lower(`offset`),FfiConverterULong.lower(`length`),FfiConverterOptionalTypeCancellation.lower(`cancellation`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterByteArray.lift(it) },
+        // Error FFI converter
+        FrasilException.ErrorHandler,
+    )
+    }
+
+
+    /**
+     * Sets how many chunks the reader fetches ahead of where it reads,
+     * at most 64, from its next read on. A reader that stores nothing
+     * holds one sealed chunk more than this in memory. Set it to 0 for a
+     * reader that jumps about.
+     */override fun `setReadAhead`(`chunks`: kotlin.ULong)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_frasil_uniffi_fn_method_blobreader_set_read_ahead(
+        it,
+        FfiConverterULong.lower(`chunks`),_status)
+}
+    }
+
+
+
+
+    /**
+     * The blob's size, once a chunk has opened under its header in this
+     * reader: none before the reader's first read or
+     * [`fetch_size`](Self::fetch_size). The header's size is bound by
+     * each chunk, so until one has opened it is only what the party that
+     * sent the header says. While a read holds the reader, what held
+     * before it.
+     */override fun `size`(): kotlin.ULong? {
+            return FfiConverterOptionalULong.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_frasil_uniffi_fn_method_blobreader_size(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+
+    /**
+     * Which checks have passed on what the reader gave: `Whole` once the
+     * reader has read the blob in order from its first byte to its last,
+     * or once the device holds the blob whole in its store and every
+     * check ran on it there. While a read holds the reader, what held
+     * before it.
+     */override fun `verified`(): Verified {
+            return FfiConverterTypeVerified.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_frasil_uniffi_fn_method_blobreader_verified(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+
+    /**
+     * How many sealed bytes the reader holds in memory, of chunks it
+     * fetched to store nothing: at most `(read_ahead + 1) × 1,048,576`.
+     * While a read holds the reader, what held before it.
+     */override fun `windowBytes`(): kotlin.ULong {
+            return FfiConverterULong.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_frasil_uniffi_fn_method_blobreader_window_bytes(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+
+
+
+
+
+
+
+    /**
+     * @suppress
+     */
+    companion object
+
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeBlobReader: FfiConverter<BlobReader, Long> {
+    override fun lower(value: BlobReader): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): BlobReader {
+        return BlobReader(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): BlobReader {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: BlobReader) = 8UL
+
+    override fun write(value: BlobReader, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+/**
  * Hears where a blob's bytes stand.
  */
 public interface BlobStatusListener {
@@ -3435,23 +4125,28 @@ public interface BlobsInterface {
 
     /**
      * The SHA-256 of a blob's plaintext, computed on this device. A blob
-     * this device does not hold whole is fetched first, into the device's
-     * cache; none when it cannot be read whole.
+     * this device does not hold whole is fetched first, as `read` says,
+     * into the device's cache when it is left out; none when it cannot
+     * be read whole.
      */
-    suspend fun `contentHash`(`id`: kotlin.String): kotlin.ByteArray?
+    suspend fun `contentHash`(`id`: kotlin.String, `read`: ReadOptions? = null): kotlin.ByteArray?
 
     /**
      * A blob's bytes. A blob this device does not hold whole is fetched
-     * first from a connected peer or member, into the device's cache; none
-     * when it is not here and nothing is connected that could send it.
+     * first from a connected peer or member, as `read` says: into the
+     * device's cache when it is left out. None when the blob is not here
+     * and is not fetched: the read is `local`, or nothing is connected
+     * that could send it.
      */
-    suspend fun `get`(`id`: kotlin.String): kotlin.ByteArray?
+    suspend fun `get`(`id`: kotlin.String, `read`: ReadOptions? = null): kotlin.ByteArray?
 
     /**
      * `length` bytes of a blob from byte `offset`, fewer at its end. Of a
      * blob this device does not hold whole, only the chunks that hold
-     * the range are fetched, into the device's cache; none when it is
-     * not here and nothing is connected that could send it. Each chunk
+     * the range are fetched, as `read` says, into the device's cache
+     * when it is left out; none when it is not here and is not fetched:
+     * the read is `local`, or nothing is connected that could send it.
+     * Each chunk
      * opens under the blob's key before its bytes are given, and the
      * checks that need the whole blob do not run on a range: a member
      * that holds the blob's key can serve a range read other validly
@@ -3460,16 +4155,18 @@ public interface BlobsInterface {
      * opens only the chunks the range needs once every check has run on
      * the whole blob.
      */
-    suspend fun `getRange`(`id`: kotlin.String, `offset`: kotlin.ULong, `length`: kotlin.ULong): kotlin.ByteArray?
+    suspend fun `getRange`(`id`: kotlin.String, `offset`: kotlin.ULong, `length`: kotlin.ULong, `read`: ReadOptions? = null): kotlin.ByteArray?
 
     /**
      * Writes a blob's bytes to a new file at `path`, replacing any file
-     * there, fetching them first from connected peers or members, into
-     * the device's cache, while this device does not hold them whole. It
-     * holds a few chunks at a time, never the blob. `listener` hears the fetch, then the writing.
-     * A read that fails deletes the file.
+     * there, fetching them first from connected peers or members, as
+     * `read` says, into the device's cache when it is left out, while
+     * this device does not hold them whole. It holds a few chunks at a
+     * time, never the blob. `listener` hears the fetch, then the writing.
+     * A read that fails deletes the file, and so does a `local` read of a
+     * blob that is not whole here.
      */
-    suspend fun `getToFile`(`id`: kotlin.String, `path`: kotlin.String, `listener`: BlobProgressListener?)
+    suspend fun `getToFile`(`id`: kotlin.String, `path`: kotlin.String, `listener`: BlobProgressListener?, `read`: ReadOptions? = null)
 
     /**
      * The stream's ID.
@@ -3500,6 +4197,60 @@ public interface BlobsInterface {
      * Where a blob's bytes stand on this device.
      */
     suspend fun `status`(`id`: kotlin.String): BlobStatus
+
+    /**
+     * Drops what this device stores of a blob, kept or cached: the blob
+     * is absent here, and a read fetches it again from a peer or a member
+     * that holds it. Nothing changes for anyone else, and the stream
+     * still lists the blob. It fails while the blob must stay: a read, a
+     * reader or a fetch is using it, this device put it in a space with
+     * an always-on peer and no peer is known to hold its bytes yet, or
+     * the device keeps every blob.
+     */
+    suspend fun `dropLocal`(`id`: kotlin.String)
+
+    /**
+     * Whether the change that put a blob is durable: `false` while it
+     * waits for an acknowledgement. It says nothing of the blob's bytes:
+     * `local` tells whether this device still keeps them for want of a
+     * peer that holds them.
+     */
+    suspend fun `isDurable`(`id`: kotlin.String): kotlin.Boolean
+
+    /**
+     * Fetches a blob into this device's store and keeps it there until
+     * `drop_local`, without reading it: a download in the background,
+     * which `listener` follows. A blob the device holds already is kept
+     * from now on, and one that cannot be fetched now fails the call and
+     * stays marked: the device fetches it by itself once a peer or a
+     * member that holds it is connected.
+     */
+    suspend fun `keep`(`id`: kotlin.String, `listener`: BlobProgressListener?)
+
+    /**
+     * Where a blob stands on this device: kept, cached or absent, and how
+     * many bytes the device stores of it.
+     */
+    suspend fun `local`(`id`: kotlin.String): BlobLocal
+
+    /**
+     * Opens a reader over a blob, which reads any range of it and fetches
+     * only the chunks it needs, as `read` says: into the cache when left
+     * out, kept with `keep`, into the reader's own memory with
+     * `uncached`, and nothing with `local`, which reads only what the
+     * device holds. A blob the device holds, whole or in part, is read
+     * from the device whatever `read` says. A blob larger than the
+     * cache's whole budget, and any blob under a budget of zero, is read
+     * through the reader's memory.
+     */
+    suspend fun `openReader`(`id`: kotlin.String, `read`: ReadOptions? = null): BlobReader
+
+    /**
+     * The IDs of the stream's blobs whose put is not durable yet: those
+     * this device put whose change still waits for an acknowledgement,
+     * ascending.
+     */
+    suspend fun `pending`(): List<kotlin.String>
 
     companion object
 }
@@ -3606,17 +4357,18 @@ open class Blobs: Disposable, AutoCloseable, BlobsInterface
 
     /**
      * The SHA-256 of a blob's plaintext, computed on this device. A blob
-     * this device does not hold whole is fetched first, into the device's
-     * cache; none when it cannot be read whole.
+     * this device does not hold whole is fetched first, as `read` says,
+     * into the device's cache when it is left out; none when it cannot
+     * be read whole.
      */
     @Throws(FrasilException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
-    override suspend fun `contentHash`(`id`: kotlin.String) : kotlin.ByteArray? {
+    override suspend fun `contentHash`(`id`: kotlin.String, `read`: ReadOptions?) : kotlin.ByteArray? {
         return uniffiRustCallAsync(
         callWithHandle { uniffiHandle ->
             UniffiLib.uniffi_frasil_uniffi_fn_method_blobs_content_hash(
                 uniffiHandle,
-                FfiConverterString.lower(`id`),
+                FfiConverterString.lower(`id`),FfiConverterOptionalTypeReadOptions.lower(`read`),
             )
         },
         { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_rust_buffer(future, callback, continuation) },
@@ -3632,17 +4384,19 @@ open class Blobs: Disposable, AutoCloseable, BlobsInterface
 
     /**
      * A blob's bytes. A blob this device does not hold whole is fetched
-     * first from a connected peer or member, into the device's cache; none
-     * when it is not here and nothing is connected that could send it.
+     * first from a connected peer or member, as `read` says: into the
+     * device's cache when it is left out. None when the blob is not here
+     * and is not fetched: the read is `local`, or nothing is connected
+     * that could send it.
      */
     @Throws(FrasilException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
-    override suspend fun `get`(`id`: kotlin.String) : kotlin.ByteArray? {
+    override suspend fun `get`(`id`: kotlin.String, `read`: ReadOptions?) : kotlin.ByteArray? {
         return uniffiRustCallAsync(
         callWithHandle { uniffiHandle ->
             UniffiLib.uniffi_frasil_uniffi_fn_method_blobs_get(
                 uniffiHandle,
-                FfiConverterString.lower(`id`),
+                FfiConverterString.lower(`id`),FfiConverterOptionalTypeReadOptions.lower(`read`),
             )
         },
         { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_rust_buffer(future, callback, continuation) },
@@ -3659,8 +4413,10 @@ open class Blobs: Disposable, AutoCloseable, BlobsInterface
     /**
      * `length` bytes of a blob from byte `offset`, fewer at its end. Of a
      * blob this device does not hold whole, only the chunks that hold
-     * the range are fetched, into the device's cache; none when it is
-     * not here and nothing is connected that could send it. Each chunk
+     * the range are fetched, as `read` says, into the device's cache
+     * when it is left out; none when it is not here and is not fetched:
+     * the read is `local`, or nothing is connected that could send it.
+     * Each chunk
      * opens under the blob's key before its bytes are given, and the
      * checks that need the whole blob do not run on a range: a member
      * that holds the blob's key can serve a range read other validly
@@ -3671,12 +4427,12 @@ open class Blobs: Disposable, AutoCloseable, BlobsInterface
      */
     @Throws(FrasilException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
-    override suspend fun `getRange`(`id`: kotlin.String, `offset`: kotlin.ULong, `length`: kotlin.ULong) : kotlin.ByteArray? {
+    override suspend fun `getRange`(`id`: kotlin.String, `offset`: kotlin.ULong, `length`: kotlin.ULong, `read`: ReadOptions?) : kotlin.ByteArray? {
         return uniffiRustCallAsync(
         callWithHandle { uniffiHandle ->
             UniffiLib.uniffi_frasil_uniffi_fn_method_blobs_get_range(
                 uniffiHandle,
-                FfiConverterString.lower(`id`),FfiConverterULong.lower(`offset`),FfiConverterULong.lower(`length`),
+                FfiConverterString.lower(`id`),FfiConverterULong.lower(`offset`),FfiConverterULong.lower(`length`),FfiConverterOptionalTypeReadOptions.lower(`read`),
             )
         },
         { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_rust_buffer(future, callback, continuation) },
@@ -3692,19 +4448,21 @@ open class Blobs: Disposable, AutoCloseable, BlobsInterface
 
     /**
      * Writes a blob's bytes to a new file at `path`, replacing any file
-     * there, fetching them first from connected peers or members, into
-     * the device's cache, while this device does not hold them whole. It
-     * holds a few chunks at a time, never the blob. `listener` hears the fetch, then the writing.
-     * A read that fails deletes the file.
+     * there, fetching them first from connected peers or members, as
+     * `read` says, into the device's cache when it is left out, while
+     * this device does not hold them whole. It holds a few chunks at a
+     * time, never the blob. `listener` hears the fetch, then the writing.
+     * A read that fails deletes the file, and so does a `local` read of a
+     * blob that is not whole here.
      */
     @Throws(FrasilException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
-    override suspend fun `getToFile`(`id`: kotlin.String, `path`: kotlin.String, `listener`: BlobProgressListener?) {
+    override suspend fun `getToFile`(`id`: kotlin.String, `path`: kotlin.String, `listener`: BlobProgressListener?, `read`: ReadOptions?) {
         return uniffiRustCallAsync(
         callWithHandle { uniffiHandle ->
             UniffiLib.uniffi_frasil_uniffi_fn_method_blobs_get_to_file(
                 uniffiHandle,
-                FfiConverterString.lower(`id`),FfiConverterString.lower(`path`),FfiConverterOptionalTypeBlobProgressListener.lower(`listener`),
+                FfiConverterString.lower(`id`),FfiConverterString.lower(`path`),FfiConverterOptionalTypeBlobProgressListener.lower(`listener`),FfiConverterOptionalTypeReadOptions.lower(`read`),
             )
         },
         { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_void(future, callback, continuation) },
@@ -3823,6 +4581,176 @@ open class Blobs: Disposable, AutoCloseable, BlobsInterface
         { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_rust_buffer(future) },
         // lift function
         { FfiConverterTypeBlobStatus.lift(it) },
+        // Error FFI converter
+        FrasilException.ErrorHandler,
+    )
+    }
+
+
+    /**
+     * Drops what this device stores of a blob, kept or cached: the blob
+     * is absent here, and a read fetches it again from a peer or a member
+     * that holds it. Nothing changes for anyone else, and the stream
+     * still lists the blob. It fails while the blob must stay: a read, a
+     * reader or a fetch is using it, this device put it in a space with
+     * an always-on peer and no peer is known to hold its bytes yet, or
+     * the device keeps every blob.
+     */
+    @Throws(FrasilException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `dropLocal`(`id`: kotlin.String) {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_frasil_uniffi_fn_method_blobs_drop_local(
+                uniffiHandle,
+                FfiConverterString.lower(`id`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+
+        // Error FFI converter
+        FrasilException.ErrorHandler,
+    )
+    }
+
+
+    /**
+     * Whether the change that put a blob is durable: `false` while it
+     * waits for an acknowledgement. It says nothing of the blob's bytes:
+     * `local` tells whether this device still keeps them for want of a
+     * peer that holds them.
+     */
+    @Throws(FrasilException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `isDurable`(`id`: kotlin.String) : kotlin.Boolean {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_frasil_uniffi_fn_method_blobs_is_durable(
+                uniffiHandle,
+                FfiConverterString.lower(`id`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_i8(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_complete_i8(future, continuation) },
+        { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_i8(future) },
+        // lift function
+        { FfiConverterBoolean.lift(it) },
+        // Error FFI converter
+        FrasilException.ErrorHandler,
+    )
+    }
+
+
+    /**
+     * Fetches a blob into this device's store and keeps it there until
+     * `drop_local`, without reading it: a download in the background,
+     * which `listener` follows. A blob the device holds already is kept
+     * from now on, and one that cannot be fetched now fails the call and
+     * stays marked: the device fetches it by itself once a peer or a
+     * member that holds it is connected.
+     */
+    @Throws(FrasilException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `keep`(`id`: kotlin.String, `listener`: BlobProgressListener?) {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_frasil_uniffi_fn_method_blobs_keep(
+                uniffiHandle,
+                FfiConverterString.lower(`id`),FfiConverterOptionalTypeBlobProgressListener.lower(`listener`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+
+        // Error FFI converter
+        FrasilException.ErrorHandler,
+    )
+    }
+
+
+    /**
+     * Where a blob stands on this device: kept, cached or absent, and how
+     * many bytes the device stores of it.
+     */
+    @Throws(FrasilException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `local`(`id`: kotlin.String) : BlobLocal {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_frasil_uniffi_fn_method_blobs_local(
+                uniffiHandle,
+                FfiConverterString.lower(`id`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeBlobLocal.lift(it) },
+        // Error FFI converter
+        FrasilException.ErrorHandler,
+    )
+    }
+
+
+    /**
+     * Opens a reader over a blob, which reads any range of it and fetches
+     * only the chunks it needs, as `read` says: into the cache when left
+     * out, kept with `keep`, into the reader's own memory with
+     * `uncached`, and nothing with `local`, which reads only what the
+     * device holds. A blob the device holds, whole or in part, is read
+     * from the device whatever `read` says. A blob larger than the
+     * cache's whole budget, and any blob under a budget of zero, is read
+     * through the reader's memory.
+     */
+    @Throws(FrasilException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `openReader`(`id`: kotlin.String, `read`: ReadOptions?) : BlobReader {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_frasil_uniffi_fn_method_blobs_open_reader(
+                uniffiHandle,
+                FfiConverterString.lower(`id`),FfiConverterOptionalTypeReadOptions.lower(`read`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_u64(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_complete_u64(future, continuation) },
+        { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_u64(future) },
+        // lift function
+        { FfiConverterTypeBlobReader.lift(it) },
+        // Error FFI converter
+        FrasilException.ErrorHandler,
+    )
+    }
+
+
+    /**
+     * The IDs of the stream's blobs whose put is not durable yet: those
+     * this device put whose change still waits for an acknowledgement,
+     * ascending.
+     */
+    @Throws(FrasilException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `pending`() : List<kotlin.String> {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_frasil_uniffi_fn_method_blobs_pending(
+                uniffiHandle,
+
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceString.lift(it) },
         // Error FFI converter
         FrasilException.ErrorHandler,
     )
@@ -5065,6 +5993,12 @@ public interface DeviceInterface {
      */
     suspend fun `join`(`invitation`: kotlin.String, `name`: kotlin.String, `listener`: AdmissionListener, `cancellation`: Cancellation? = null): Space
 
+    /**
+     * The budget of the blob cache, and what the device's cached and
+     * kept blobs take, in stored bytes, across all its spaces.
+     */
+    suspend fun `blobCacheUsage`(): BlobCacheUsage
+
     companion object
 }
 
@@ -5680,6 +6614,30 @@ open class Device: Disposable, AutoCloseable, DeviceInterface
         { FfiConverterTypeSpace.lift(it) },
         // Error FFI converter
         FrasilException.ErrorHandler,
+    )
+    }
+
+
+    /**
+     * The budget of the blob cache, and what the device's cached and
+     * kept blobs take, in stored bytes, across all its spaces.
+     */
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `blobCacheUsage`() : BlobCacheUsage {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_frasil_uniffi_fn_method_device_blob_cache_usage(
+                uniffiHandle,
+
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeBlobCacheUsage.lift(it) },
+        // Error FFI converter
+        UniffiNullRustCallStatusErrorHandler,
     )
     }
 
@@ -8414,6 +9372,120 @@ public object FfiConverterTypeBackdatedCheckpoint: FfiConverterRustBuffer<Backda
 
 
 /**
+ * The budget of a device's blob cache and what its blobs take, in stored
+ * bytes: a blob's sealed chunks and its header.
+ */
+data class BlobCacheUsage (
+    /**
+     * The budget of the cache, as the device was opened with.
+     */
+    var `budget`: kotlin.ULong
+    ,
+    /**
+     * The bytes of the cached blobs, whole or in part: within the budget,
+     * but for what running reads hold beside the cache.
+     */
+    var `cached`: kotlin.ULong
+    ,
+    /**
+     * The bytes of the blobs the device keeps, outside the budget.
+     */
+    var `kept`: kotlin.ULong
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeBlobCacheUsage: FfiConverterRustBuffer<BlobCacheUsage> {
+    override fun read(buf: ByteBuffer): BlobCacheUsage {
+        return BlobCacheUsage(
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: BlobCacheUsage) = (
+            FfiConverterULong.allocationSize(value.`budget`) +
+            FfiConverterULong.allocationSize(value.`cached`) +
+            FfiConverterULong.allocationSize(value.`kept`)
+    )
+
+    override fun write(value: BlobCacheUsage, buf: ByteBuffer) {
+            FfiConverterULong.write(value.`budget`, buf)
+            FfiConverterULong.write(value.`cached`, buf)
+            FfiConverterULong.write(value.`kept`, buf)
+    }
+}
+
+
+
+/**
+ * Where a blob stands on this device.
+ */
+data class BlobLocal (
+    /**
+     * Kept, cached or absent.
+     */
+    var `state`: BlobState
+    ,
+    /**
+     * The bytes the device stores of it: its sealed chunks and header,
+     * which may be part of the blob while it is being fetched or after a
+     * reader read part of it.
+     */
+    var `bytes`: kotlin.ULong
+    ,
+    /**
+     * The blob's size.
+     */
+    var `size`: kotlin.ULong
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeBlobLocal: FfiConverterRustBuffer<BlobLocal> {
+    override fun read(buf: ByteBuffer): BlobLocal {
+        return BlobLocal(
+            FfiConverterTypeBlobState.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: BlobLocal) = (
+            FfiConverterTypeBlobState.allocationSize(value.`state`) +
+            FfiConverterULong.allocationSize(value.`bytes`) +
+            FfiConverterULong.allocationSize(value.`size`)
+    )
+
+    override fun write(value: BlobLocal, buf: ByteBuffer) {
+            FfiConverterTypeBlobState.write(value.`state`, buf)
+            FfiConverterULong.write(value.`bytes`, buf)
+            FfiConverterULong.write(value.`size`, buf)
+    }
+}
+
+
+
+/**
  * What a device does about checkpoints by itself (roster.md, 3.15.7
  * Clients). Each field left out takes the default's value: proposing and
  * forgetting, at `frasil::PROPOSE_AT_ROSTER_EVENTS` roster events or
@@ -8718,6 +9790,27 @@ public object FfiConverterTypeDepositTokens: FfiConverterRustBuffer<DepositToken
  */
 data class DeviceOptions (
     /**
+     * The budget of the blob cache, in bytes as the device stores them: a
+     * blob's sealed chunks and its header, a little more than its size,
+     * across all the device's spaces. 256 MiB when left out. A device
+     * fetches a blob when it is read and leaves it in the cache; when the
+     * cached blobs would pass the budget it drops whole blobs, the one
+     * read longest ago first, and a read fetches a dropped blob again.
+     * With a budget of zero a read stores nothing once it ends. Blobs the
+     * device keeps, blobs it put that no peer holds yet, and what Frasil
+     * stores for itself are outside the budget.
+     */
+    var `blobCache`: kotlin.ULong? = null
+    ,
+    /**
+     * Whether the device fetches every blob its spaces name and keeps
+     * each: a full copy, for a device that must read every blob with no
+     * connection. Nothing is evicted then, the budget is not used, and
+     * `drop_local` is refused.
+     */
+    var `keepAllBlobs`: kotlin.Boolean = false
+    ,
+    /**
      * Whether the device binds its own endpoints on loopback alone, with
      * no relay: nothing leaves the machine. For tests and examples.
      */
@@ -8738,15 +9831,21 @@ data class DeviceOptions (
 public object FfiConverterTypeDeviceOptions: FfiConverterRustBuffer<DeviceOptions> {
     override fun read(buf: ByteBuffer): DeviceOptions {
         return DeviceOptions(
+            FfiConverterOptionalULong.read(buf),
+            FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
         )
     }
 
     override fun allocationSize(value: DeviceOptions) = (
+            FfiConverterOptionalULong.allocationSize(value.`blobCache`) +
+            FfiConverterBoolean.allocationSize(value.`keepAllBlobs`) +
             FfiConverterBoolean.allocationSize(value.`loopback`)
     )
 
     override fun write(value: DeviceOptions, buf: ByteBuffer) {
+            FfiConverterOptionalULong.write(value.`blobCache`, buf)
+            FfiConverterBoolean.write(value.`keepAllBlobs`, buf)
             FfiConverterBoolean.write(value.`loopback`, buf)
     }
 }
@@ -9080,6 +10179,75 @@ public object FfiConverterTypePendingListCheckpoint: FfiConverterRustBuffer<Pend
 
 
 /**
+ * What a read does about a blob this device does not hold whole. A blob
+ * the device holds is read from the device, whatever the read says. With
+ * every field left out, the read fetches the blob and leaves it in the
+ * cache, within the device's budget.
+ *
+ * The fields are applied in the order they stand here, as
+ * `Read::new().keep().uncached().local()` applies the ones that are set:
+ * `keep` and `uncached` exclude each other, and of the two together
+ * `uncached` holds.
+ */
+data class ReadOptions (
+    /**
+     * Keeps the blob: fetched or cached, it stays on the device until
+     * `drop_local`, outside the cache's budget. A read that cannot fetch
+     * the blob now still marks it kept, and the device fetches it by
+     * itself once it can.
+     */
+    var `keep`: kotlin.Boolean = false
+    ,
+    /**
+     * Stores nothing of a blob the read fetches: its chunks pass through
+     * memory, a few at a time. A blob the device held before, whole or in
+     * part, stays as it was.
+     */
+    var `uncached`: kotlin.Boolean = false
+    ,
+    /**
+     * Fetches nothing: the read gives a blob only when the device holds
+     * it whole, and never waits on the network.
+     */
+    var `local`: kotlin.Boolean = false
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeReadOptions: FfiConverterRustBuffer<ReadOptions> {
+    override fun read(buf: ByteBuffer): ReadOptions {
+        return ReadOptions(
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ReadOptions) = (
+            FfiConverterBoolean.allocationSize(value.`keep`) +
+            FfiConverterBoolean.allocationSize(value.`uncached`) +
+            FfiConverterBoolean.allocationSize(value.`local`)
+    )
+
+    override fun write(value: ReadOptions, buf: ByteBuffer) {
+            FfiConverterBoolean.write(value.`keep`, buf)
+            FfiConverterBoolean.write(value.`uncached`, buf)
+            FfiConverterBoolean.write(value.`local`, buf)
+    }
+}
+
+
+
+/**
  * Something a device holds for the first time.
  */
 sealed class Arrival {
@@ -9185,6 +10353,56 @@ public object FfiConverterTypeArrival : FfiConverterRustBuffer<Arrival>{
 
 
 /**
+ * How a blob stands on this device.
+ */
+
+enum class BlobState {
+
+    /**
+     * The device keeps it until the application drops it. A kept blob
+     * that is not whole here yet is fetched by the device itself. A blob
+     * this device put is kept until an always-on peer holds its bytes and
+     * has acknowledged the change that put it.
+     */
+    KEPT,
+    /**
+     * The device holds it within its cache's budget, and may drop it.
+     */
+    CACHED,
+    /**
+     * The device holds nothing of it. A read fetches it.
+     */
+    ABSENT;
+
+
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeBlobState: FfiConverterRustBuffer<BlobState> {
+    override fun read(buf: ByteBuffer) = try {
+        BlobState.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: BlobState) = 4UL
+
+    override fun write(value: BlobState, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
  * Where a blob's bytes stand on this device.
  */
 sealed class BlobStatus {
@@ -9215,8 +10433,16 @@ sealed class BlobStatus {
     }
 
     /**
-     * The device does not hold them, and nothing is sending them now. A
-     * read fetches them while a peer or member is connected.
+     * The device does not hold them, and a peer or a member of the space
+     * is connected: a read fetches them now. The device never fetched
+     * them, or dropped them since.
+     */
+    object Absent : BlobStatus()
+
+
+    /**
+     * The device does not hold them, and neither a peer nor a member of
+     * the space is connected, so a read cannot fetch them now.
      */
     object Missing : BlobStatus()
 
@@ -9254,9 +10480,10 @@ public object FfiConverterTypeBlobStatus : FfiConverterRustBuffer<BlobStatus>{
                 FfiConverterULong.read(buf),
                 FfiConverterULong.read(buf),
                 )
-            3 -> BlobStatus.Missing
-            4 -> BlobStatus.KeysPending
-            5 -> BlobStatus.Withdrawn
+            3 -> BlobStatus.Absent
+            4 -> BlobStatus.Missing
+            5 -> BlobStatus.KeysPending
+            6 -> BlobStatus.Withdrawn
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -9274,6 +10501,12 @@ public object FfiConverterTypeBlobStatus : FfiConverterRustBuffer<BlobStatus>{
                 4UL
                 + FfiConverterULong.allocationSize(value.`done`)
                 + FfiConverterULong.allocationSize(value.`total`)
+            )
+        }
+        is BlobStatus.Absent -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
             )
         }
         is BlobStatus.Missing -> {
@@ -9308,16 +10541,20 @@ public object FfiConverterTypeBlobStatus : FfiConverterRustBuffer<BlobStatus>{
                 FfiConverterULong.write(value.`total`, buf)
                 Unit
             }
-            is BlobStatus.Missing -> {
+            is BlobStatus.Absent -> {
                 buf.putInt(3)
                 Unit
             }
-            is BlobStatus.KeysPending -> {
+            is BlobStatus.Missing -> {
                 buf.putInt(4)
                 Unit
             }
-            is BlobStatus.Withdrawn -> {
+            is BlobStatus.KeysPending -> {
                 buf.putInt(5)
+                Unit
+            }
+            is BlobStatus.Withdrawn -> {
+                buf.putInt(6)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -10771,6 +12008,54 @@ public object FfiConverterTypeLossReport : FfiConverterRustBuffer<LossReport>{
 
 
 
+/**
+ * Which checks of the object format have passed on what a [`BlobReader`]
+ * gave (units.md, 3.3 Reading an object).
+ */
+
+enum class Verified {
+
+    /**
+     * Every byte given came from a chunk that opened under the blob's
+     * key at its own place. The checks that need the whole blob have not
+     * run: a member that holds the blob's key can have served chunks that
+     * are not the blob's, and the reader then fails with
+     * `ObjectMismatch`.
+     */
+    CHUNKS,
+    /**
+     * Every check has run: the bytes are the blob's.
+     */
+    WHOLE;
+
+
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeVerified: FfiConverterRustBuffer<Verified> {
+    override fun read(buf: ByteBuffer) = try {
+        Verified.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: Verified) = 4UL
+
+    override fun write(value: Verified, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
 
 /**
  * @suppress
@@ -10989,6 +12274,38 @@ public object FfiConverterOptionalTypeDeviceOptions: FfiConverterRustBuffer<Devi
         } else {
             buf.put(1)
             FfiConverterTypeDeviceOptions.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeReadOptions: FfiConverterRustBuffer<ReadOptions?> {
+    override fun read(buf: ByteBuffer): ReadOptions? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeReadOptions.read(buf)
+    }
+
+    override fun allocationSize(value: ReadOptions?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeReadOptions.allocationSize(value)
+        }
+    }
+
+    override fun write(value: ReadOptions?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeReadOptions.write(value, buf)
         }
     }
 }
