@@ -53,7 +53,8 @@ private final class Checkpoints: CheckpointListener, @unchecked Sendable {
 }
 
 @Test func aDeviceHoldsASpaceAndItsBlobs() async throws {
-    let device = try await Device.openInMemory(unlockKey: Data(repeating: 1, count: 32))
+    let device = try await Device.openInMemory(
+        unlockKey: Data(repeating: 1, count: 32), options: DeviceOptions(blobCache: 1 << 20))
     let arrived = Arrived()
     let arrivals = await device.arrivals(listener: arrived)
     let space = try await device.createSpace()
@@ -88,6 +89,37 @@ private final class Checkpoints: CheckpointListener, @unchecked Sendable {
     #expect(try Data(contentsOf: path) == bytes)
     try? FileManager.default.removeItem(at: path)
     _ = try await arrived.heard.until { $0 == .stream(space: space.id(), stream: blobs.id()) }
+
+    // A blob this device put, in a space with no peer: kept, outside the
+    // cache's budget, and its change waits for an acknowledgement.
+    let local = try await blobs.local(id: blob)
+    #expect(local.state == .kept && local.size == UInt64(bytes.count) && local.bytes > local.size)
+    let usage = await device.blobCacheUsage()
+    #expect(usage.budget == 1 << 20 && usage.cached == 0 && usage.kept >= local.bytes)
+    #expect(try await blobs.isDurable(id: blob) == false)
+    #expect(try await blobs.pending().sorted() == [blob, fromFile].sorted())
+    try await blobs.keep(id: blob, listener: nil)
+    #expect(try await blobs.get(id: blob, read: ReadOptions(local: true)) == bytes)
+
+    // A reader over it reads any range, and every check has run on a blob
+    // that is whole here.
+    let reader = try await blobs.openReader(id: blob)
+    #expect(try await reader.fetchSize() == UInt64(bytes.count))
+    #expect(try await reader.readAt(offset: 6, length: 4) == Data("from".utf8))
+    #expect(try await reader.readAt(offset: 11, length: 100) == Data("Swift".utf8))
+    #expect(try await reader.readAt(offset: 100, length: 1).isEmpty)
+    #expect(reader.size() == UInt64(bytes.count))
+    #expect(reader.readAhead() == 8)
+    reader.setReadAhead(chunks: 1000)
+    #expect(reader.readAhead() == 64)
+    #expect(reader.windowBytes() == 0)
+    try await reader.end()
+
+    // Dropped, with nothing connected that could send it again: missing.
+    try await blobs.dropLocal(id: blob)
+    #expect(try await blobs.local(id: blob) == BlobLocal(state: .absent, bytes: 0, size: local.size))
+    #expect(try await blobs.status(id: blob) == .missing)
+    #expect(try await blobs.get(id: blob) == nil)
 
     space.pauseSync()
     #expect(space.isSyncPaused())
