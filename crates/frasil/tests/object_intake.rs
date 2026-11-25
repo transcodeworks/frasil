@@ -520,6 +520,56 @@ async fn a_member_serves_a_range_from_any_chunk_with_the_header() {
     drop((fetch, rest));
 }
 
+/// A member that announced an object holds it whether or not this device
+/// does: Bob fetches the blob whole, drops it, and asks Alice for it
+/// again on the same session, where she announced it once.
+#[tokio::test]
+async fn a_blob_dropped_is_asked_of_the_member_that_announced_it_again() {
+    let blob = blob().await;
+    let (mut bobs, mut alices) = synced_on_demand(&blob).await;
+    for round in 0..3 {
+        let fetch = blob.bob.fetch_chunks(
+            blob.space,
+            blob.locator,
+            0..u64::MAX,
+            FetchPriority::Position,
+        );
+        let asked = blob.bob.sync_fetches(&mut bobs).await;
+        assert_eq!(
+            wants(&asked).first().map(|want| want.0),
+            Some(0),
+            "round {round}"
+        );
+        pump(&blob, &mut bobs, &mut alices, asked).await;
+        assert_eq!(
+            blob.bob.object(&blob.space, &blob.locator).await.unwrap(),
+            blob.plaintext
+        );
+        drop(fetch);
+        blob.bob
+            .drop_local_object(blob.space, &blob.locator)
+            .await
+            .unwrap();
+        assert!(!holds(&blob, 0).await && !holds(&blob, 1).await);
+        // Bob serves nothing of what he dropped.
+        let want = SyncMessage {
+            space: blob.space,
+            message: Message::ObjectWant {
+                locator: blob.locator,
+                first: 0,
+                count: 2,
+            },
+        };
+        let by_alice = Acknowledger::Member(blob.alice.device_id().0);
+        let answers = blob
+            .bob
+            .sync_receive(&mut bobs, by_alice, want)
+            .await
+            .unwrap();
+        assert!(answers.is_empty(), "round {round}: {answers:?}");
+    }
+}
+
 /// Nothing on the wire cancels an `ObjectWant`: the answer to a request
 /// cancelled meanwhile is dropped as it arrives, and nothing is kept.
 #[tokio::test]

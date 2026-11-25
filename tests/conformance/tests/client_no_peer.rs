@@ -274,3 +274,152 @@ async fn the_device_knows_its_persons_personal_space() {
     carol.close().await.unwrap();
     let _ = std::fs::remove_dir_all(&directory);
 }
+
+/// Two devices of one space with no peer, joined over a nearby connection,
+/// and the blob stream as each holds it. The second opens with `options`.
+async fn two_devices(options: Options) -> (Device, frasil::Blobs, Device, frasil::Blobs) {
+    let alice = device(1).await;
+    let space = alice.create_space().await.unwrap();
+    let blobs = space.create_blobs().unwrap();
+    // The stream exists for a newcomer once a unit of it does.
+    blobs.put(None, b"first").await.unwrap();
+    let invitation = space
+        .invite_with(
+            Level::Write,
+            HistoryMode::WithHistory,
+            "Alice's laptop",
+            |_, newcomer| async move { newcomer == "Bob's laptop" },
+        )
+        .await
+        .unwrap();
+    let bob = Device::open_with(Storage::Memory, &[2; 32], options.loopback())
+        .await
+        .expect("a device");
+    let bobs_space = within(
+        bob.join(invitation.text(), "Bob's laptop", |_, host| async move {
+            host == "Alice's laptop"
+        }),
+    )
+    .await
+    .unwrap();
+    within(invitation.admitted()).await.unwrap();
+    assert!(alice.peers().is_empty() && bob.peers().is_empty());
+    let bobs_blobs = blobs_of(&bobs_space, blobs.id()).await;
+    (alice, blobs, bob, bobs_blobs)
+}
+
+/// Puts a blob of `size` bytes on one device, and gives it once the other
+/// lists it.
+async fn put(
+    blobs: &frasil::Blobs,
+    others: &frasil::Blobs,
+    size: usize,
+) -> (frasil::BlobId, Vec<u8>) {
+    let file: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+    let id = blobs.put(None, &file).await.unwrap();
+    within(async {
+        while !others.list().await.unwrap().iter().any(|e| e.id == id) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    (id, file)
+}
+
+/// A blob as `read` reads it on a device that may have to fetch it.
+/// Compared by a flag, so that a failure does not print the bytes.
+async fn reads(blobs: &frasil::Blobs, id: frasil::BlobId, read: frasil::Read, file: &[u8]) {
+    let got = within(blobs.get(id, &read)).await;
+    let same = got.as_ref().map(|got| got.as_deref() == Some(file));
+    assert_eq!(same, Ok(true));
+}
+
+/// Drops a blob here, once nothing on the device uses it any more:
+/// `drop_local` answers `NotAllowed` while a read or a fetch does.
+async fn dropped(blobs: &frasil::Blobs, id: frasil::BlobId) {
+    within(async {
+        loop {
+            match blobs.drop_local(id).await {
+                Err(Error::NotAllowed(_)) => tokio::time::sleep(Duration::from_millis(50)).await,
+                other => break other.unwrap(),
+            }
+        }
+    })
+    .await;
+}
+
+async fn state(blobs: &frasil::Blobs, id: frasil::BlobId) -> frasil::BlobState {
+    blobs.local(id).await.unwrap().state
+}
+
+/// A member that announced a blob is asked for it again, on the same
+/// connection, each time the device that fetched it holds it no longer
+/// (units.md, "Sync", objects; at-rest.md, "Retention"): after
+/// `drop_local`, whether the blob was read into the cache or kept, and
+/// whatever the next read is to do with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blob_dropped_here_is_fetched_again_from_a_member() {
+    use frasil::{BlobState, Read};
+    let (alice, blobs, bob, bobs_blobs) = two_devices(Options::new()).await;
+    // Several chunks, one chunk to the byte, and less than one.
+    for size in [5_500_000, 1_048_536, 1000] {
+        let (id, file) = put(&blobs, &bobs_blobs, size).await;
+        // Read into the cache, dropped, and read again.
+        assert_eq!(fetched(&bobs_blobs, id).await.unwrap(), file, "{size}");
+        assert_eq!(state(&bobs_blobs, id).await, BlobState::Cached);
+        dropped(&bobs_blobs, id).await;
+        assert_eq!(state(&bobs_blobs, id).await, BlobState::Absent);
+        reads(&bobs_blobs, id, Read::new(), &file).await;
+        assert_eq!(state(&bobs_blobs, id).await, BlobState::Cached);
+
+        // Kept, dropped, and read to store nothing, twice.
+        dropped(&bobs_blobs, id).await;
+        within(bobs_blobs.keep(id, |_, _| {})).await.unwrap();
+        assert_eq!(state(&bobs_blobs, id).await, BlobState::Kept);
+        dropped(&bobs_blobs, id).await;
+        reads(&bobs_blobs, id, Read::new().uncached(), &file).await;
+        reads(&bobs_blobs, id, Read::new().uncached(), &file).await;
+        assert_eq!(state(&bobs_blobs, id).await, BlobState::Absent);
+
+        // A reader closed part way, and the blob read whole after it.
+        let mut reader = within(bobs_blobs.open_reader(id, &Read::new()))
+            .await
+            .unwrap();
+        let mut first = [0; 100];
+        let read = within(reader.read(&mut first)).await.unwrap();
+        assert_eq!(first[..read], file[..read]);
+        within(reader.close()).await.unwrap();
+        reads(&bobs_blobs, id, Read::new(), &file).await;
+
+        // Kept, dropped, and read into the cache.
+        within(bobs_blobs.keep(id, |_, _| {})).await.unwrap();
+        dropped(&bobs_blobs, id).await;
+        assert_eq!(state(&bobs_blobs, id).await, BlobState::Absent);
+        reads(&bobs_blobs, id, Read::new(), &file).await;
+        assert_eq!(state(&bobs_blobs, id).await, BlobState::Cached);
+    }
+    alice.close().await.unwrap();
+    bob.close().await.unwrap();
+}
+
+/// A blob the cache evicted for its budget is fetched from the member
+/// again when it is read (at-rest.md, "Retention").
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blob_evicted_here_is_fetched_again_from_a_member() {
+    use frasil::{BlobState, Read};
+    const SIZE: usize = 100_000;
+    // Room for one blob and not two.
+    let options = Options::new().blob_cache(SIZE as u64 * 3 / 2);
+    let (alice, blobs, bob, bobs_blobs) = two_devices(options).await;
+    let (one, first) = put(&blobs, &bobs_blobs, SIZE).await;
+    let (two, second) = put(&blobs, &bobs_blobs, SIZE + 1).await;
+    assert_eq!(fetched(&bobs_blobs, one).await.unwrap(), first);
+    for _ in 0..2 {
+        reads(&bobs_blobs, two, Read::new(), &second).await;
+        assert_eq!(state(&bobs_blobs, one).await, BlobState::Absent);
+        reads(&bobs_blobs, one, Read::new(), &first).await;
+        assert_eq!(state(&bobs_blobs, two).await, BlobState::Absent);
+    }
+    alice.close().await.unwrap();
+    bob.close().await.unwrap();
+}
