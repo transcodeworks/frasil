@@ -528,6 +528,23 @@ current view** of the space:
   4 and so on, the listener 1, 3, 5, all below 1,024 (`AttachLimit`).
 - `Identify` is not repeated. Each space's roster check uses the device of
   attach 0.
+- Once the other side's `Identify` has verified, a device SHOULD offer each
+  other space it holds that the other device reaches in its own current
+  view (section 3.5), and SHOULD do so again when it comes to hold another
+  space or its view of one changes, so that two devices attach every space
+  they share however they found each other. Of its own accord it offers no
+  space in which the other device is out or named nowhere, and none the
+  other side refused or detached on this connection: the other side offers
+  that space once its own view admits it.
+- A connection carries a space on one attach. An initiator does not offer a
+  space an attach of the connection carries. A responder leaves out of its
+  candidates (section 3.3) each space an attach of the connection carries,
+  and each space it is itself offering, for the first time, under a lower
+  attach number. Of two offers of one space that cross, the one with the
+  lower attach number is therefore answered, and the other refused with
+  `no_common_state`. An initiator refused for a space another attach now
+  carries does not offer it again, and detaches the refused attach with
+  `done`.
 - Each attach is detached on its own. When the last one is, the connection
   closes with `done`.
 - A member admitted from now on, and a guest, hold the states from their

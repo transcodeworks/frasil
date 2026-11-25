@@ -3398,6 +3398,11 @@ impl Engine {
         let Some(replica) = state.replicas.get(space) else {
             return Standing::NamedNowhere;
         };
+        Self::standing_in(&state, replica, device)
+    }
+
+    /// [`Engine::standing`], in a replica the caller holds.
+    fn standing_in(state: &State, replica: &Replica, device: &DeviceId) -> Standing {
         if replica.forked(device) {
             return Standing::Forked;
         }
@@ -3423,6 +3428,37 @@ impl Engine {
             Some(frasil_space::Standing::Out { .. }) => Standing::Ended(Ended::Removed),
             None => Standing::NamedNowhere,
         }
+    }
+
+    /// The spaces this device shares with another, in its own current
+    /// view: each space it holds that the other device reaches, and that
+    /// this device has not left or forked in. A member connection attaches
+    /// these once the other device has identified itself (transport.md,
+    /// "Further attaches"); a space the other device does not reach in
+    /// this view is not among them.
+    pub async fn spaces_shared_with(&self, device: &DeviceId) -> Vec<EventId> {
+        let me = self.device_id();
+        let state = self.lock().await;
+        state
+            .replicas
+            .iter()
+            .filter(|(_, replica)| {
+                matches!(
+                    Self::standing_in(&state, replica, device),
+                    Standing::Reaches(_)
+                ) && !matches!(
+                    Self::standing_in(&state, replica, &me),
+                    Standing::Ended(_) | Standing::Forked
+                )
+            })
+            .map(|(space, _)| *space)
+            .collect()
+    }
+
+    /// How many admitted attaches of a space this device holds with a
+    /// member, over all its member connections.
+    pub fn attaches_with(&self, space: &EventId, member: &DeviceId) -> usize {
+        self.links().attaches_with(space, member)
     }
 
     /// The states this device offers for a space, each with its content

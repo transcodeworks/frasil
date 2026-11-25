@@ -4,6 +4,8 @@
 //! - With local discovery on and no peer, two members that another member
 //!   admitted find each other (transport.md, "Member announcements") and
 //!   hear each other, also once that member is gone.
+//! - Two devices that share five spaces, announcing four at a time, sync
+//!   all five on one member connection (transport.md, "Further attaches").
 //! - A device that opens again dials the members it last reached
 //!   (transport.md, "Reconnecting"; at-rest.md, `endpoint`), with no peer.
 //! - A device without local discovery, as an iPad without the multicast
@@ -249,6 +251,58 @@ async fn a_device_dials_its_members_again_when_it_opens_again() {
         }
     })
     .await;
+    desk.close().await.unwrap();
+    crew.close().await.unwrap();
+}
+
+/// `from` writes `text` in a new document of its space, and `to` reads it.
+async fn reads(from: &Space, to: &Space, text: &str) {
+    let note = from.create_document().unwrap();
+    note.edit(|doc| doc.get_text("body").insert(0, text))
+        .await
+        .unwrap();
+    within(async {
+        loop {
+            if let Ok(theirs) = to.document(note.id()).await
+                && theirs.text("body").await.unwrap() == text
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_devices_sync_every_space_they_share_on_the_local_network() {
+    let desk_store = Directory::new("five-desk");
+    let crew_store = Directory::new("five-crew");
+    let desk = desk_store.open(1).await;
+    let crew = crew_store.open(2).await;
+    let mut ids = Vec::new();
+    for _ in 0..5 {
+        let space = desk.create_space().await.unwrap();
+        let crews = admit(&space, &crew, "Crew").await;
+        reads(&space, &crews, "Cue 1").await;
+        ids.push(space.id());
+    }
+    // Both restart, with no peer: they find each other by their
+    // announcements, four spaces at a time (transport.md, "Member
+    // announcements"), and their member connection attaches all five
+    // (transport.md, "Further attaches").
+    desk.close().await.unwrap();
+    crew.close().await.unwrap();
+    drop((desk, crew));
+    let desk = desk_store.open_discovering(1).await;
+    let crew = crew_store.open_discovering(2).await;
+    assert!(desk.peers().is_empty() && crew.peers().is_empty());
+    for id in ids {
+        let desks = desk.space(id).await.unwrap();
+        let crews = crew.space(id).await.unwrap();
+        reads(&desks, &crews, "Cue 2").await;
+        reads(&crews, &desks, "Cue 3").await;
+    }
     desk.close().await.unwrap();
     crew.close().await.unwrap();
 }

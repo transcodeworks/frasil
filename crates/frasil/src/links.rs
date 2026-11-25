@@ -179,6 +179,11 @@ impl Links {
             .collect()
     }
 
+    /// The admitted attaches of a space with a member.
+    pub(crate) fn attaches_with(&self, space: &EventId, member: &DeviceId) -> usize {
+        self.members.get(&(*space, *member)).copied().unwrap_or(0)
+    }
+
     /// Whether some member connection serves the space.
     #[cfg_attr(not(feature = "adapter-blobs"), allow(dead_code))]
     pub(crate) fn attached(&self, space: &EventId) -> bool {

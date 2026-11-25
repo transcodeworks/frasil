@@ -1,13 +1,16 @@
 //! Connections and sync over loopback QUIC: admission by code on a nearby
 //! connection, then a member connection that syncs Loro units both ways,
-//! live; local discovery; and a removal that ends a member's connection.
+//! live; local discovery; every space two devices share on one connection;
+//! and a removal that ends a member's connection.
 //! Every wait has a deadline, and nothing leaves the host.
 #![cfg(all(feature = "iroh", feature = "adapter-loro"))]
 
+use frasil::advanced::member::run_member;
 use frasil::advanced::node::Node;
 use frasil::advanced::{AdapterRegistry, Engine, Platform};
 use frasil_events::EventId;
 use frasil_iroh::lan::LanConfig;
+use frasil_iroh::{Alpn, Config, Endpoint};
 use frasil_space::{HistoryMode, Level, MemberRef, Via};
 use frasil_transport::ticket::TicketKind;
 use std::future::Future;
@@ -200,6 +203,170 @@ async fn members_find_each_other_on_the_local_network() {
     .unwrap();
     until(|| async { text_of(&alice, &space, &doc.stream()).await.as_deref() == Some("offline") })
         .await;
+}
+
+/// Two members of `count` spaces whose events were carried by hand, the
+/// spaces in ascending order of ID, as a device ranks them.
+async fn members_of(count: usize) -> (Engine, Engine, Vec<EventId>) {
+    let alice = device().await;
+    let bob = device().await;
+    let mut spaces = Vec::new();
+    for _ in 0..count {
+        spaces.push(share(&alice, &bob).await);
+    }
+    spaces.sort_unstable();
+    (alice, bob, spaces)
+}
+
+/// A space `host` creates and grants `member`, its events carried by hand.
+async fn share(host: &Engine, member: &Engine) -> EventId {
+    let space = host.create_space().await.unwrap();
+    host.grant_device(
+        space,
+        member.public_keys().clone(),
+        Level::Write,
+        HistoryMode::WithHistory,
+        Via::Code,
+    )
+    .await
+    .unwrap();
+    member.follow(space).await;
+    member
+        .ingest(space, host.events(&space).await)
+        .await
+        .unwrap();
+    space
+}
+
+/// `from` writes `text` in a new document of `space`, and `to` reads it.
+async fn carries(from: &Engine, to: &Engine, space: EventId, text: &str) {
+    let doc = from.new_document().unwrap();
+    from.edit_document(space, &doc, |d| {
+        d.get_text("body").insert(0, text).unwrap();
+    })
+    .await
+    .unwrap();
+    until(|| async { text_of(to, &space, &doc.stream()).await.as_deref() == Some(text) }).await;
+}
+
+/// A device announces four spaces at a time (transport.md, "Member
+/// announcements"), and a member connection attaches every space its two
+/// devices share (transport.md, "Further attaches"): the fifth syncs too,
+/// with no peer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn members_of_five_spaces_sync_them_all_on_the_local_network() {
+    let (alice, bob, spaces) = members_of(5).await;
+    let alice_node = Node::loopback(alice.clone()).await.unwrap();
+    let bob_node = Node::loopback(bob.clone()).await.unwrap();
+    alice_node.discover(LanConfig::loopback_v4()).unwrap();
+    bob_node.discover(LanConfig::loopback_v4()).unwrap();
+    for space in spaces {
+        carries(&bob, &alice, space, "from Bob").await;
+        carries(&alice, &bob, space, "from Alice").await;
+    }
+}
+
+/// Whether each device holds exactly one admitted attach of each space
+/// with the other.
+async fn attached_once(alice: &Engine, bob: &Engine, spaces: &[EventId]) -> bool {
+    spaces.iter().all(|space| {
+        alice.attaches_with(space, &bob.device_id()) == 1
+            && bob.attaches_with(space, &alice.device_id()) == 1
+    })
+}
+
+/// A member endpoint on loopback, under a key of its own.
+async fn member_endpoint(key: u8) -> Endpoint {
+    Endpoint::bind(Config::new([key; 32], &[Alpn::Member]).loopback())
+        .await
+        .unwrap()
+}
+
+/// The dialer offers a second space once attach 0 is proved, and so does
+/// the listener, each before it reads the other's offer. The offer with
+/// the lower attach number is answered and the other refused (transport.md,
+/// "Further attaches"): one attach carries the space, and the connection
+/// stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_space_both_sides_offer_at_once_is_attached_once() {
+    let (alice, bob, spaces) = members_of(2).await;
+    let host = member_endpoint(41).await;
+    let guest = member_endpoint(42).await;
+    let (key, addresses) = (host.key(), host.local_addresses());
+    let (dialed, accepted) = within(async {
+        tokio::join!(guest.connect(&key, &addresses, &[], Alpn::Member), async {
+            host.accept().await.unwrap()
+        },)
+    })
+    .await;
+    let dialing = tokio::spawn(run_member(alice.clone(), dialed.unwrap(), spaces.clone()));
+    let listening = tokio::spawn(run_member(bob.clone(), accepted.unwrap(), vec![spaces[1]]));
+    for space in &spaces {
+        carries(&bob, &alice, *space, "from Bob").await;
+        carries(&alice, &bob, *space, "from Alice").await;
+    }
+    until(|| attached_once(&alice, &bob, &spaces)).await;
+    // What follows still arrives, on the one attach of each space.
+    for space in &spaces {
+        carries(&bob, &alice, *space, "more from Bob").await;
+        carries(&alice, &bob, *space, "more from Alice").await;
+    }
+    until(|| attached_once(&alice, &bob, &spaces)).await;
+    assert!(!dialing.is_finished() && !listening.is_finished());
+}
+
+/// A device offers the spaces the other device reaches in its own view,
+/// and no other. Bob, who has not heard that Alice removed him from a
+/// space, offers it; Alice detaches him at once, and the spaces they share
+/// keep their connection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_space_the_other_device_does_not_reach_is_not_attached() {
+    let (alice, bob, spaces) = members_of(3).await;
+    let (shared, ended) = ([spaces[0], spaces[2]], spaces[1]);
+    alice
+        .remove(ended, MemberRef::device(bob.device_id()))
+        .await
+        .unwrap();
+    let alone = alice.create_space().await.unwrap();
+    assert_eq!(alice.spaces_shared_with(&bob.device_id()).await, shared);
+    assert!(!shared.contains(&alone));
+    // Bob's view is behind: it still names Alice in all three.
+    assert_eq!(bob.spaces_shared_with(&alice.device_id()).await, spaces);
+
+    let alice_node = Node::loopback(alice.clone()).await.unwrap();
+    let bob_node = Node::loopback(bob.clone()).await.unwrap();
+    bob_node
+        .dial(&alice_node.ticket(TicketKind::Member), vec![shared[0]])
+        .await
+        .unwrap();
+    // Bob offers the space he was removed from before the last one, in
+    // the order of their IDs: once the last syncs, Alice has detached him.
+    for space in shared {
+        carries(&bob, &alice, space, "from Bob").await;
+        carries(&alice, &bob, space, "from Alice").await;
+    }
+    let kept = alice.new_document().unwrap();
+    alice
+        .edit_document(ended, &kept, |d| {
+            d.get_text("body").insert(0, "after Bob").unwrap();
+        })
+        .await
+        .unwrap();
+    let late = bob.new_document().unwrap();
+    bob.edit_document(ended, &late, |d| {
+        d.get_text("body").insert(0, "from outside").unwrap();
+    })
+    .await
+    .unwrap();
+    for space in shared {
+        carries(&bob, &alice, space, "more from Bob").await;
+        carries(&alice, &bob, space, "more from Alice").await;
+    }
+    assert_eq!(text_of(&bob, &ended, &kept.stream()).await, None);
+    assert_eq!(text_of(&alice, &ended, &late.stream()).await, None);
+    assert_eq!(alice.attaches_with(&ended, &bob.device_id()), 0);
+    assert!(attached_once(&alice, &bob, &shared).await);
+    assert!(alice_node.connected_to(&bob_node.key()));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
