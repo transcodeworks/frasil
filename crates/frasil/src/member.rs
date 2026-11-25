@@ -149,12 +149,21 @@ enum Local {
     Admitted,
 }
 
+/// The most messages of a sync stream an attach keeps until this side's
+/// roster check has run.
+const EARLY_MESSAGES: usize = 16;
+
 /// One attach of the connection.
 struct Attach {
     space: EventId,
     sync: SyncSession,
     sender: Option<FrameSender>,
     queued: Vec<Vec<u8>>,
+    /// What the sync stream carried before this side's roster check ran,
+    /// taken once it has. The control stream and the sync stream are read
+    /// apart, so the other side's first messages can come before its
+    /// `Identify` is read.
+    early: Vec<Message>,
     local: Local,
     started: bool,
     offers: usize,
@@ -187,6 +196,7 @@ impl Attach {
             sync: SyncSession::new(space),
             sender: None,
             queued: Vec::new(),
+            early: Vec::new(),
             local: Local::Pending,
             started: false,
             offers,
@@ -931,6 +941,15 @@ impl Driver {
             _ => self.uncount(attach),
         }
         self.state_heads(attach).await?;
+        // What the sync stream carried before this outcome.
+        let early = self
+            .attaches
+            .get_mut(&attach)
+            .map(|state| std::mem::take(&mut state.early))
+            .unwrap_or_default();
+        for message in &early {
+            self.on_sync(attach, message).await?;
+        }
         Ok(events)
     }
 
@@ -1305,10 +1324,17 @@ impl Driver {
             self.connection.close(Code::Malformed);
             return Ok(());
         }
-        let Some(remote) = self.session.remote_device().copied() else {
+        let Some(state) = self.attaches.get_mut(&attach) else {
             return Ok(());
         };
-        let Some(state) = self.attaches.get_mut(&attach) else {
+        // Before the roster check: kept, and taken by its outcome's rule.
+        if state.local == Local::Pending {
+            if state.early.len() < EARLY_MESSAGES {
+                state.early.push(message.clone());
+            }
+            return Ok(());
+        }
+        let Some(remote) = self.session.remote_device().copied() else {
             return Ok(());
         };
         let Ok(Some(units_message)) = crate::intake::read_sync(&sync.message) else {
