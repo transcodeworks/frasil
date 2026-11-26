@@ -1608,7 +1608,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_frasil_uniffi_checksum_method_losslistener_reported() != 62652) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_frasil_uniffi_checksum_method_space_admit_member() != 60144) {
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_admit_member() != 780) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_frasil_uniffi_checksum_method_space_admit_member_administrator() != 9592) {
@@ -7835,8 +7835,9 @@ public interface SpaceInterface {
      * follows this space as it follows a person's grant. The grant rests
      * only on `known_space`'s roster, and a removal there does not reach
      * it. It fails unless this device administers the space, when
-     * `known_space` does not grant the device directly or grants it as a
-     * guest, and when this space has the device already.
+     * `known_space` does not reach this device, does not grant the device
+     * directly, grants it as a guest or with no effect, and when this
+     * space has the device already.
      */
     suspend fun `admitMember`(`knownSpace`: kotlin.String, `member`: kotlin.String, `level`: kotlin.String)
 
@@ -8122,8 +8123,9 @@ open class Space: Disposable, AutoCloseable, SpaceInterface
      * follows this space as it follows a person's grant. The grant rests
      * only on `known_space`'s roster, and a removal there does not reach
      * it. It fails unless this device administers the space, when
-     * `known_space` does not grant the device directly or grants it as a
-     * guest, and when this space has the device already.
+     * `known_space` does not reach this device, does not grant the device
+     * directly, grants it as a guest or with no effect, and when this
+     * space has the device already.
      */
     @Throws(FrasilException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")

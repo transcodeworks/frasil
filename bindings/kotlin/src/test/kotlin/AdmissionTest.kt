@@ -274,6 +274,7 @@ class AdmissionTest {
         assertEquals("read", devices.space.members().single { it.id == devices.newcomer.id() }.level)
         devices.close()
     }
+
     @Test fun aMemberOfOneSpaceIsAdmittedToAnotherWithNoPeer() = runBlocking {
         val devices = Devices.make(150)
         val invitation = devices.space.invite("write", "host", Asks(true))
@@ -298,9 +299,15 @@ class AdmissionTest {
         assertEquals(other.id(), arrived.id())
 
         // A device that is a member already is not admitted again.
-        assertFailsWith<FrasilException> {
+        val again = assertFailsWith<FrasilException> {
             other.admitMemberAdministrator(devices.space.id(), devices.newcomer.id(), 1.toUByte())
         }
+        assertTrue(again.says("a member of the space already"))
+
+        // An administrator is admitted at a rank.
+        val third = devices.host.createSpace()
+        third.admitMemberAdministrator(devices.space.id(), devices.newcomer.id(), 1.toUByte())
+        assertEquals("administer", third.members().single { it.id == devices.newcomer.id() }.level)
         devices.close()
     }
 }

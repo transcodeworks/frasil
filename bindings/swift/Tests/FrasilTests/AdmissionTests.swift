@@ -283,9 +283,18 @@ private struct Pair {
     #expect(arrived.id() == other.id())
 
     // A device that is a member already is not admitted again.
-    _ = await failure {
+    let again = await failure {
         try await other.admitMemberAdministrator(
             knownSpace: pair.space.id(), member: pair.newcomer.id(), rank: 1)
     }
+    #expect(again.contains("a member of the space already"))
+
+    // An administrator is admitted at a rank.
+    let third = try await pair.host.createSpace()
+    try await third.admitMemberAdministrator(
+        knownSpace: pair.space.id(), member: pair.newcomer.id(), rank: 1)
+    let administrator = try #require(
+        try await third.members().first { $0.id == pair.newcomer.id() })
+    #expect(administrator.level == "administer")
     try await pair.close()
 }

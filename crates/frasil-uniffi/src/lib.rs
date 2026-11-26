@@ -1499,8 +1499,9 @@ impl Space {
     /// follows this space as it follows a person's grant. The grant rests
     /// only on `known_space`'s roster, and a removal there does not reach
     /// it. It fails unless this device administers the space, when
-    /// `known_space` does not grant the device directly or grants it as a
-    /// guest, and when this space has the device already.
+    /// `known_space` does not reach this device, does not grant the device
+    /// directly, grants it as a guest or with no effect, and when this
+    /// space has the device already.
     pub async fn admit_member(
         &self,
         known_space: String,

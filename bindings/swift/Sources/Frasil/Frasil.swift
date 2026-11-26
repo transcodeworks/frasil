@@ -4452,8 +4452,9 @@ public protocol SpaceProtocol: AnyObject, Sendable {
      * follows this space as it follows a person's grant. The grant rests
      * only on `known_space`'s roster, and a removal there does not reach
      * it. It fails unless this device administers the space, when
-     * `known_space` does not grant the device directly or grants it as a
-     * guest, and when this space has the device already.
+     * `known_space` does not reach this device, does not grant the device
+     * directly, grants it as a guest or with no effect, and when this
+     * space has the device already.
      */
     func admitMember(knownSpace: String, member: String, level: String) async throws
 
@@ -4693,8 +4694,9 @@ open class Space: SpaceProtocol, @unchecked Sendable {
      * follows this space as it follows a person's grant. The grant rests
      * only on `known_space`'s roster, and a removal there does not reach
      * it. It fails unless this device administers the space, when
-     * `known_space` does not grant the device directly or grants it as a
-     * guest, and when this space has the device already.
+     * `known_space` does not reach this device, does not grant the device
+     * directly, grants it as a guest or with no effect, and when this
+     * space has the device already.
      */
 open func admitMember(knownSpace: String, member: String, level: String)async throws   {
     return
@@ -8930,7 +8932,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_frasil_uniffi_checksum_method_losslistener_reported() != 62652) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_frasil_uniffi_checksum_method_space_admit_member() != 60144) {
+    if (uniffi_frasil_uniffi_checksum_method_space_admit_member() != 780) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_frasil_uniffi_checksum_method_space_admit_member_administrator() != 9592) {
