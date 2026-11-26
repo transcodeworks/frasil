@@ -346,6 +346,8 @@ mod tasks;
 #[cfg(feature = "adapter-loro")]
 pub(crate) mod text;
 mod top_ups;
+#[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
+mod welcomes;
 mod writer;
 
 pub mod advanced;

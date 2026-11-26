@@ -202,23 +202,58 @@ impl Engine {
             return Err(Error::NotAllowed("the device holds no list of the person"));
         }
         let change = Change::grant(MemberRef::person(person), level, history, via);
-        let (event, wraps) = self.sign_roster_with(space, vec![change]).await?;
+        // Each device's welcome is kept at rest in the grant's own commit
+        // (admission.md, 3.10 Welcomes, "A welcome that waits").
         #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
         if history == HistoryMode::WithHistory {
-            self.welcome_person(space, person, level, event, &wraps)
+            let recipients = self.person_welcome_keys(space, person, level).await;
+            let hints = self.welcome_hints(&space, &[]).await;
+            let since = self.welcome_time().await;
+            let mut waiting = Vec::new();
+            let (event, _) = self
+                .sign_roster_keeping(space, vec![change], |event, wraps| {
+                    waiting =
+                        self.seal_welcomes(space, event, wraps, &recipients, &hints, since)?;
+                    Ok(waiting
+                        .iter()
+                        .map(crate::welcomes::welcome_record)
+                        .collect())
+                })
                 .await?;
+            self.waiting_kept(waiting).await;
+            return Ok(event);
         }
-        #[cfg(not(any(feature = "server", feature = "iroh", feature = "server-socket")))]
-        let _ = wraps;
-        Ok(event)
+        self.sign_roster(space, vec![change]).await
     }
 
-    /// Welcomes for the devices a person grant admits, other than this
-    /// one, kept until a member connection with each hands its welcome
-    /// over, and deposited in each one's device mailbox at the peers this
-    /// device is connected to once they hold the event (admission.md,
-    /// "Welcomes"; transport.md, "Mailboxes"): a device of the person
-    /// learns of the space with no peer, or through a peer alone.
+    /// The keys of the devices a grant of `person` at `level` in `space`
+    /// wraps for.
+    #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
+    async fn person_welcome_keys(
+        &self,
+        space: EventId,
+        person: [u8; 32],
+        level: Level,
+    ) -> Vec<frasil_space::DeviceKeys> {
+        let state = self.lock().await;
+        person_recipients(&person, level, &state.lists, state.replicas.get(&space))
+            .into_iter()
+            .map(|recipient| recipient.keys)
+            .collect()
+    }
+
+    /// Welcomes for the devices of a person that a delivery after the
+    /// person's grant reaches, other than this one, kept at rest in a
+    /// commit after the delivery's until a member connection with each
+    /// hands its welcome over, and deposited in each one's device mailbox
+    /// at the peers this device is connected to once they hold the event
+    /// (admission.md, "Welcomes"; transport.md, "Mailboxes"): a device of
+    /// the person learns of the space with no peer, or through a peer
+    /// alone.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoRandomness`]; the store's.
     #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
     pub(crate) async fn welcome_person(
         &self,
@@ -228,23 +263,11 @@ impl Engine {
         event: EventId,
         wraps: &std::collections::BTreeMap<DeviceId, writer::WrapOf>,
     ) -> Result<()> {
-        let recipients = {
-            let state = self.lock().await;
-            person_recipients(&person, level, &state.lists, state.replicas.get(&space))
-        };
-        let me = self.device_id();
-        for recipient in recipients {
-            let device = recipient.keys.device_id();
-            let Some(wrap) = wraps.get(&device) else {
-                continue;
-            };
-            if device == me {
-                continue;
-            }
-            self.wait_welcome(space, &recipient.keys, event, wrap)
-                .await?;
-        }
-        Ok(())
+        let recipients = self.person_welcome_keys(space, person, level).await;
+        let hints = self.welcome_hints(&space, &[]).await;
+        let since = self.welcome_time().await;
+        let waiting = self.seal_welcomes(space, event, wraps, &recipients, &hints, since)?;
+        self.keep_welcomes(space, waiting).await
     }
 
     /// Publishes a person's list events a space's system stream lacks, in
@@ -870,22 +893,6 @@ impl Engine {
                 "administrator delivery needs the same administrators and device keys",
             ));
         }
-        self.deliver_locked(&mut state, space, recipients).await
-    }
-
-    /// Signs and commits a delivery of the current state to `recipients`
-    /// in the signing transaction `state` holds, once the caller's checks
-    /// passed in it.
-    pub(crate) async fn deliver_locked(
-        &self,
-        state: &mut crate::device::State,
-        space: EventId,
-        recipients: Vec<Recipient>,
-    ) -> Result<(
-        EventId,
-        std::collections::BTreeMap<DeviceId, writer::WrapOf>,
-    )> {
-        let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
         let current = replica
             .current()
             .cloned()
@@ -903,7 +910,7 @@ impl Engine {
                 .state_grant(&state)
                 .map(|grant| HeldGrant { state, grant })
         });
-        let (seq, prev) = Self::next(state, &space, &self.device_id());
+        let (seq, prev) = Self::next(&state, &space, &self.device_id());
         let parents = replica.parents(prev);
         let cuts = replica.cuts_for(&parents)?;
         let signed = writer::space_event(
@@ -930,7 +937,9 @@ impl Engine {
                 grantless: false,
             },
         )?;
-        let id = self.commit_signed(state, space, &signed.signed).await?;
+        let id = self
+            .commit_signed(&mut state, space, &signed.signed)
+            .await?;
         Ok((id, signed.wraps))
     }
 

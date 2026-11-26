@@ -20,10 +20,13 @@ use std::time::Duration;
 /// every peer this device is connected to that does not hold it yet, once
 /// the event it names is no longer waiting for a peer's acknowledgement,
 /// so that the recipient finds the event there (admission.md, 3.10
-/// Welcomes). A welcome of a space whose roster no longer reaches its
-/// recipient waits no longer, and goes nowhere.
+/// Welcomes). The peer is named in the welcome's record in the commit that
+/// keeps the deposit, so a restart does not deposit it there again. A
+/// welcome kept `welcome_retention` ago, or of a space whose roster no
+/// longer reaches its recipient, waits no longer, and goes nowhere.
 pub(super) async fn deposit_welcomes(device: &Device) {
     let engine = device.engine();
+    engine.expire_welcomes().await;
     for peer in device.peers() {
         if !peer.status().connected {
             continue;
@@ -38,30 +41,75 @@ pub(super) async fn deposit_welcomes(device: &Device) {
                 .await
                 .unwrap_or(false);
             if !reaches {
-                engine.links().delivered(&welcome.recipient, &welcome.space);
+                engine.end_welcome(welcome.recipient, welcome.space).await;
                 continue;
             }
             if engine.outbox(&welcome.space).await.contains(&welcome.event) {
                 continue;
             }
+            let Some(record) =
+                engine.welcome_deposited_record(&welcome.recipient, &welcome.space, &url)
+            else {
+                continue;
+            };
             // Once taken, the deposit is the device's to deliver: it keeps
             // it, and deposits it again until the peer accepts it.
             let _ = device
-                .deposit(
+                .deposit_with(
                     &url,
                     address(Kind::Device, &welcome.recipient.0),
                     welcome.sealed.clone(),
                     true,
+                    Some(record),
                 )
                 .await;
             engine
                 .links()
                 .deposited(&welcome.recipient, &welcome.space, &url);
+            device
+                .inner
+                .welcome_deposits
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
 
 impl Device {
+    /// The welcomes this device keeps waiting, oldest first: each one's
+    /// recipient, space and the peers, by origin, that hold it. For tests
+    /// (admission.md, 3.10 Welcomes, "A welcome that waits").
+    #[doc(hidden)]
+    pub fn waiting_welcomes(&self) -> Vec<(super::MemberId, SpaceId, Vec<String>)> {
+        self.engine()
+            .links()
+            .waiting_welcomes()
+            .into_iter()
+            .map(|welcome| {
+                (
+                    super::MemberId::device(welcome.recipient),
+                    SpaceId::of(welcome.space),
+                    welcome.deposited,
+                )
+            })
+            .collect()
+    }
+
+    /// How many welcomes this device has deposited at peers since it
+    /// opened. For tests.
+    #[doc(hidden)]
+    pub fn welcome_deposits(&self) -> u64 {
+        self.inner
+            .welcome_deposits
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Runs what the device's upkeep runs for the welcomes it keeps waiting
+    /// at once: their deposits at each connected peer. For tests.
+    #[doc(hidden)]
+    pub async fn welcome_upkeep(&self) {
+        deposit_welcomes(self).await;
+    }
+
     /// Refreshes the space credentials without replaying the device mailbox.
     async fn reconnect_for_welcome(&self, url: &str) -> Result<()> {
         let spaces = self.engine().presentable_spaces().await;
@@ -141,15 +189,22 @@ impl Device {
         let sealed = welcome
             .seal_with(&keys, &*engine.platform().draw::<64>()?)
             .map_err(Error::class)?;
-        // The existing welcome outbox waits for the snapshot unit, which
-        // is acknowledged only after the peer has its objects.
-        engine.links().wait(crate::links::Waiting {
-            recipient: keys.device_id(),
-            space,
-            event: published,
-            sealed,
-            deposited: Vec::new(),
-        });
+        // The welcome waits for the snapshot unit, which is acknowledged
+        // only after the peer has its objects.
+        let since = engine.welcome_time().await;
+        engine
+            .keep_welcomes(
+                space,
+                vec![crate::links::Waiting {
+                    recipient: keys.device_id(),
+                    space,
+                    event: published,
+                    sealed,
+                    since,
+                    deposited: Vec::new(),
+                }],
+            )
+            .await?;
         self.present(space);
         engine
             .lock()

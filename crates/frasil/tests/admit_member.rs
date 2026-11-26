@@ -1,8 +1,9 @@
 //! A member of another space (admission.md, 3.16): an administrator of one
 //! space admits a direct device member of another space it holds, with no
 //! code and no peer, and the welcome goes over the member connection the two
-//! devices hold for the other space; after a restart the granter makes it
-//! again (admission.md, 3.10 Welcomes).
+//! devices hold for the other space. The granter keeps the welcome waiting
+//! at rest, so a restart loses none and makes none again (admission.md,
+//! 3.10 Welcomes, "A welcome that waits").
 #![cfg(all(feature = "iroh", feature = "sqlite", feature = "adapter-loro"))]
 
 use frasil::{Device, Document, Error, Level, MemberId, Options, Space, SpaceId, Storage};
@@ -156,15 +157,12 @@ async fn grant_of(
         .unwrap()
 }
 
-/// The events of `space` that `device` signed, in its own replica.
-async fn signed_by(device: &Device, space: SpaceId) -> usize {
-    let me = device_of(device.id());
+/// The events in `device`'s log of `space`.
+async fn events_in(device: &Device, space: SpaceId) -> usize {
     device
         .engine()
         .read(&ev(space), |replica| {
-            replica
-                .log()
-                .map_or(0, |log| log.events().filter(|e| *e.author() == me).count())
+            replica.log().map_or(0, |log| log.events().count())
         })
         .await
         .unwrap()
@@ -261,11 +259,11 @@ async fn a_device_away_at_the_grant_gets_the_space_when_it_connects() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The granter restarts between the grant and the device's connecting: the
-/// welcome it kept in memory is gone, and it makes it again from the log
-/// when the two meet.
+/// The granter restarts between the grant and the device's connecting, and
+/// no peer is anywhere: the welcome it kept at rest waits again, and it
+/// hands it over when the two meet. No event is signed to replace it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_granter_that_restarts_welcomes_the_device_again() {
+async fn a_granter_that_restarts_hands_the_kept_welcome_over() {
     let dir = dir("restart");
     let granter = stored_with(&dir.join("granter"), 45, discovering()).await;
     let device = stored_with(&dir.join("device"), 46, discovering()).await;
@@ -281,15 +279,18 @@ async fn a_granter_that_restarts_welcomes_the_device_again() {
         .admit_member(known.id(), id, Level::Write)
         .await
         .unwrap();
-    let before = signed_by(&granter, space_id).await;
+    let before = events_in(&granter, space_id).await;
     granter.close().await.unwrap();
     drop((space, note, known, granter));
 
     let granter = stored_with(&dir.join("granter"), 45, discovering()).await;
+    assert_eq!(
+        granter.waiting_welcomes().len(),
+        1,
+        "the welcome waits again"
+    );
     let device = stored_with(&dir.join("device"), 46, discovering()).await;
     let arrived = arrives(&device, space_id).await;
-    // One delivery made the welcome again.
-    assert_eq!(signed_by(&granter, space_id).await, before + 1);
     assert_eq!(arrived.level().await, Some(Level::Write));
     let theirs = arrived
         .document_when_available(note_id, DEADLINE)
@@ -305,14 +306,29 @@ async fn a_granter_that_restarts_welcomes_the_device_again() {
         grant_of(&granter, space_id, id).await,
         Some((Level::Write, None, HistoryMode::WithHistory, Via::None))
     );
+    // The welcome the grant made, and no other event.
+    assert_eq!(events_in(&granter, space_id).await, before);
+    assert_eq!(events_in(&device, space_id).await, before);
+    // The attach the member connection admitted ends it, at rest too.
+    within(async {
+        while !granter.waiting_welcomes().is_empty() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
     granter.close().await.unwrap();
     device.close().await.unwrap();
     drop((theirs, arrived, granter, device));
+    let granter = stored_with(&dir.join("granter"), 45, discovering()).await;
+    assert!(granter.waiting_welcomes().is_empty());
+    granter.close().await.unwrap();
+    drop(granter);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The same holds for a person's grant: the welcome of a device of the
-/// person, lost when the granter restarts, is made again when they meet.
+/// person waits at rest through the granter's restart, and is handed over
+/// when they meet, with no event signed to replace it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_person_grant_survives_the_granters_restart() {
     let dir = dir("person");
@@ -332,10 +348,16 @@ async fn a_person_grant_survives_the_granters_restart() {
     let (space_id, note_id) = (space.id(), note.id());
 
     space.grant_person(person, Level::Write).await.unwrap();
+    let before = events_in(&granter, space_id).await;
     granter.close().await.unwrap();
     drop((space, note, known, granter));
 
     let granter = stored_with(&dir.join("granter"), 61, discovering()).await;
+    assert_eq!(
+        granter.waiting_welcomes().len(),
+        1,
+        "the welcome waits again"
+    );
     let device = stored_with(&dir.join("device"), 62, discovering()).await;
     let arrived = arrives(&device, space_id).await;
     assert_eq!(arrived.level().await, Some(Level::Write));
@@ -349,6 +371,7 @@ async fn a_person_grant_survives_the_granters_restart() {
         }
     })
     .await;
+    assert_eq!(events_in(&granter, space_id).await, before);
     granter.close().await.unwrap();
     device.close().await.unwrap();
     drop((theirs, arrived, granter, device));
@@ -357,12 +380,13 @@ async fn a_person_grant_survives_the_granters_restart() {
 
 /// A device removed from the space before it connects is offered nothing:
 /// the welcome that waited for it goes nowhere, and it never follows the
-/// space.
+/// space. Its record goes too: the granter opens again with nothing
+/// waiting.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_device_removed_before_it_connects_is_offered_nothing() {
     let dir = dir("removed");
-    let granter = memory(47).await;
-    let device = stored(&dir, 48).await;
+    let granter = stored(&dir.join("granter"), 47).await;
+    let device = stored(&dir.join("device"), 48).await;
     let known = known_space(&granter, &device).await;
     let id = device.id();
     connected(&known, &device).await;
@@ -384,15 +408,29 @@ async fn a_device_removed_before_it_connects_is_offered_nothing() {
         .await
         .unwrap();
 
-    let device = stored(&dir, 48).await;
+    assert_eq!(granter.waiting_welcomes().len(), 2);
+
+    let device = stored(&dir.join("device"), 48).await;
     let arrived = arrives(&device, later.id()).await;
     assert!(
         !device.engine().spaces().await.contains(&ev(space.id())),
         "the device never follows the space"
     );
+    // The removed device's welcome ended at the hand-over, and the later
+    // one once the device attached its space.
+    within(async {
+        while !granter.waiting_welcomes().is_empty() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
     granter.close().await.unwrap();
     device.close().await.unwrap();
-    drop((arrived, device));
+    drop((arrived, device, space, later, known, granter));
+    let granter = stored(&dir.join("granter"), 47).await;
+    assert!(granter.waiting_welcomes().is_empty(), "no record is left");
+    granter.close().await.unwrap();
+    drop(granter);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

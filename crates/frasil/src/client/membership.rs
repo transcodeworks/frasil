@@ -167,8 +167,7 @@ impl Space {
     /// or `write`), with history: its devices read what the space held
     /// before. The device must hold the person's list, as an admission
     /// leaves it. The grant is made offline; each of the person's devices
-    /// is sent a welcome over a member connection, which this device makes
-    /// again when they meet after a restart, and in its device
+    /// is sent a welcome over a member connection, and in its device
     /// mailbox at this device's peers once they hold the grant, where a
     /// device connected only through a peer collects it
     /// ([`Device::receive_welcomes_via_peer`]).
@@ -219,14 +218,16 @@ impl Space {
     /// grant carries the keys that `known_space`'s roster names, which the
     /// ID commits to, is made with history, and records `via` = `none`. It
     /// commits at once, offline, and the call returns once it has, whatever
-    /// becomes of the welcome. The device's welcome is sealed to its keys
-    /// and handed over the next member connection with it, such as the one
-    /// the two devices hold for `known_space`; after a restart, this device,
-    /// and no other administrator, makes it again when they meet, once in
-    /// each run. It goes to the device's mailbox at this device's peers
-    /// too, as [`Space::grant_person`]'s welcomes do, unless the space no
-    /// longer reaches the device. The device follows the space as it
-    /// follows a person grant's.
+    /// becomes of the welcome. The device's welcome is sealed to its keys,
+    /// kept at rest in the grant's own commit, and handed over the next
+    /// member connection with it, such as the one the two devices hold for
+    /// `known_space`, before or after this device restarts. It goes to the
+    /// device's mailbox at this device's peers too, as
+    /// [`Space::grant_person`]'s welcomes do, unless the space no longer
+    /// reaches the device. It waits at most 30 days, and among the newest
+    /// 256 welcomes this device keeps; a device that has not taken the
+    /// space up by then is removed and admitted again. The device follows
+    /// the space as it follows a person grant's.
     ///
     /// The grant rests only on `known_space`'s roster: any administrator of
     /// that space could have put the device there, and a removal from it

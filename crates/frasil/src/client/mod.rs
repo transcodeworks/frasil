@@ -662,6 +662,9 @@ pub(crate) struct Inner {
     /// device).
     #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
     collecting: collecting::Collectors,
+    /// The welcomes deposited at peers since the device opened, for tests.
+    #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
+    welcome_deposits: std::sync::atomic::AtomicU64,
     /// The slot of the schedule each claim's list was last handed to its
     /// space on, in this run (ext-invite-links.md, "Claiming", step 11).
     #[cfg(all(
@@ -863,6 +866,8 @@ impl Device {
             unkept: Mutex::default(),
             #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
             collecting: collecting::Collectors::default(),
+            #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
+            welcome_deposits: std::sync::atomic::AtomicU64::new(0),
             #[cfg(all(
                 feature = "ext-invite-links",
                 any(feature = "server", feature = "iroh", feature = "server-socket")

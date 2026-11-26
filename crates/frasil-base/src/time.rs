@@ -340,6 +340,8 @@ pub enum Timer {
     MailboxRetention,
     /// An item of a device mailbox that is not claimed.
     UncollectedRetention,
+    /// A welcome its signer keeps waiting to hand over or deposit.
+    WelcomeRetention,
     /// An invite, ended by a revocation.
     LinkLifetime,
     /// A guest session, ended by a removal.
@@ -384,10 +386,10 @@ pub const POLICY_VALUES: [Timer; 4] = [
 
 impl Timer {
     /// Every timer, in the table's order.
-    pub const ALL: [Timer; 39] = {
-        let mut all = [Timer::AdmissionCodeLifetime; 39];
+    pub const ALL: [Timer; 40] = {
+        let mut all = [Timer::AdmissionCodeLifetime; 40];
         let mut index = 0;
-        while index < 39 {
+        while index < 40 {
             all[index] = TIMERS[index].timer;
             index += 1;
         }
@@ -442,7 +444,7 @@ const fn row(
 
 /// overview.md's "Every timer", in seconds, one row per [`Timer`] in its
 /// order.
-pub const TIMERS: [TimerSpec; 39] = [
+pub const TIMERS: [TimerSpec; 40] = [
     row(
         Timer::AdmissionCodeLifetime,
         "admission_code_lifetime",
@@ -746,6 +748,18 @@ pub const TIMERS: [TimerSpec; 39] = [
         SetBy::Operator,
         Some("the peer's timeline, from the deposit"),
         &["transport.md"],
+        None,
+    ),
+    row(
+        Timer::WelcomeRetention,
+        "welcome_retention",
+        "a welcome its signer keeps waiting to hand over or deposit",
+        Some(30 * DAY),
+        Some(30 * DAY),
+        Some(30 * DAY),
+        SetBy::Protocol,
+        Some("the signer's timeline, from keeping it"),
+        &["admission.md", "at-rest.md"],
         None,
     ),
     row(

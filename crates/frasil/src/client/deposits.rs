@@ -34,6 +34,7 @@
 use super::Device;
 use super::events::Event;
 use crate::error::{Error, Result};
+use frasil_events::EventId;
 use frasil_store::{DepositRecord, Table, TableValue};
 use std::sync::PoisonError;
 
@@ -123,6 +124,22 @@ impl Device {
         item: Vec<u8>,
         keep_at_rest: bool,
     ) -> Delivery {
+        self.deposit_with(url, address, item, keep_at_rest, None)
+            .await
+    }
+
+    /// [`Device::deposit`], putting `also`, a record of a space's log, in
+    /// the commit that keeps the deposit at rest, such as the `welcome`
+    /// record that names the peer as holding the welcome (at-rest.md,
+    /// "Tables", `welcome`).
+    pub(crate) async fn deposit_with(
+        &self,
+        url: &str,
+        address: [u8; 32],
+        item: Vec<u8>,
+        keep_at_rest: bool,
+        also: Option<(EventId, crate::welcomes::LogRecord)>,
+    ) -> Delivery {
         let engine = self.engine();
         let (first, id) = match (engine.reading().await, engine.platform().nonce::<16>()) {
             (Ok(first), Ok(id)) => (first, id),
@@ -137,7 +154,22 @@ impl Device {
             next: first.timeline,
             token: None,
         };
-        if let Err(error) = self.keep_deposit(&id, &record, keep_at_rest).await {
+        let kept = match also {
+            Some(also) if keep_at_rest => {
+                engine
+                    .commit_device_with(
+                        vec![(
+                            Table::Deposit,
+                            id.to_vec(),
+                            TableValue::Deposit(record.clone()),
+                        )],
+                        also,
+                    )
+                    .await
+            }
+            _ => self.keep_deposit(&id, &record, keep_at_rest).await,
+        };
+        if let Err(error) = kept {
             return Delivery::Delayed(error.to_string());
         }
         if !self.claim_deposit(id) {

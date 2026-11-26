@@ -467,6 +467,8 @@ impl Engine {
         let device = Self::assemble(platform, &keys, public, vault, kept, registry).await?;
         device.lock().await.person = person;
         device.load().await?;
+        #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
+        device.load_welcomes().await?;
         device.find_personal_space().await;
         Ok(device)
     }
@@ -2225,6 +2227,9 @@ impl Engine {
         state.outboxes.remove(space);
         state.pseudonyms.remove(space);
         state.erasing.remove(space);
+        // Its waiting welcomes went with its log (at-rest.md, "Tables",
+        // `welcome`).
+        self.links().forget_welcomes(space);
         // A space no longer followed: its ephemeral replay state goes
         // (ext-ephemeral.md, "Epoch, counter and replay").
         #[cfg(feature = "ephemeral")]
@@ -4565,17 +4570,21 @@ impl Engine {
         space: EventId,
         changes: Vec<Change>,
     ) -> Result<(EventId, BTreeMap<DeviceId, writer::WrapOf>)> {
-        self.sign_roster_keeping(space, changes, |_| Vec::new())
+        self.sign_roster_keeping(space, changes, |_, _| Ok(Vec::new()))
             .await
     }
 
     /// [`sign_roster_with`](Self::sign_roster_with), keeping the records
-    /// `keep` makes of the event's ID in its commit.
+    /// `keep` makes of the event's ID and each recipient's wrap in its
+    /// commit, such as the welcomes of the devices it grants.
     pub(crate) async fn sign_roster_keeping(
         &self,
         space: EventId,
         changes: Vec<Change>,
-        keep: impl FnOnce(EventId) -> Vec<(Table, Vec<u8>, TableValue)>,
+        keep: impl FnOnce(
+            EventId,
+            &BTreeMap<DeviceId, writer::WrapOf>,
+        ) -> Result<Vec<(Table, Vec<u8>, TableValue)>>,
     ) -> Result<(EventId, BTreeMap<DeviceId, writer::WrapOf>)> {
         self.sign_roster_full(space, changes, Vec::new(), keep)
             .await
@@ -4591,7 +4600,7 @@ impl Engine {
         cited: Vec<frasil_events::Ref>,
     ) -> Result<EventId> {
         Ok(self
-            .sign_roster_full(space, changes, cited, |_| Vec::new())
+            .sign_roster_full(space, changes, cited, |_, _| Ok(Vec::new()))
             .await?
             .0)
     }
@@ -4601,7 +4610,10 @@ impl Engine {
         space: EventId,
         changes: Vec<Change>,
         cited: Vec<frasil_events::Ref>,
-        keep: impl FnOnce(EventId) -> Vec<(Table, Vec<u8>, TableValue)>,
+        keep: impl FnOnce(
+            EventId,
+            &BTreeMap<DeviceId, writer::WrapOf>,
+        ) -> Result<Vec<(Table, Vec<u8>, TableValue)>>,
     ) -> Result<(EventId, BTreeMap<DeviceId, writer::WrapOf>)> {
         // Roster signing must fit beside the caller's other work in debug builds.
         Box::pin(self.sign_roster_full_inner(space, changes, cited, keep)).await
@@ -4612,7 +4624,10 @@ impl Engine {
         space: EventId,
         changes: Vec<Change>,
         cited: Vec<frasil_events::Ref>,
-        keep: impl FnOnce(EventId) -> Vec<(Table, Vec<u8>, TableValue)>,
+        keep: impl FnOnce(
+            EventId,
+            &BTreeMap<DeviceId, writer::WrapOf>,
+        ) -> Result<Vec<(Table, Vec<u8>, TableValue)>>,
     ) -> Result<(EventId, BTreeMap<DeviceId, writer::WrapOf>)> {
         // A device granted `administer` signs a twin in its own slot, so it
         // enrols first if the sync that granted it has not yet (peers.md,
@@ -4800,7 +4815,7 @@ impl Engine {
             upload: Some(fresh.upload.clone()),
             grant: signed.grant_rotation.then(|| fresh.grant.clone()),
         });
-        let records = keep(signed.id)
+        let records = keep(signed.id, &signed.wraps)?
             .into_iter()
             .map(|(table, item, value)| (table, item, Some(value)))
             .collect();

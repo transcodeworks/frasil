@@ -55,6 +55,8 @@ pub const MAX_SEEN_KEYS: usize = 64;
 pub const TOKEN_BYTES: usize = 129;
 /// The largest mailbox item (transport.md, "Mailboxes").
 pub const MAX_MAILBOX_ITEM: usize = 262_144;
+/// The most peers a `welcome` record names as holding its welcome.
+pub const MAX_WELCOME_PEERS: usize = 64;
 /// The number of administrator slots; a slot reference's index is below it
 /// (peers.md).
 pub const MAX_SLOT_INDEX: u64 = 64;
@@ -189,6 +191,10 @@ tables! {
     /// chunks: until the application drops it, or within the device's
     /// budget (at-rest.md, "Retention").
     Retention = 0x22, "retention", Log;
+    /// `0x23`, a welcome this device signed that waits to be handed over a
+    /// member connection or deposited at a peer, by its newcomer's device
+    /// ID (admission.md, 3.10 Welcomes, "A welcome that waits").
+    Welcome = 0x23, "welcome", Log;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +343,8 @@ pub fn check_item(table: Table, item: &[u8]) -> Result<(), ErrorClass> {
         | Table::Claim
         | Table::DepositKeys
         | Table::Dropped
-        | Table::Retention => item.len() == 32,
+        | Table::Retention
+        | Table::Welcome => item.len() == 32,
         Table::Token => item.len() == 64,
         Table::Deposit => item.len() == 16,
         Table::Object => item.len() == 36,
@@ -1105,6 +1112,23 @@ pub enum Retention {
     },
 }
 
+/// A `welcome` record: a welcome this device signed that waits for its
+/// newcomer, the item (admission.md, 3.10 Welcomes, "A welcome that
+/// waits").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WelcomeRecord {
+    /// Key 1: the event the welcome names.
+    pub event: [u8; 32],
+    /// Key 2: the welcome, sealed to the newcomer's X-Wing key, 1 to
+    /// 262,144 bytes.
+    pub sealed: Vec<u8>,
+    /// Key 3: the timeline's `T` at which the device kept it.
+    pub since: u64,
+    /// Key 4: the origins of the peers that hold it in the newcomer's
+    /// device mailbox, 0 to 64, strictly ascending by their bytes.
+    pub deposited: Vec<String>,
+}
+
 /// What a cached object's last read is rounded down to, in seconds of the
 /// timeline: reading an object writes its record at most once in this
 /// long (at-rest.md, "Retention").
@@ -1242,6 +1266,8 @@ pub enum TableValue {
     Peers(PeersRecord),
     /// `retention`: whether the object the item names is kept or cached.
     Retention(Retention),
+    /// `welcome`: a welcome that waits for its newcomer.
+    Welcome(WelcomeRecord),
     /// `announced`: the next member endpoint key the member the item names
     /// announced.
     Announced([u8; 32]),
@@ -1389,6 +1415,44 @@ fn read_deposit(value: &[u8]) -> Result<DepositRecord, ErrorClass> {
     })
 }
 
+/// A `welcome` value (at-rest.md, "Tables").
+fn read_welcome(value: &[u8]) -> Result<WelcomeRecord, ErrorClass> {
+    let malformed = ErrorClass::Malformed;
+    let map = map_with(value, &[1, 2, 3], &[4])?;
+    let sealed = map[&2].as_bytes()?;
+    if !(1..=MAX_MAILBOX_ITEM).contains(&sealed.len()) {
+        return Err(malformed);
+    }
+    let deposited = match map.get(&4) {
+        Some(peers) => {
+            let peers = peers.as_array()?;
+            if !(1..=MAX_WELCOME_PEERS).contains(&peers.len()) {
+                return Err(malformed);
+            }
+            let mut out: Vec<String> = Vec::with_capacity(peers.len());
+            for peer in peers {
+                let peer = peer.as_text().map_err(|_| malformed)?;
+                if !(1..=MAX_PEER_URL).contains(&peer.len())
+                    || out
+                        .last()
+                        .is_some_and(|prior| prior.as_bytes() >= peer.as_bytes())
+                {
+                    return Err(malformed);
+                }
+                out.push(peer.to_owned());
+            }
+            out
+        }
+        None => Vec::new(),
+    };
+    Ok(WelcomeRecord {
+        event: map[&1].as_byte_array::<32>()?,
+        sealed: sealed.to_vec(),
+        since: map[&3].as_unsigned()?,
+        deposited,
+    })
+}
+
 fn bytes32(data: &[u8]) -> [u8; 32] {
     data.try_into().expect("checked to be 32 bytes")
 }
@@ -1428,6 +1492,7 @@ impl TableValue {
             Self::Host(_) => Table::Host,
             Self::Dropped(_) => Table::Dropped,
             Self::Retention(_) => Table::Retention,
+            Self::Welcome(_) => Table::Welcome,
         }
     }
 
@@ -1683,6 +1748,7 @@ impl TableValue {
                     _ => return Err(malformed),
                 }
             }
+            Table::Welcome => Self::Welcome(read_welcome(value)?),
             Table::Peers => {
                 let map = map_with(value, &[], &[1, 2])?;
                 let url = |value: &Value| {
@@ -1829,6 +1895,25 @@ impl TableValue {
                             map.insert(3, 1u64.into());
                         }
                     }
+                }
+                Value::Map(map).encode()
+            }
+            Self::Welcome(welcome) => {
+                let mut map = Map::new();
+                map.insert(1, welcome.event.into());
+                map.insert(2, welcome.sealed.as_slice().into());
+                map.insert(3, welcome.since.into());
+                if !welcome.deposited.is_empty() {
+                    map.insert(
+                        4,
+                        Value::Array(
+                            welcome
+                                .deposited
+                                .iter()
+                                .map(|peer| peer.as_str().into())
+                                .collect(),
+                        ),
+                    );
                 }
                 Value::Map(map).encode()
             }

@@ -415,12 +415,12 @@ impl Engine {
         );
         let record_secret = *secret;
         let (entry, _) = self
-            .sign_roster_keeping(space, vec![change], move |entry| {
-                vec![(
+            .sign_roster_keeping(space, vec![change], move |entry, _| {
+                Ok(vec![(
                     Table::Invite,
                     entry.0.to_vec(),
                     invite_record(space.0, entry.0, record_secret),
-                )]
+                )])
             })
             .await?;
         {

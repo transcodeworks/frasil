@@ -249,6 +249,17 @@ pub fn opened_json(value: &TableValue) -> Json {
             frasil_store::tables::Retention::Put { keep: false } => json!({"1": 3}),
             frasil_store::tables::Retention::Put { keep: true } => json!({"1": 3, "3": 1}),
         },
+        TableValue::Welcome(welcome) => {
+            let mut out = json!({
+                "1": hex(welcome.event),
+                "2": hex(&welcome.sealed),
+                "3": welcome.since,
+            });
+            if !welcome.deposited.is_empty() {
+                out["4"] = json!(welcome.deposited);
+            }
+            out
+        }
         TableValue::Outbox(id) => hex(id),
         TableValue::Ack(heads) => ids(heads),
         TableValue::Listing(listing) => json!({"1": hex(&listing.served), "2": listing.at}),

@@ -1,6 +1,7 @@
-//! What a device's member connections share: the welcomes waiting for a
-//! member connection with their recipient (admission.md, "Welcomes";
-//! transport.md, "Mailboxes"), the spaces that member connections
+//! What a device's member connections share: the welcomes waiting for
+//! their recipient, as the device keeps them at rest (admission.md, 3.10
+//! Welcomes, "A welcome that waits"; transport.md, "Mailboxes"), the
+//! spaces that member connections
 //! serve, admitted on some attach, and the members they reach and the
 //! tickets other members listed, for member addresses (transport.md, "The
 //! iroh binding", member addresses).
@@ -14,7 +15,12 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// The most welcomes a device keeps waiting; past it, the oldest go.
-const WAITING: usize = 256;
+pub(crate) const WAITING: usize = 256;
+
+/// How long a welcome waits at most, on the device's timeline from when it
+/// was kept: `welcome_retention` (overview.md, "Every timer"), the longest
+/// a peer keeps a mailbox item.
+pub(crate) const WELCOME_RETENTION: u64 = 30 * 24 * 3600;
 
 /// A welcome sealed to its recipient.
 #[derive(Debug, Clone)]
@@ -31,8 +37,17 @@ pub(crate) struct Waiting {
     pub event: EventId,
     /// The sealed welcome (admission.md, "The welcome").
     pub sealed: Vec<u8>,
-    /// The peers, by URL, that hold it in the recipient's device mailbox.
+    /// The timeline's `T` at which the device kept it.
+    pub since: u64,
+    /// The peers, by origin, that hold it in the recipient's device
+    /// mailbox, ascending.
     pub deposited: Vec<String>,
+}
+
+/// A peer's origin as a `deposit` record names it: its URL with no
+/// trailing slash.
+pub(crate) fn origin(url: &str) -> &str {
+    url.trim_end_matches('/')
 }
 
 /// A member ticket an `Addresses` listed, for the node to dial with the
@@ -70,13 +85,9 @@ struct Held {
 #[derive(Debug, Default)]
 #[cfg_attr(not(feature = "iroh"), allow(dead_code))]
 pub(crate) struct Links {
-    /// Welcomes not yet known to have arrived, oldest first.
+    /// Welcomes not yet known to have arrived, oldest first, as their
+    /// `welcome` records hold them.
     welcomes: Vec<Waiting>,
-    /// The spaces and devices this device made a welcome again for, or
-    /// whose attach a member connection admitted, since it opened: it
-    /// makes none of them again (admission.md, 3.10 Welcomes, "A welcome
-    /// that waits for a member connection").
-    settled: std::collections::BTreeSet<(EventId, DeviceId)>,
     /// For each space, the admitted attaches that serve it.
     attached: BTreeMap<EventId, usize>,
     /// For each space and member, the admitted attaches with that member.
@@ -102,19 +113,36 @@ pub(crate) struct Links {
 #[cfg_attr(not(feature = "iroh"), allow(dead_code))]
 impl Links {
     /// Keeps a welcome until a member connection with its recipient hands
-    /// it over and the recipient attaches the space.
-    pub(crate) fn wait(&mut self, welcome: Waiting) {
+    /// it over and the recipient attaches the space, in place of one for
+    /// the same recipient and space. Returns the welcomes the bound
+    /// passes, the oldest first, which wait no longer.
+    pub(crate) fn wait(&mut self, welcome: Waiting) -> Vec<Waiting> {
         self.welcomes
             .retain(|w| (w.recipient, w.space) != (welcome.recipient, welcome.space));
-        self.welcomes.push(welcome);
-        if self.welcomes.len() > WAITING {
-            let over = self.welcomes.len() - WAITING;
-            self.welcomes.drain(..over);
-        }
+        let at = self.welcomes.partition_point(|w| w.since <= welcome.since);
+        self.welcomes.insert(at, welcome);
+        let over = self.welcomes.len().saturating_sub(WAITING);
+        self.welcomes.drain(..over).collect()
+    }
+
+    /// The welcomes kept `WELCOME_RETENTION` or longer before `now`, on
+    /// the device's timeline, which wait no longer.
+    pub(crate) fn expire_welcomes(&mut self, now: u64) -> Vec<Waiting> {
+        let (old, young) = std::mem::take(&mut self.welcomes)
+            .into_iter()
+            .partition(|w| now.saturating_sub(w.since) >= WELCOME_RETENTION);
+        self.welcomes = young;
+        old
+    }
+
+    /// The welcomes of a space the device forgets: none of them waits.
+    pub(crate) fn forget_welcomes(&mut self, space: &EventId) {
+        self.welcomes.retain(|w| w.space != *space);
     }
 
     /// The welcomes the peer at `url` does not hold yet.
     pub(crate) fn to_deposit(&self, url: &str) -> Vec<Waiting> {
+        let url = origin(url);
         self.welcomes
             .iter()
             .filter(|w| !w.deposited.iter().any(|at| at == url))
@@ -122,13 +150,27 @@ impl Links {
             .collect()
     }
 
+    /// Every waiting welcome, oldest first.
+    pub(crate) fn waiting_welcomes(&self) -> Vec<Waiting> {
+        self.welcomes.clone()
+    }
+
+    /// The welcome for a recipient and space, as it waits now.
+    pub(crate) fn waiting(&self, recipient: &DeviceId, space: &EventId) -> Option<Waiting> {
+        self.welcomes
+            .iter()
+            .find(|w| (w.recipient, w.space) == (*recipient, *space))
+            .cloned()
+    }
+
     /// The peer at `url` holds a welcome in its recipient's device mailbox.
     pub(crate) fn deposited(&mut self, recipient: &DeviceId, space: &EventId, url: &str) {
+        let url = origin(url);
         for welcome in &mut self.welcomes {
             if (welcome.recipient, welcome.space) == (*recipient, *space)
-                && !welcome.deposited.iter().any(|at| at == url)
+                && let Err(at) = welcome.deposited.binary_search_by(|p| p.as_str().cmp(url))
             {
-                welcome.deposited.push(url.to_owned());
+                welcome.deposited.insert(at, url.to_owned());
             }
         }
     }
@@ -142,41 +184,21 @@ impl Links {
             .collect()
     }
 
-    /// Whether a welcome for a recipient and space waits.
-    pub(crate) fn waits(&self, recipient: &DeviceId, space: &EventId) -> bool {
-        self.welcomes
-            .iter()
-            .any(|w| (w.recipient, w.space) == (*recipient, *space))
-    }
-
-    /// Whether a welcome for a device and space may be made again, which
-    /// it may once since the device opened: `true` the first time, which
-    /// counts as that once.
-    pub(crate) fn may_welcome_again(&mut self, space: EventId, device: DeviceId) -> bool {
-        self.settled.insert((space, device))
-    }
-
-    /// A welcome made again for a device and space was not made after all:
-    /// it may be made later.
-    pub(crate) fn not_welcomed_again(&mut self, space: &EventId, device: &DeviceId) {
-        self.settled.remove(&(*space, *device));
-    }
-
     /// The recipient holds the space, or the space's roster no longer
-    /// reaches it: its welcome no longer waits.
-    pub(crate) fn delivered(&mut self, recipient: &DeviceId, space: &EventId) {
+    /// reaches it: its welcome no longer waits. Whether one waited.
+    pub(crate) fn delivered(&mut self, recipient: &DeviceId, space: &EventId) -> bool {
+        let before = self.welcomes.len();
         self.welcomes
             .retain(|w| (w.recipient, w.space) != (*recipient, *space));
+        self.welcomes.len() != before
     }
 
     /// An attach admitted for a space, with the member on the other side
-    /// if it identified itself, which has then taken the space up: no
-    /// welcome of the space is made again for it.
+    /// if it identified itself.
     pub(crate) fn attach(&mut self, space: EventId, member: Option<DeviceId>) {
         *self.attached.entry(space).or_default() += 1;
         if let Some(member) = member {
             *self.members.entry((space, member)).or_default() += 1;
-            self.settled.insert((space, member));
         }
     }
 
