@@ -921,7 +921,10 @@ an object whose `retention` record has state 2, and never:
   which is not yet durable ([units.md](units.md), section 3.13): the
   device may hold its only copy. A durable unit says nothing of its
   objects, which is why an object the device put has a record of state 3;
-- an object that a read or a transfer on the device is using.
+- an object that a read or a transfer on the device is using. A read
+  uses its object until it ends, once it has given its last byte or the
+  application ended or dropped it, and a transfer uses the object while
+  it writes the parts it brought, until the device holds them.
 
 **Dropping** an object, for the budget or because the application asks,
 is one commit that deletes the object's `retention` record and every

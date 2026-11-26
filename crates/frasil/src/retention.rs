@@ -77,6 +77,7 @@ use frasil_store::{Table, TableValue};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, PoisonError};
+use tokio::sync::watch;
 
 /// The budget of a device that names none: 256 MiB of stored bytes.
 pub(crate) const DEFAULT_BLOB_CACHE: u64 = 256 << 20;
@@ -409,31 +410,62 @@ pub(crate) enum Want {
     Pass,
 }
 
+/// What a use of an object is ([`InUse`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Use {
+    /// A read's, or anything else that is not to lose the object, saying
+    /// what it wants of the parts that arrive.
+    Read(Want),
+    /// The write of parts a transfer brought, until the replica notes
+    /// them ([`Engine::write_object`]).
+    Write,
+}
+
 /// How many uses of an object there are, of each kind.
 #[derive(Debug, Clone, Copy, Default)]
 struct Using {
     hold: usize,
     cache: usize,
     pass: usize,
+    write: usize,
 }
 
 impl Using {
-    fn of(&mut self, want: Want) -> &mut usize {
-        match want {
-            Want::Hold => &mut self.hold,
-            Want::Cache => &mut self.cache,
-            Want::Pass => &mut self.pass,
+    fn of(&mut self, kind: Use) -> &mut usize {
+        match kind {
+            Use::Read(Want::Hold) => &mut self.hold,
+            Use::Read(Want::Cache) => &mut self.cache,
+            Use::Read(Want::Pass) => &mut self.pass,
+            Use::Write => &mut self.write,
         }
+    }
+
+    /// The uses that are not writes of parts.
+    fn reads(&self) -> usize {
+        self.hold + self.cache + self.pass
     }
 }
 
 /// The objects that reads and writes are using, by how many use each.
-#[derive(Debug, Default)]
-pub(crate) struct Uses(Mutex<BTreeMap<Key, Using>>);
+#[derive(Debug)]
+pub(crate) struct Uses {
+    count: Mutex<BTreeMap<Key, Using>>,
+    /// Changes each time a write of parts ends its use of an object.
+    written: watch::Sender<u64>,
+}
+
+impl Default for Uses {
+    fn default() -> Self {
+        Self {
+            count: Mutex::default(),
+            written: watch::channel(0).0,
+        }
+    }
+}
 
 impl Uses {
     fn count(&self) -> std::sync::MutexGuard<'_, BTreeMap<Key, Using>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.count.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -443,18 +475,23 @@ impl Uses {
 pub(crate) struct InUse {
     uses: Arc<Uses>,
     key: Key,
-    want: Want,
+    kind: Use,
 }
 
 impl Drop for InUse {
     fn drop(&mut self) {
-        let mut count = self.uses.count();
-        if let Some(using) = count.get_mut(&self.key) {
-            let of = using.of(self.want);
-            *of = of.saturating_sub(1);
-            if using.hold + using.cache + using.pass == 0 {
-                count.remove(&self.key);
+        {
+            let mut count = self.uses.count();
+            if let Some(using) = count.get_mut(&self.key) {
+                let of = using.of(self.kind);
+                *of = of.saturating_sub(1);
+                if using.reads() + using.write == 0 {
+                    count.remove(&self.key);
+                }
             }
+        }
+        if self.kind == Use::Write {
+            self.uses.written.send_modify(|ended| *ended += 1);
         }
     }
 }
@@ -750,12 +787,26 @@ impl Engine {
     /// The device records nothing for it until a part arrives, so that a
     /// read that fetches nothing writes nothing.
     pub(crate) fn want_object(&self, space: EventId, locator: &Locator, want: Want) -> InUse {
+        self.use_as(space, locator, Use::Read(want))
+    }
+
+    /// Uses an object while parts a transfer brought are written outside
+    /// the device's lock: taken under the lock that found the device means
+    /// to hold them, and dropped under the one that notes them. The device
+    /// drops nothing of the object meanwhile, and an application that
+    /// asks to drop it waits for the write to end
+    /// ([`drop_local_object`](Self::drop_local_object)).
+    pub(crate) fn write_object(&self, space: EventId, locator: &Locator) -> InUse {
+        self.use_as(space, locator, Use::Write)
+    }
+
+    fn use_as(&self, space: EventId, locator: &Locator, kind: Use) -> InUse {
         let key = (space, object_id(locator));
-        *self.uses().count().entry(key).or_default().of(want) += 1;
+        *self.uses().count().entry(key).or_default().of(kind) += 1;
         InUse {
             uses: self.uses().clone(),
             key,
-            want,
+            kind,
         }
     }
 
@@ -790,15 +841,31 @@ impl Engine {
             .and_then(crate::replica::stored_length)
     }
 
-    /// Whether a read uses an object, or a request for its chunks is
-    /// still wanted ([`Engine::fetch_chunks`]).
+    /// Whether a read or a write of parts uses an object, or a request
+    /// for its chunks is still wanted ([`Engine::fetch_chunks`]).
     fn in_use(&self, space: &EventId, id: &[u8; 32]) -> bool {
-        self.uses().count().contains_key(&(*space, *id))
-            || self
-                .fetches()
-                .of(space)
-                .iter()
-                .any(|request| request.locator[..32] == id[..])
+        self.uses().count().contains_key(&(*space, *id)) || self.fetched(space, id)
+    }
+
+    /// Whether a request for an object's chunks is still wanted.
+    fn fetched(&self, space: &EventId, id: &[u8; 32]) -> bool {
+        self.fetches()
+            .of(space)
+            .iter()
+            .any(|request| request.locator[..32] == id[..])
+    }
+
+    /// Of an object in use, one that only writes of parts use
+    /// ([`write_object`](Self::write_object)): the receiver changes when
+    /// one of them ends. `None` while a read or a fetch uses it, or
+    /// nothing does.
+    fn only_written(&self, space: &EventId, id: &[u8; 32]) -> Option<watch::Receiver<u64>> {
+        let count = self.uses().count();
+        let using = count.get(&(*space, *id))?;
+        if using.write == 0 || using.reads() > 0 || self.fetched(space, id) {
+            return None;
+        }
+        Some(self.uses().written.subscribe())
     }
 
     /// Why the device does not drop an object by itself, if it does not
@@ -1012,7 +1079,7 @@ impl Engine {
             .uses()
             .count()
             .get(&key)
-            .map_or(0, |using| using.hold + using.cache + using.pass);
+            .map_or(0, |using| using.reads() + using.write);
         if used > own || self.fetches().stores(&space, locator) {
             return Ok(());
         }
@@ -1856,7 +1923,9 @@ impl Engine {
     /// that it is absent: the device no longer means to hold it, and
     /// fetches it when it is read. Dropping an object the device holds
     /// nothing of changes nothing. A blob the application holds as a file
-    /// is released ([`Engine::release_held`]).
+    /// is released ([`Engine::release_held`]). Parts a transfer brought
+    /// that are still being written, when no read or fetch uses the object
+    /// any more, are written first: the drop waits for them.
     ///
     /// # Errors
     ///
@@ -1866,7 +1935,19 @@ impl Engine {
     /// device keeps every blob ([`Engine::keep_all_blobs`]) and would
     /// fetch it again at once; the store's and the provider's.
     pub async fn drop_local_object(&self, space: EventId, locator: &Locator) -> Result<()> {
-        let mut state = self.lock().await;
+        // A write of parts a fetch brought, with no read or fetch that
+        // uses the object any more, as when a reader went part way
+        // through: it ends once the replica notes them, and the drop
+        // waits for it.
+        let mut state = loop {
+            let state = self.lock().await;
+            let Some(mut written) = self.only_written(&space, &object_id(locator)) else {
+                break state;
+            };
+            drop(state);
+            // The sender lives as long as the engine.
+            let _ = written.changed().await;
+        };
         self.refresh_held(&mut state);
         let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
         if replica.is_held(locator) {

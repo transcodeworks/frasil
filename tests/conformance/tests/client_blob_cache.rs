@@ -647,3 +647,143 @@ async fn a_blob_put_again_on_the_same_connection_is_released_once_the_peer_answe
     })
     .await;
 }
+
+/// How many times each kind of read is made before its blob is dropped.
+const ROUNDS: usize = 8;
+
+/// A blob of two chunks and a little more, so that a reader can let it go
+/// part way.
+fn large() -> Vec<u8> {
+    (0..2_200_000usize).map(|i| (i % 251) as u8).collect()
+}
+
+/// Reads a reader from where it stands to the blob's end.
+async fn read_to_end(reader: &mut frasil::BlobReader) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut buf = vec![0; 300_000];
+    loop {
+        let read = within(reader.read(&mut buf)).await.unwrap();
+        if read == 0 {
+            break out;
+        }
+        out.extend_from_slice(&buf[..read]);
+    }
+}
+
+/// How a read ends before its blob is dropped.
+#[derive(Debug, Clone, Copy)]
+enum Ending {
+    /// `get` returned the blob.
+    Got,
+    /// A reader read to the end, then closed.
+    Closed,
+    /// A reader read to the end, then dropped.
+    Dropped,
+    /// A reader read its first bytes, then dropped.
+    DroppedPartWay,
+    /// A reader read its first bytes, cancelled, then dropped.
+    CancelledPartWay,
+}
+
+/// Makes a read that ends as `ending` says, and returns once it has
+/// returned to the caller.
+async fn read_and_end(blobs: &Blobs, id: BlobId, bytes: &[u8], ending: Ending) {
+    if let Ending::Got = ending {
+        assert_eq!(get(blobs, id, &Read::new()).await.as_deref(), Some(bytes));
+        return;
+    }
+    let mut reader = within(blobs.open_reader(id, &Read::new())).await.unwrap();
+    match ending {
+        Ending::Got => unreachable!(),
+        Ending::Closed | Ending::Dropped => {
+            assert_eq!(read_to_end(&mut reader).await, bytes);
+            if let Ending::Closed = ending {
+                within(reader.close()).await.unwrap();
+            }
+        }
+        Ending::DroppedPartWay | Ending::CancelledPartWay => {
+            let mut first = vec![0; 1000];
+            let read = within(reader.read(&mut first)).await.unwrap();
+            assert_eq!(&first[..read], &bytes[..read]);
+            if let Ending::CancelledPartWay = ending {
+                reader.cancel();
+            }
+        }
+    }
+}
+
+/// Once a read has returned to the application, its blob is free to drop:
+/// `drop_local` right after it is never refused because a read or a fetch
+/// uses the blob (at-rest.md, "Retention", what is never dropped), whether
+/// the read fetched the blob whole, read it through a reader to its end,
+/// or let it go part way. On the member that fetched the blob and on the
+/// device that put it, which fetches it again once it dropped it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blob_is_free_to_drop_once_its_read_returns() {
+    free_to_drop_once_read(Storage::Memory, Storage::Memory).await;
+}
+
+/// [`a_blob_is_free_to_drop_once_its_read_returns`] with stores on disk,
+/// where the parts a fetch brings are written outside the device's lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blob_stored_on_disk_is_free_to_drop_once_its_read_returns() {
+    let dir = temp_dir("blob-cache-free-to-drop");
+    free_to_drop_once_read(
+        Storage::Directory(dir.join("alice")),
+        Storage::Directory(dir.join("bob")),
+    )
+    .await;
+}
+
+async fn free_to_drop_once_read(alices: Storage, bobs: Storage) {
+    let peer = spawn_loopback().await.unwrap();
+    let alice = open(1, alices, Options::new()).await;
+    let space = alice.create_space().await.unwrap();
+    alice.connect(&peer.origin).await.unwrap();
+    let files = space.create_blobs().unwrap();
+    let bob = open(2, bobs, Options::new()).await;
+    // A first blob, so that Bob holds the stream and its keys.
+    let (_, small) = join(&peer, &space, &files, &bob, 1).await;
+    let bytes = large();
+    let id = files.put(Some("a file"), &bytes).await.unwrap();
+    let bobs_files = listed(&bob.space(space.id()).await.unwrap(), &files, 2).await;
+    assert_eq!(
+        get(&bobs_files, small[0], &Read::new()).await,
+        Some(vec![1; SIZE])
+    );
+    // Alice may drop it once the peer holds it.
+    within(async {
+        while state(&files, id).await != BlobState::Cached {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+
+    let endings = [
+        Ending::Got,
+        Ending::Closed,
+        Ending::Dropped,
+        Ending::DroppedPartWay,
+        Ending::CancelledPartWay,
+    ];
+    let mut refused = Vec::new();
+    for (who, blobs) in [("alice", &files), ("bob", &bobs_files)] {
+        for ending in endings {
+            for round in 0..ROUNDS {
+                read_and_end(blobs, id, &bytes, ending).await;
+                if let Err(error) = blobs.drop_local(id).await {
+                    refused.push(format!("{who} {ending:?} round {round}: {error}"));
+                    // Free for the next round once nothing uses it.
+                    within(async {
+                        while blobs.drop_local(id).await.is_err() {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    })
+                    .await;
+                }
+                assert_eq!(state(blobs, id).await, BlobState::Absent);
+            }
+        }
+    }
+    assert!(refused.is_empty(), "{refused:#?}");
+}

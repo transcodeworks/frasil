@@ -1650,7 +1650,10 @@ impl Engine {
         parts: &[&ObjectPart],
         checked: bool,
     ) -> Result<()> {
-        if self.store_parts_if_room(space, parts, checked).await? {
+        if self
+            .store_parts_if_room(space, parts, checked, &mut Vec::new())
+            .await?
+        {
             Ok(())
         } else {
             Err(Error::Store(
@@ -1667,11 +1670,20 @@ impl Engine {
     /// other call is writing are deleted ([`PartWrites`]): a record the
     /// device held before the call stays, as does all it holds when the
     /// call wrote nothing.
+    ///
+    /// `uses` are the uses of the parts' objects that the write holds
+    /// ([`Engine::write_object`]): they end under the lock that notes the
+    /// parts, so that a read that finds them there and returns leaves
+    /// nothing of this write using its object. When the store has no room
+    /// they stay, for the caller to write again.
+    ///
+    /// [`Engine::write_object`]: crate::device::Engine::write_object
     async fn store_parts_if_room(
         &self,
         space: EventId,
         parts: &[&ObjectPart],
         checked: bool,
+        uses: &mut Vec<crate::retention::InUse>,
     ) -> Result<bool> {
         if parts.is_empty() {
             return Ok(true);
@@ -1697,9 +1709,9 @@ impl Engine {
                     (writer, writing)
                 }
                 None => {
-                    return Self::keep_parts_in(&mut state, space, parts)
-                        .await
-                        .map(|()| true);
+                    let kept = Self::keep_parts_in(&mut state, space, parts).await;
+                    uses.clear();
+                    return kept.map(|()| true);
                 }
             }
         };
@@ -1756,9 +1768,9 @@ impl Engine {
             let _ = writer.forget(addresses).await;
             return Ok(true);
         }
-        Self::note_parts(&mut state, space, parts, checked)
-            .await
-            .map(|()| true)
+        let noted = Self::note_parts(&mut state, space, parts, checked).await;
+        uses.clear();
+        noted.map(|()| true)
     }
 
     /// Notes parts of objects the store or memory now holds, and uses what
@@ -2110,7 +2122,7 @@ impl Engine {
         let checked = source == Source::Checked;
         let mut left = BTreeSet::new();
         let mut unmeant = BTreeSet::new();
-        let (sealed, _writing) = {
+        let (sealed, mut writing) = {
             let mut state = self.lock().await;
             self.refresh_held(&mut state);
             // Under `held`, a blob's parts go through the provider instead
@@ -2191,7 +2203,7 @@ impl Engine {
                 .map(|part| part.locator)
                 .collect::<BTreeSet<Locator>>()
                 .iter()
-                .map(|locator| self.use_object(space, locator))
+                .map(|locator| self.write_object(space, locator))
                 .collect();
             // Room for what goes to the cache, before it is written
             // (at-rest.md, "Retention", when). What is held beside the
@@ -2223,11 +2235,15 @@ impl Engine {
             (sealed, writing)
         };
         // The chunks are sealed and written while the device goes on.
-        let mut stored = self.store_parts_if_room(space, &sealed, checked).await?;
+        let mut stored = self
+            .store_parts_if_room(space, &sealed, checked, &mut writing)
+            .await?;
         // A store with no room for parts another party sent: the device
         // drops cached objects to make as much, and writes again.
         if !stored && source == Source::Sent && self.make_room(space, &sealed).await? {
-            stored = self.store_parts_if_room(space, &sealed, checked).await?;
+            stored = self
+                .store_parts_if_room(space, &sealed, checked, &mut writing)
+                .await?;
         }
         if !stored {
             // Still none. The readers of these objects go on through
