@@ -241,30 +241,8 @@ impl Engine {
             if device == me {
                 continue;
             }
-            let welcome = frasil_admission::welcome::Welcome {
-                space: space.0,
-                event,
-                key_name: wrap.key_name.encode(),
-                grant_name: wrap
-                    .grant_name
-                    .as_ref()
-                    .map(frasil_keys::KeyName::encode)
-                    .unwrap_or_default(),
-                wrap: wrap.wrap.clone(),
-                approver: me,
-                peers: self.welcome_hints(&space, &[]).await,
-                snapshot: None,
-            };
-            let sealed = welcome
-                .seal_with(&recipient.keys, &*self.platform().draw::<64>()?)
-                .map_err(Error::class)?;
-            self.links().wait(crate::links::Waiting {
-                recipient: device,
-                space,
-                event,
-                sealed,
-                deposited: Vec::new(),
-            });
+            self.wait_welcome(space, &recipient.keys, event, wrap)
+                .await?;
         }
         Ok(())
     }

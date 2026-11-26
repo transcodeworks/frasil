@@ -137,7 +137,15 @@ impl Links {
             .collect()
     }
 
-    /// The recipient holds the space: its welcome no longer waits.
+    /// Whether a welcome for a recipient and space waits.
+    pub(crate) fn waits(&self, recipient: &DeviceId, space: &EventId) -> bool {
+        self.welcomes
+            .iter()
+            .any(|w| (w.recipient, w.space) == (*recipient, *space))
+    }
+
+    /// The recipient holds the space, or the space's roster no longer
+    /// reaches it: its welcome no longer waits.
     pub(crate) fn delivered(&mut self, recipient: &DeviceId, space: &EventId) {
         self.welcomes
             .retain(|w| (w.recipient, w.space) != (*recipient, *space));

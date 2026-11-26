@@ -227,6 +227,11 @@ struct Driver {
     /// this side does not offer them again of its own accord. The other
     /// side offers one once its own view admits it.
     declined: BTreeSet<EventId>,
+    /// The spaces of this side's own offers that the other side refused on
+    /// this connection: it holds no state of them that matched. Each one
+    /// whose welcome no longer waits, as after a restart, is welcomed
+    /// again (admission.md, 3.10 Welcomes).
+    refused: BTreeSet<EventId>,
     /// The device's spaces or their rosters may have changed since this
     /// side last looked for spaces it shares with the other device.
     shared_due: bool,
@@ -370,6 +375,7 @@ pub async fn run_member_with(
         attaches: BTreeMap::new(),
         to_offer: spaces,
         declined: BTreeSet::new(),
+        refused: BTreeSet::new(),
         shared_due: false,
         incoming,
         opened: Instant::now(),
@@ -738,6 +744,7 @@ impl Driver {
                         } else if !self.retry(attach, may_retry).await? {
                             if let Some(space) = space {
                                 self.declined.insert(space);
+                                self.refused.insert(space);
                             }
                             self.remove_attach(attach);
                             if attach == 0 {
@@ -1189,16 +1196,44 @@ impl Driver {
 
     /// Hands the other device the welcomes waiting for it, each once on
     /// this connection, as items of its device mailbox (transport.md,
-    /// "Mailboxes"), once its `Identify` has verified.
+    /// "Mailboxes"), once its `Identify` has verified. A space the other
+    /// device refused on this connection, whose welcome no longer waits,
+    /// is welcomed again first; a welcome of a space whose roster no
+    /// longer reaches the other device waits no longer, and goes nowhere
+    /// (admission.md, 3.10 Welcomes, "A welcome that waits for a member
+    /// connection").
     async fn hand_welcomes(&mut self) -> Result<()> {
         let Some(remote) = self.session.remote_device().copied() else {
             return Ok(());
         };
+        let again: Vec<EventId> = self
+            .refused
+            .iter()
+            .filter(|space| !self.handed.contains(space) && !self.carries(space))
+            .copied()
+            .collect();
+        for space in again {
+            // Made again at most once on a connection.
+            self.refused.remove(&space);
+            let _ = self.device.welcome_again(space, remote).await;
+        }
         let waiting = self.device.links().welcomes_for(&remote);
         for welcome in waiting {
-            if !self.handed.insert(welcome.space) {
+            if self.handed.contains(&welcome.space) {
                 continue;
             }
+            let reaches = self
+                .device
+                .read(&welcome.space, |replica| {
+                    replica.level_of(&remote).is_some()
+                })
+                .await
+                .unwrap_or(false);
+            if !reaches {
+                self.device.links().delivered(&remote, &welcome.space);
+                continue;
+            }
+            self.handed.insert(welcome.space);
             let put = MailboxPut {
                 request: 0,
                 address: mailbox::address(MailboxKind::Device, &remote.0),
