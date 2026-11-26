@@ -956,6 +956,10 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_frasil_uniffi_checksum_method_losslistener_reported(
     ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_space_admit_member(
+    ): Int
+    external fun uniffi_frasil_uniffi_checksum_method_space_admit_member_administrator(
+    ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_blobs(
     ): Int
     external fun uniffi_frasil_uniffi_checksum_method_space_checkpoints(
@@ -1225,6 +1229,10 @@ external fun uniffi_frasil_uniffi_fn_clone_space(`handle`: Long,uniffi_out_err: 
 ): Long
 external fun uniffi_frasil_uniffi_fn_free_space(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Unit
+external fun uniffi_frasil_uniffi_fn_method_space_admit_member(`ptr`: Long,`knownSpace`: RustBuffer.ByValue,`member`: RustBuffer.ByValue,`level`: RustBuffer.ByValue,
+): Long
+external fun uniffi_frasil_uniffi_fn_method_space_admit_member_administrator(`ptr`: Long,`knownSpace`: RustBuffer.ByValue,`member`: RustBuffer.ByValue,`rank`: Byte,
+): Long
 external fun uniffi_frasil_uniffi_fn_method_space_blobs(`ptr`: Long,`id`: RustBuffer.ByValue,
 ): Long
 external fun uniffi_frasil_uniffi_fn_method_space_checkpoints(`ptr`: Long,
@@ -1598,6 +1606,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_frasil_uniffi_checksum_method_losslistener_reported() != 62652) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_admit_member() != 60144) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_frasil_uniffi_checksum_method_space_admit_member_administrator() != 9592) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_frasil_uniffi_checksum_method_space_blobs() != 62151) {
@@ -7813,6 +7827,27 @@ public object FfiConverterTypeLossListener: FfiConverter<LossListener, Long> {
 public interface SpaceInterface {
 
     /**
+     * Admits a device that the space `known_space` grants directly to this
+     * space at `level`, `read` or `write`, by its member ID, with no code
+     * and no peer, with history; the grant records `via` none. It commits
+     * at once; the device's welcome goes over the next member connection
+     * with it, such as the one the two hold for `known_space`, and it
+     * follows this space as it follows a person's grant. The grant rests
+     * only on `known_space`'s roster, and a removal there does not reach
+     * it. It fails unless this device administers the space, when
+     * `known_space` does not grant the device directly or grants it as a
+     * guest, and when this space has the device already.
+     */
+    suspend fun `admitMember`(`knownSpace`: kotlin.String, `member`: kotlin.String, `level`: kotlin.String)
+
+    /**
+     * Admits a device that `known_space` grants directly to this space as
+     * an administrator at `rank`, at most this device's own; otherwise as
+     * `admit_member`.
+     */
+    suspend fun `admitMemberAdministrator`(`knownSpace`: kotlin.String, `member`: kotlin.String, `rank`: kotlin.UByte)
+
+    /**
      * A blob stream of the space, by its ID.
      */
     suspend fun `blobs`(`id`: kotlin.String): Blobs
@@ -8075,6 +8110,67 @@ open class Space: Disposable, AutoCloseable, SpaceInterface
         return uniffiRustCall() { status ->
             UniffiLib.uniffi_frasil_uniffi_fn_clone_space(handle, status)
         }
+    }
+
+
+    /**
+     * Admits a device that the space `known_space` grants directly to this
+     * space at `level`, `read` or `write`, by its member ID, with no code
+     * and no peer, with history; the grant records `via` none. It commits
+     * at once; the device's welcome goes over the next member connection
+     * with it, such as the one the two hold for `known_space`, and it
+     * follows this space as it follows a person's grant. The grant rests
+     * only on `known_space`'s roster, and a removal there does not reach
+     * it. It fails unless this device administers the space, when
+     * `known_space` does not grant the device directly or grants it as a
+     * guest, and when this space has the device already.
+     */
+    @Throws(FrasilException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `admitMember`(`knownSpace`: kotlin.String, `member`: kotlin.String, `level`: kotlin.String) {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_frasil_uniffi_fn_method_space_admit_member(
+                uniffiHandle,
+                FfiConverterString.lower(`knownSpace`),FfiConverterString.lower(`member`),FfiConverterString.lower(`level`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+
+        // Error FFI converter
+        FrasilException.ErrorHandler,
+    )
+    }
+
+
+    /**
+     * Admits a device that `known_space` grants directly to this space as
+     * an administrator at `rank`, at most this device's own; otherwise as
+     * `admit_member`.
+     */
+    @Throws(FrasilException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `admitMemberAdministrator`(`knownSpace`: kotlin.String, `member`: kotlin.String, `rank`: kotlin.UByte) {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_frasil_uniffi_fn_method_space_admit_member_administrator(
+                uniffiHandle,
+                FfiConverterString.lower(`knownSpace`),FfiConverterString.lower(`member`),FfiConverterUByte.lower(`rank`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_frasil_uniffi_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.ffi_frasil_uniffi_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+
+        // Error FFI converter
+        FrasilException.ErrorHandler,
+    )
     }
 
 

@@ -253,3 +253,39 @@ private struct Pair {
     #expect(member.level == "read")
     try await pair.close()
 }
+
+@Test func aMemberOfOneSpaceIsAdmittedToAnotherWithNoPeer() async throws {
+    let pair = try await Pair.make(key: 150)
+    let invitation = try await pair.space.invite(level: "write", name: "host", listener: Asks(true))
+    _ = try await pair.newcomer.join(
+        invitation: invitation.text(), name: "newcomer", listener: Asks(true))
+    try await invitation.admitted()
+
+    // The host admits the newcomer, a direct member of the first space, to a
+    // second one, with no code; the welcome goes over the member connection
+    // the two hold for the first.
+    let other = try await pair.host.createSpace()
+    let administer = await failure {
+        try await other.admitMember(
+            knownSpace: pair.space.id(), member: pair.newcomer.id(), level: "administer")
+    }
+    #expect(administer.contains("admitMemberAdministrator"))
+    try await other.admitMember(
+        knownSpace: pair.space.id(), member: pair.newcomer.id(), level: "read")
+    let member = try #require(try await other.members().first { $0.id == pair.newcomer.id() })
+    #expect(member.level == "read")
+    let (newcomer, id) = (pair.newcomer, pair.newcomer.id())
+    let otherId = other.id()
+    let arrived = try await eventually("the newcomer follows the second space") {
+        let space = try await newcomer.space(id: otherId)
+        return try await space.members().contains { $0.id == id } ? space : nil
+    }
+    #expect(arrived.id() == other.id())
+
+    // A device that is a member already is not admitted again.
+    _ = await failure {
+        try await other.admitMemberAdministrator(
+            knownSpace: pair.space.id(), member: pair.newcomer.id(), rank: 1)
+    }
+    try await pair.close()
+}

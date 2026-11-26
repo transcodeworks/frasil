@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -20,6 +21,15 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+
+/** Waits up to thirty seconds until [check] gives a value. */
+private suspend fun <T : Any> eventually(what: String, check: suspend () -> T?): T {
+    repeat(600) {
+        runCatching { check() }.getOrNull()?.let { return it }
+        delay(50)
+    }
+    error("not in time: $what")
+}
 
 /** Whether a failure's message has [part] in it. */
 private fun Throwable?.says(part: String) = this?.message?.contains(part) == true
@@ -262,6 +272,35 @@ class AdmissionTest {
         again.admitted()
         assertEquals(devices.space.id(), joined.id())
         assertEquals("read", devices.space.members().single { it.id == devices.newcomer.id() }.level)
+        devices.close()
+    }
+    @Test fun aMemberOfOneSpaceIsAdmittedToAnotherWithNoPeer() = runBlocking {
+        val devices = Devices.make(150)
+        val invitation = devices.space.invite("write", "host", Asks(true))
+        devices.newcomer.join(invitation.text(), "newcomer", Asks(true))
+        invitation.admitted()
+
+        // The host admits the newcomer, a direct member of the first space,
+        // to a second one, with no code; the welcome goes over the member
+        // connection the two hold for the first.
+        val other = devices.host.createSpace()
+        val administer = assertFailsWith<FrasilException> {
+            other.admitMember(devices.space.id(), devices.newcomer.id(), "administer")
+        }
+        assertTrue(administer.says("admitMemberAdministrator"))
+        other.admitMember(devices.space.id(), devices.newcomer.id(), "read")
+        assertEquals("read", other.members().single { it.id == devices.newcomer.id() }.level)
+        val arrived = eventually("the newcomer follows the second space") {
+            devices.newcomer.space(other.id()).takeIf { space ->
+                space.members().any { it.id == devices.newcomer.id() }
+            }
+        }
+        assertEquals(other.id(), arrived.id())
+
+        // A device that is a member already is not admitted again.
+        assertFailsWith<FrasilException> {
+            other.admitMemberAdministrator(devices.space.id(), devices.newcomer.id(), 1.toUByte())
+        }
         devices.close()
     }
 }
