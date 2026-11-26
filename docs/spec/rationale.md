@@ -1132,13 +1132,17 @@ The welcome comes only from its signer, as a person's grant's does, so a
 member that merely carries it cannot point a device at a space of its
 choosing. Rather than keep waiting welcomes at rest, the signer makes one
 again from the log when it meets the device and the device refuses the
-space: the roster says the device is a member, the member tickets say it
-has not attached the space, and a fresh delivery supplies a wrap, since a
-delivery's wraps name no recipient and even their author cannot tell which
-one is whose. That costs one delivery event per restart before the device
-takes the space up, and no new record. The trust is carried, not shared: a
-later removal from the known space does not reach the grant, which is
-therefore the application's to mirror.
+space: the roster says the device is a member by a grant the signer made,
+the member tickets say it has not attached the space, and a fresh delivery
+supplies a wrap, since a delivery's wraps name no recipient and even their
+author cannot tell which one is whose. Only the grant's signer does it, so
+a device away at its grant that meets several administrators costs one
+delivery, not one each; and the signer does it at most once for a device
+and space each time it starts, so a device that never takes the space up
+costs at most one delivery event per start of the signer, and no new
+record. The trust is carried, not shared: a later removal from the known
+space does not reach the grant, which is therefore the application's to
+mirror.
 
 ## References
 

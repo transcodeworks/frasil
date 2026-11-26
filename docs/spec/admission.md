@@ -695,29 +695,54 @@ arrives.
 welcome it means to hand over a member connection until one of these ends
 it:
 
-- a member connection admits the newcomer's attach of the space;
+- a member connection admits the newcomer's attach of the space, whether
+  that attach is still live or has ended;
 - the space's roster, in the signer's current view, no longer reaches the
-  newcomer, as after its removal: the signer then hands nothing over;
+  newcomer, as after its removal: the signer then hands nothing over and
+  deposits nothing;
 - the signer's bound on welcomes it keeps waiting passes it, oldest first.
 
-Waiting welcomes need not survive a restart. When the signer next meets a
-device over a member connection, offers it a space ([transport.md](transport.md),
-"Further attaches"), and the device refuses the attach, the signer makes
-the welcome again, when all of these hold in its current view:
+While it waits, the signer also deposits it in the newcomer's device
+mailbox at each peer it is connected to, once that peer holds the event
+the welcome names, and checks first that the roster still reaches the
+newcomer.
+
+Waiting welcomes need not survive a restart. When the signer meets the
+device over a member connection, offers it the space as a further attach
+([transport.md](transport.md), "Further attaches"), and the device refuses
+the attach, the signer makes the welcome again, at most once on that
+connection, when all of these hold in its current view:
 
 1. It administers the space.
-2. The roster grants the device directly, with no `session`, or grants a
-   person whose list vouches for it.
-3. No member connection has admitted the device's attach of the space,
-   which the signer knows by the member ticket it keeps of the device for
-   that space ([transport.md](transport.md), "Reconnecting").
-4. No welcome for the device and space waits already.
+2. The space reaches the device, which has not forked there, and a
+   restricted space's parent reaches it
+   ([ext-restricted-spaces.md](ext-restricted-spaces.md), "Membership of a
+   restricted space").
+3. The roster grants the device with history, by a grant in force that this
+   device signed: the device's own grant, with no `session`, or the grant
+   of a person whose list vouches for the device. Only that grant's signer
+   makes the welcome again; another administrator makes nothing.
+4. No member connection has admitted the device's attach of the space since
+   the signer last started, and the signer keeps no member ticket of the
+   device for that space ([transport.md](transport.md), "Reconnecting").
+5. No welcome for the device and space waits, and the signer has not made
+   one again for them since it last started.
 
-It signs a delivery of the current state to the device, sealed to the keys
-its grant or its person's list names, and hands over a welcome naming that
-delivery. A device that holds the space already drops it, as any welcome
-of a space it holds. The rule covers a person's devices and a device member
-alike, and needs no record beyond the space's log and the member tickets.
+It checks 1 to 3 again in the transaction that signs the delivery: it signs
+a delivery of the current state to the device, sealed to the keys its grant
+or its person's list names, and keeps a welcome naming that delivery, with
+no snapshot, as the grant's own welcome had none. That welcome waits, is
+handed over and is deposited at peers as any other. So the signer signs at
+most one such delivery for a device and space each time it starts, and none
+once the device has taken the space up with it. A device that holds the
+space already drops the welcome, as any welcome of a space it holds. The
+rule needs no record beyond the space's log and the member tickets.
+
+A device that forgets a space whose roster still grants it follows the
+space again from a welcome it receives later: one still in its device
+mailbox at a peer, which it collects again after a restart, or one the
+signer makes again because the device never attached the space with it.
+Forgetting a space does not leave its roster; a removal does.
 
 A peer does not authenticate who deposits in a device mailbox, so a
 newcomer that collects a welcome there, with no exchange that named the
@@ -884,27 +909,37 @@ order, and refuses the grant when one fails; nothing is signed or sent for
 a refusal, which is the granter's own and has no class on the wire:
 
 1. The granter administers the space.
-2. The known space's roster grants the device directly, not only through a
+2. The known space reaches the granter. A device the known space no longer
+   reaches is no longer sent its changes, so its view of that roster is not
+   kept current.
+3. The known space's roster grants the device directly, not only through a
    person.
-3. That grant carries no `session`: the device is not a guest there.
-4. The space does not reach the device yet, directly, through a person or
+4. That grant carries no `session`: the device is not a guest there.
+5. The known space reaches the device, which has not forked there
+   ([roster.md](roster.md), "Grants of spaces and effective membership"): a
+   grant with no effect, such as one in a restricted space whose parent
+   does not reach the device, vouches for nothing.
+6. The space does not reach the device yet, directly, through a person or
    through a space.
-5. A restricted space's parent reaches the device
+7. A restricted space's parent reaches the device
    ([ext-restricted-spaces.md](ext-restricted-spaces.md), "Membership of a
    restricted space").
 
 Then roster.md's checks of the change apply as for any grant, the rank's
-among them. Replicas check none of the five: the grant is an ordinary
+among them. Replicas check none of the seven: the grant is an ordinary
 device grant, valid by roster.md's rules alone.
 
-The grant commits at once, offline. Its welcome is sealed to the device's
-X-Wing key and waits for a member connection with the device, as section
-3.10 says, which hands it over and, after a restart, makes it again; the
-signer also deposits it in the device's mailbox at the peers it is
-connected to, as for a person's grant. Over a member connection, the
-device takes it only from the signer: the two devices meet on a connection
-formed for any space they share, such as the known space, and the granted
-device follows the space and attaches it there.
+The grant commits at once, offline, and the granter reports it once it
+commits, whatever becomes of its welcome. The welcome is sealed to the
+device's X-Wing key, which every device grant carries
+([roster.md](roster.md), "A device's keys"), and waits for a member
+connection with the device, as section 3.10 says, which hands it
+over and, after a restart, has the signer make it again; the signer also
+deposits it in the device's mailbox at the peers it is connected to, as
+for a person's grant. Over a member connection, the device takes it only
+from the signer: the two devices meet on a connection formed for any
+space they share, such as the known space, and the granted device follows
+the space and attaches it there.
 
 What the grant proves is only that some administrator of the known space
 granted that device ID there; the welcome opens for that device alone. It
