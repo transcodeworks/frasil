@@ -218,8 +218,11 @@ space.admit_member_administrator(known.id(), device_id, rank).await?;
 - If the device is not connected, the welcome waits until it is. This
   device keeps it at rest, in the same commit as the grant, so it waits
   through restarts: the next member connection with the device hands it
-  over, and each peer this device connects to receives it once, even a
-  peer it reaches only after a restart. The welcome stops waiting once
+  over, and each peer this device connects to receives it, even a peer it
+  reaches only after a restart. A peer keeps a mailbox item only a while
+  (72 hours by default while the device has never collected there), so
+  this device deposits the welcome at each peer again every 48 hours
+  while it waits. The welcome stops waiting once
   the device has attached the space with this device, once it is removed
   from the space (a device removed while away is neither handed nor sent
   the welcome at a peer), after 30 days, the longest a peer keeps a
