@@ -128,7 +128,9 @@ sequenceDiagram
 ```
 
 Invite links and lookups through an account are the other ways in. A lookup
-is shown as unverified until a code is compared. See
+is shown as unverified until a code is compared. A device that is already a
+direct member of another space can be admitted from that space's roster,
+with no code ([below](#admitting-a-member-of-another-space)). See
 [admission.md](spec/admission.md).
 
 ## Administrators and their ranks
@@ -191,6 +193,44 @@ retention still applies: after expiry, the sender repeats the grant and
 welcome. The application supplies the expected identities and space IDs
 through its existing authenticated context. The API exchanges ordinary
 roster grants and sealed device-mailbox welcomes, with no new wire format.
+
+## Admitting a member of another space
+
+An administrator can admit a device that another space it holds grants
+directly, by the device's ID, with no code compared and no peer: the grant
+carries the keys that the other space's roster names, which the ID commits
+to. Only the device that holds those keys opens its welcome.
+
+```rust,ignore
+// `known` grants `device_id` directly; `space` is the one to admit it to.
+space.admit_member(known.id(), device_id, Level::Write).await?;
+space.admit_member_administrator(known.id(), device_id, rank).await?;
+```
+
+- The grant commits at once, offline, with history, and records `via` as
+  `none`: no code was compared for it.
+- The device's welcome goes over a member connection between this device
+  and that one, such as the connection the two hold for the known space,
+  and the device follows the space as it follows a person's grant. Only
+  the device that signed the grant hands its welcome over; another member
+  does not carry it. With a peer, the welcome also goes to the device's
+  mailbox there.
+- If the device is not connected, the welcome waits until it is. If this
+  device restarts first, it makes the welcome again when the two meet,
+  from the space's log and a fresh key delivery. The welcome stops being
+  offered once the device has attached the space, or once it is removed
+  from the space.
+- It refuses a device that the known space reaches only through a person,
+  a guest there, a device the space has already, and, for a restricted
+  space, a device its parent does not reach. A rank is at most the
+  caller's own.
+
+What the grant proves is only that some administrator of the known space
+granted that device ID. So an application that mirrors the known space's
+device members into another space gives the known space's administrators
+the power to admit to the other one. And a removal from the known space
+does not reach the other space: the application mirrors removals itself,
+with `Space::remove` in each space it mirrored the device into.
 
 ## Collaborating with no peer
 
