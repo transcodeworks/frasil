@@ -787,6 +787,18 @@ peer needs to store, index and serve units it cannot read.
   object ID is another locator, never named.
 - **Chunks are fixed in size, with synthetic nonces,** so an object has one
   stored form, dedupes within its state, and uploads resume.
+- **Members say what they hold as it changes.** A device drops blobs and
+  its cache evicts them, so what a member announced when the connection
+  started goes stale both ways. An object that becomes whole is announced
+  at once, gathered with others, and a member asked for what it no longer
+  holds says so in `ObjectMissing`. Silence could not say it: it reads the
+  same as a slow answer or chunks past the end, and only a long wait tells
+  them apart. Nor could `ObjectHave` with a count of 0, which an earlier
+  member reads as an announcement and would ask again. `ObjectMissing` is
+  of an ignorable type, so a member that predates it drops it and waits as
+  it did, and no new protocol is needed (overview.md, section 5.6). The
+  withdrawal is an answer, not a broadcast: a member that drops ten
+  thousand cached objects sends nothing until someone asks.
 
 ### 7.3 Adapters
 

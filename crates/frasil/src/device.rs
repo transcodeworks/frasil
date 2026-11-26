@@ -1211,16 +1211,19 @@ impl Engine {
     }
 
     /// Objects as they become whole at this device, and as it drops them,
-    /// by space.
-    #[cfg_attr(not(feature = "adapter-blobs"), allow(dead_code))]
+    /// by space: blob feeds and member connections follow them.
+    #[cfg_attr(
+        not(any(feature = "adapter-blobs", feature = "iroh")),
+        allow(dead_code)
+    )]
     pub(crate) fn subscribe_arrivals(
         &self,
     ) -> broadcast::Receiver<(EventId, frasil_adapter::Locator)> {
         self.shared.arrivals.subscribe()
     }
 
-    /// Tells blob feeds that an object became whole, and that it is no
-    /// longer withdrawn.
+    /// Tells blob feeds and member connections that an object became
+    /// whole, and that it is no longer withdrawn.
     pub(crate) fn arrived(&self, space: EventId, locator: frasil_adapter::Locator) {
         let mut id = [0; 32];
         id.copy_from_slice(&locator[..32]);
@@ -3622,6 +3625,8 @@ impl Engine {
         let mut out = Vec::new();
         // Whether what arrived may name objects the other side announced.
         let mut names_more = false;
+        // Objects asked for that this side does not hold whole.
+        let mut lacked = BTreeSet::new();
         for action in actions {
             match action {
                 Action::Send(message) => out.push(message),
@@ -3630,14 +3635,19 @@ impl Engine {
                     first,
                     count,
                 } => {
-                    let mut parts = match self.serve_parts(&space, &locator, first, count).await? {
-                        Some(parts) => parts,
+                    let parts = match self.serve_parts(&space, &locator, first, count).await? {
+                        Some(parts) => Some(parts),
                         // A held object, its chunks sealed again from the
                         // plaintext (at-rest.md, "Held objects").
-                        None => self
-                            .serve_held(space, &locator, first, count)
-                            .await?
-                            .unwrap_or_default(),
+                        None => self.serve_held(space, &locator, first, count).await?,
+                    };
+                    // Not held whole: a member hears so, and asks another
+                    // party (units.md, "Sync", sources between members).
+                    let Some(mut parts) = parts else {
+                        if session.acknowledges() {
+                            lacked.insert(locator);
+                        }
+                        continue;
                     };
                     // The first chunk of an answer carries the header,
                     // whichever index it starts at (units.md, "Sync",
@@ -3674,7 +3684,6 @@ impl Engine {
                     out.extend(wants);
                 }
                 Action::ObjectsHeld(locators) => {
-                    session.note_announced(&locators);
                     let missing = self.missing_objects(&space).await;
                     for locator in locators {
                         if missing.contains(&locator) {
@@ -3683,6 +3692,15 @@ impl Engine {
                     }
                     // Chunks a reader asked for, of an object announced now.
                     out.extend(self.want_requests(session, true).await);
+                }
+                Action::ObjectsMissing(locators) => {
+                    // The requests for them this session took hear of it,
+                    // unless another connection will still try.
+                    if let Some(taker) = session.taker_if_any() {
+                        for locator in &locators {
+                            taker.unserved(locator);
+                        }
+                    }
                 }
                 Action::SnapshotWanted => {
                     if let Acknowledger::Member(remote) = by {
@@ -3739,6 +3757,19 @@ impl Engine {
                     out.extend(sends(session.stored(replica)));
                 }
             }
+        }
+        if !lacked.is_empty() {
+            let lacked: Vec<_> = lacked.into_iter().collect();
+            out.extend(
+                lacked
+                    .chunks(frasil_units::limits::MAX_MESSAGE_ITEMS)
+                    .map(|chunk| SyncMessage {
+                        space,
+                        message: frasil_units::messages::Message::ObjectMissing {
+                            locators: chunk.to_vec(),
+                        },
+                    }),
+            );
         }
         if names_more && !session.announced().is_empty() {
             out.extend(self.want_announced(session).await);
@@ -4121,7 +4152,7 @@ impl Engine {
             if announced && !session.announced().contains(&request.locator) {
                 continue;
             }
-            if session.take_request(request.id) {
+            if session.take_request(request.id, request.locator) {
                 out.extend(
                     self.want_chunks_in(session, request.locator, request.chunks, request.priority)
                         .await,

@@ -623,8 +623,11 @@ string at key 2 of one `Sync` message:
   streams likewise. On the server binding they travel on the WebSocket, and
   object chunks over HTTP (section 3.15).
 - The space a units.md message names at its key 1 MUST be the scope's
-  space (`Malformed`). `Statement`, `SnapshotWant`, `SnapshotOffer` and
-  `ListEvents` travel on member connections only.
+  space (`Malformed`). `Statement`, `SnapshotWant`, `SnapshotOffer`,
+  `ListEvents` and `ObjectMissing` travel on member connections only.
+  `ObjectHave` and `ObjectMissing` between members travel on the attach's
+  sync stream, so that each side reads them in the order sent
+  ([units.md](units.md), section 3.14, "Sources between members").
 
 **Head statements.** A device sends [units.md](units.md)'s `Statement`, in
 a `Sync` on each attach's sync stream, when the attach is admitted and

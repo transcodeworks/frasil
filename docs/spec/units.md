@@ -466,9 +466,11 @@ fit over several messages.
 | 15 | `SnapshotWant` | 2: 1 to 4,096 streams | asks a member for history-free stream snapshots; member connections only |
 | 16 | `SnapshotOffer` | 2: a space snapshot whose `streams` hold the entries asked for; its other arrays may be empty | the answer; member connections only |
 | 17 | `ListEvents` | 2: 1 to 16 signed device-list events, each a byte string | a read-only person's list events handed to a writer (section 3.11); member connections only |
+| 64 | `ObjectMissing` | 2: 1 to 4,096 locators | objects the sender does not hold whole, answering `ObjectWant` (section 3.14); member connections only |
 
 Type 0 and types 18 to 63 are reserved and MUST be understood. Types from
-64 are ignorable.
+64 are ignorable: a receiver that does not know one drops it. A receiver
+that knows type 64 reads its shape as it reads any other type's.
 
 ## 3. Procedures
 
@@ -1257,11 +1259,65 @@ upload resumes after any interruption. Between members, a side that admits
 the other for a space announces in `ObjectHave` every object of the space it
 holds whole, and later the objects that the units it sends name, so that a
 newcomer that starts from a snapshot reaches objects written before its
-admission. Because sealing is deterministic (section 2.8), a holder that
-keeps an object's plaintext and holds `k(S)` MAY seal its chunks again from
-the plaintext when it serves them, rather than store them
+admission; "Sources between members" below says what else it announces.
+Because sealing is deterministic (section 2.8), a holder that keeps an
+object's plaintext and holds `k(S)` MAY seal its chunks again from the
+plaintext when it serves them, rather than store them
 ([at-rest.md](at-rest.md), "Held objects"); a receiver cannot tell, and
 checks what it receives as section 3.3 says either way.
+
+**Sources between members.** On a member connection, each side counts the
+other as a source of an object of an attached space from an `ObjectHave`
+that names it until an `ObjectMissing` that names it, or until the
+connection ends. A side asks a member only for objects it counts that
+member a source of.
+
+1. **Announcing.** Once a side admits the other for a space, it announces
+   in `ObjectHave` every object of the space it holds whole; afterwards,
+   the objects that the units it sends name and that it holds whole; and,
+   for as long as the attach lasts, each object that becomes whole at it,
+   however it arrived. It gathers the objects that become whole close
+   together, waiting briefly, into as few `ObjectHave`s as their limit of
+   4,096 locators allows, so that a fetch of many objects announces them
+   in a few messages, not one each. A side announces an object that
+   becomes whole to every attach of the space, whether or not the other
+   side announced it before: the other side may have dropped it since.
+2. **No answer is asked.** An `ObjectHave` between members asks for
+   nothing. A side that receives one asks for no object it holds whole,
+   and announces nothing in return: only an object becoming whole at a
+   side makes it announce, so an announcement never brings a fetch or
+   another announcement back from a side that holds the object.
+3. **Answering what it lacks.** A side asked by `ObjectWant` for an object
+   it does not hold whole, as one it dropped or its cache evicted
+   ([at-rest.md](at-rest.md), "Retention"), answers `ObjectMissing` naming
+   it, on the attach's sync stream, and sends no chunk of it. A side that
+   holds the object whole answers with its chunks, and with nothing for
+   chunks past the object's end. A side that serves nothing yet, before it
+   admits the other, answers neither.
+4. **Taking an answer.** A side that receives `ObjectMissing` no longer
+   counts the other as a source of the objects it names: it awaits none of
+   their chunks from it, and asks the other parties that it counts as
+   sources, or a peer. A request for the object that no other connection
+   will still try ends then, rather than after the wait for chunks that do
+   not come. An `ObjectHave`
+   that names the object again, as when the other side holds it whole
+   once more, makes the other a source again.
+5. **Bounds.** A side keeps, for each attach, every announced object its
+   replica knows: one that a unit, a snapshot or a stream snapshot it holds
+   names, or of which it holds anything. Of the announced objects it does
+   not know, it keeps at most 65,536, and drops the rest as if they were
+   never announced. A member learns of an object from the units its
+   replica receives, so honest announcements exceed the bound only when a
+   newcomer is announced more objects than that before it holds the
+   snapshot that names them; the member that announced them is then not a
+   source of the rest until it announces them again.
+6. **Earlier implementations.** A side that does not know `ObjectMissing`
+   drops it (section 2.14) and awaits the chunks it asked for as before; a
+   side that announces nothing when an object becomes whole is a source of
+   fewer objects. Either way both sides still interoperate.
+
+`ObjectMissing` and these rules hold between members only. A peer never
+sends `ObjectMissing`, and a device never sends it to a peer.
 
 ### 3.15 Partial replicas
 
@@ -1670,8 +1726,8 @@ gives every intermediate value:
   `Missing` answers on either side of `withholding_grace`.
 - `stub_confirmation`: section 3.9's rule for one signer, two that agree,
   one signer twice, two that disagree, and the event fetched in full.
-- `messages`: each of the seventeen types, an ignorable type, seven
-  refusals, and a `Path` that checks.
+- `messages`: each of the eighteen types, an ignorable type the reader
+  does not know, eight refusals, and a `Path` that checks.
 - `settled`: section 3.6 at and around `gap_key_timeout`.
 - `partial_replica`: a partial and a full replica's verdicts on a unit
   before, after and concurrent with its writer's removal, each with what

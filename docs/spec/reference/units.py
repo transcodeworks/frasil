@@ -1210,16 +1210,18 @@ def read_statement(signed: bytes, space: bytes, members) -> dict:
 M_HEADS, M_WANT, M_EVENTS, M_MISSING, M_ACK, M_STREAM_HEADS, M_STREAM_WANT = range(1, 8)
 M_OBJECT_WANT, M_OBJECT_CHUNKS, M_OBJECT_HAVE, M_PATH_WANT, M_PATH = range(8, 13)
 M_SUBSCRIBE, M_STATEMENT, M_SNAPSHOT_WANT, M_SNAPSHOT_OFFER, M_LIST_EVENTS = range(13, 18)
+# Of the ignorable types, from 64: those this specification defines.
+M_OBJECT_MISSING = 64
 MESSAGE_NAMES = {
     M_HEADS: "Heads", M_WANT: "Want", M_EVENTS: "Events", M_MISSING: "Missing", M_ACK: "Ack",
     M_STREAM_HEADS: "StreamHeads", M_STREAM_WANT: "StreamWant", M_OBJECT_WANT: "ObjectWant",
     M_OBJECT_CHUNKS: "ObjectChunks", M_OBJECT_HAVE: "ObjectHave", M_PATH_WANT: "PathWant",
     M_PATH: "Path", M_SUBSCRIBE: "Subscribe", M_STATEMENT: "Statement",
     M_SNAPSHOT_WANT: "SnapshotWant", M_SNAPSHOT_OFFER: "SnapshotOffer",
-    M_LIST_EVENTS: "ListEvents",
+    M_LIST_EVENTS: "ListEvents", M_OBJECT_MISSING: "ObjectMissing",
 }
 # Types that travel on member connections only (transport.md routes them).
-MEMBER_ONLY = (M_STATEMENT, M_SNAPSHOT_WANT, M_SNAPSHOT_OFFER, M_LIST_EVENTS)
+MEMBER_ONLY = (M_STATEMENT, M_SNAPSHOT_WANT, M_SNAPSHOT_OFFER, M_LIST_EVENTS, M_OBJECT_MISSING)
 FIRST_IGNORABLE = 64
 
 
@@ -1249,14 +1251,15 @@ def _triples(value, hi: int) -> None:
 
 def read_message(data: bytes) -> dict:
     """units.md, "Sync messages" and "Sync": the shape of each type. An
-    unknown type from 18 to 63 is UnknownMessage; from 64 it is ignored."""
+    unknown type from 18 to 63 is UnknownMessage; an unknown type from 64
+    is ignored, and type 64, ObjectMissing, is read as any other."""
     if len(data) > MAX_MESSAGE_BYTES:
         raise SpecError("TooLarge")
     value = uncbor(data)
     if not isinstance(value, dict) or not is_uint(value.get(0)) or not is_bytes(value.get(1), 32):
         raise SpecError("Malformed")
     t = value[0]
-    if t >= FIRST_IGNORABLE:
+    if t >= FIRST_IGNORABLE and t not in MESSAGE_NAMES:
         return {"type": t, "ignored": True}
     if t not in MESSAGE_NAMES:
         raise SpecError("UnknownMessage")
@@ -1264,13 +1267,15 @@ def read_message(data: bytes) -> dict:
                M_ACK: (2,), M_STREAM_HEADS: (2, 3, 4), M_STREAM_WANT: (2, 3, 4),
                M_OBJECT_WANT: (2, 3, 4), M_OBJECT_CHUNKS: (2, 3, 4, 5), M_OBJECT_HAVE: (2, 3),
                M_PATH_WANT: (2, 3), M_PATH: (2, 3, 4), M_SUBSCRIBE: (2,), M_STATEMENT: (2,),
-               M_SNAPSHOT_WANT: (2,), M_SNAPSHOT_OFFER: (2,), M_LIST_EVENTS: (2,)}[t]
+               M_SNAPSHOT_WANT: (2,), M_SNAPSHOT_OFFER: (2,), M_LIST_EVENTS: (2,),
+               M_OBJECT_MISSING: (2,)}[t]
     if any(k not in (0, 1) + allowed for k in value):
         raise SpecError("Malformed")
     required = {M_HEADS: (2,), M_EVENTS: (2,), M_ACK: (2,), M_STREAM_HEADS: (2, 4),
                 M_STREAM_WANT: (2, 3), M_OBJECT_WANT: (2, 3, 4), M_OBJECT_CHUNKS: (2, 4, 5),
                 M_OBJECT_HAVE: (2,), M_PATH_WANT: (2, 3), M_PATH: (2, 3, 4), M_STATEMENT: (2,),
-                M_SNAPSHOT_WANT: (2,), M_SNAPSHOT_OFFER: (2,), M_LIST_EVENTS: (2,)}.get(t, ())
+                M_SNAPSHOT_WANT: (2,), M_SNAPSHOT_OFFER: (2,), M_LIST_EVENTS: (2,),
+                M_OBJECT_MISSING: (2,)}.get(t, ())
     if any(k not in value for k in required):
         raise SpecError("Malformed")
     if t == M_HEADS:
@@ -1363,6 +1368,8 @@ def read_message(data: bytes) -> dict:
         if not (isinstance(value[2], list) and 1 <= len(value[2]) <= MAX_LIST_EVENTS
                 and all(is_bytes(e) for e in value[2])):
             raise SpecError("Malformed")
+    elif t == M_OBJECT_MISSING:
+        _ids(value[2], 1, MAX_IDS, LOCATOR_BYTES)
     return {"type": t, "name": MESSAGE_NAMES[t], "value": value}
 
 
@@ -2187,13 +2194,14 @@ def message_vectors(gid: bytes, u1: dict, u2: dict, k: bytes, key_ref: bytes,
         message(M_SNAPSHOT_WANT, SPACE, k2=[STREAM_X]),
         message(M_SNAPSHOT_OFFER, SPACE, k2=snapshot),
         message(M_LIST_EVENTS, SPACE, k2=[list_event]),
+        message(M_OBJECT_MISSING, SPACE, k2=[oid]),
     ]
     cases = []
     for data in samples:
         r = read_message(data)
         cases.append({"name": r["name"], "type": r["type"],
                       "member_connections_only": r["type"] in MEMBER_ONLY, "bytes": h(data)})
-    assert [c_["type"] for c_ in cases] == list(range(1, 18))
+    assert [c_["type"] for c_ in cases] == list(range(1, 18)) + [M_OBJECT_MISSING]
     assert check_path([u1["signed"]], events.decode_event(u2["signed"]), gid)
     refusals = []
     for name, data, cls in (
@@ -2206,7 +2214,9 @@ def message_vectors(gid: bytes, u1: dict, u2: dict, k: bytes, key_ref: bytes,
             ("an ObjectWant of 65 chunks", message(M_OBJECT_WANT, SPACE, k2=oid, k3=0, k4=65),
              "Malformed"),
             ("an unknown key", message(M_ACK, SPACE, k2=[u2["id"]], k9=1), "Malformed"),
-            ("a range from 3 to 2", message(M_WANT, SPACE, k3=[[a, 3, 2]]), "Malformed")):
+            ("a range from 3 to 2", message(M_WANT, SPACE, k3=[[a, 3, 2]]), "Malformed"),
+            ("an ObjectMissing that names no object", message(M_OBJECT_MISSING, SPACE, k2=[]),
+             "Malformed")):
         got = expect_error(read_message, data)
         assert got == cls, (name, got)
         refusals.append({"name": name, "bytes": h(data), "class": cls})
@@ -2220,12 +2230,13 @@ def message_vectors(gid: bytes, u1: dict, u2: dict, k: bytes, key_ref: bytes,
                  ("a unit of a stream key 4 names", KIND_UNIT, STREAM_X),
                  ("a unit of another stream", KIND_UNIT, STREAM_Y))]
     assert [s["sent"] for s in sends] == [True, True, True, True, False]
-    ignored = message(64, SPACE, k2=b"a later hint")
+    # An ignorable type this specification does not define.
+    ignored = message(100, SPACE, k2=b"a later hint")
     assert read_message(ignored)["ignored"]
     return {"cases": cases,
             "partial_heads": {"bytes": h(partial), "streams": [h(STREAM_X)],
                               "system_stream": h(SYSTEM), "sends": sends},
-            "ignorable": {"bytes": h(ignored), "type": 64, "outcome": "ignored"},
+            "ignorable": {"bytes": h(ignored), "type": 100, "outcome": "ignored"},
             "refusals": refusals,
             "path": {"from": h(u2["id"]), "to": h(gid), "events": [h(u1["id"])],
                      "signed": [h(u1["signed"])], "checks": True}}

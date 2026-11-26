@@ -25,7 +25,10 @@
 //! 4. **Objects**: once a side admits the other for a space, it announces
 //!    the objects it holds whole in `ObjectHave`, and the other asks for
 //!    those it lacks; answers travel on object streams, one per transfer
-//!    (units.md, "Sync", objects).
+//!    (units.md, "Sync", objects). Each object that becomes whole at the
+//!    device afterwards is announced too, gathered with the others that do
+//!    within a tick, and a side asked for an object it does not hold whole
+//!    answers `ObjectMissing` (units.md, "Sync", sources between members).
 //! 5. **Welcomes**: a welcome waiting for the other device, such as one for
 //!    a space that grants its person, goes over as an item of its device
 //!    mailbox; the other side follows the space and attaches it on the
@@ -397,6 +400,9 @@ async fn drive(
 ) -> Result<()> {
     let device = driver.device.clone();
     let mut notices = device.subscribe();
+    // Objects as they become whole at the device, announced to each
+    // admitted attach of their space on the next tick.
+    let mut arrivals = device.subscribe_arrivals();
     if driver.connection.role() == Role::Dialer {
         driver.offer_next().await?;
     }
@@ -427,6 +433,13 @@ async fn drive(
                     driver.shared_due = true;
                     driver.resync().await?;
                 }
+                Err(broadcast::error::RecvError::Closed) => return Ok(()),
+            },
+            arrival = arrivals.recv() => match arrival {
+                Ok((space, locator)) => driver.on_arrival(space, locator),
+                // Some were missed: every object held whole is announced
+                // again.
+                Err(broadcast::error::RecvError::Lagged(_)) => driver.announce_all().await?,
                 Err(broadcast::error::RecvError::Closed) => return Ok(()),
             },
             _ = tick.tick() => {
@@ -1445,6 +1458,55 @@ impl Driver {
         Ok(())
     }
 
+    /// An object became whole at the device, or was dropped: each admitted
+    /// attach of its space notes it, and announces it on the next tick if
+    /// the device still holds it whole then (units.md, "Sync", sources
+    /// between members). An attach not admitted yet announces every
+    /// object held whole once it is.
+    fn on_arrival(&mut self, space: EventId, locator: frasil_adapter::Locator) {
+        for state in self.attaches.values_mut() {
+            if state.space == space && state.local == Local::Admitted {
+                state.sync.note_whole(&[locator]);
+            }
+        }
+    }
+
+    /// Announces every object held whole again on each admitted attach,
+    /// as after the admission: some objects that became whole were not
+    /// heard of.
+    async fn announce_all(&mut self) -> Result<()> {
+        let attaches: Vec<(u32, EventId)> = self
+            .attaches
+            .iter()
+            .filter(|(_, a)| a.local == Local::Admitted)
+            .map(|(n, a)| (*n, a.space))
+            .collect();
+        for (attach, space) in attaches {
+            let have = self.device.whole_objects_have(&space).await;
+            self.queue(attach, have).await?;
+        }
+        Ok(())
+    }
+
+    /// `ObjectHave` on each attach for the objects that became whole since
+    /// its last tick.
+    async fn announce_whole(&mut self) -> Result<()> {
+        let attaches: Vec<u32> = self
+            .attaches
+            .iter()
+            .filter(|(_, a)| a.sync.has_announcements())
+            .map(|(n, _)| *n)
+            .collect();
+        for attach in attaches {
+            let Some(state) = self.attaches.get_mut(&attach) else {
+                continue;
+            };
+            let have = self.device.sync_announce(&mut state.sync).await;
+            self.queue(attach, have).await?;
+        }
+        Ok(())
+    }
+
     /// The device's requests for chunks changed: each attach asks the
     /// other side for those of its space made since, of objects it
     /// announced (units.md, "Sync", objects).
@@ -1647,6 +1709,7 @@ impl Driver {
             self.state_heads(attach).await?;
             self.share(attach).await?;
         }
+        self.announce_whole().await?;
         self.hand_welcomes().await?;
         if self.shared_due {
             self.offer_shared().await?;

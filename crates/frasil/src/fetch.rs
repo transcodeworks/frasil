@@ -120,9 +120,10 @@ pub enum FetchEnd {
     Malformed,
     /// The other side of a stream sent nothing the device could keep of
     /// the chunks asked for, time after time: no answer, or chunks it
-    /// could not check or take. What the device holds of the object
-    /// stays, and the object is not refused: a request made afterwards
-    /// asks for it again.
+    /// could not check or take; or a member said in `ObjectMissing` that
+    /// it does not hold the object (units.md, "Sync", sources between
+    /// members). What the device holds of the object stays, and the object
+    /// is not refused: a request made afterwards asks for it again.
     Unserved,
 }
 
