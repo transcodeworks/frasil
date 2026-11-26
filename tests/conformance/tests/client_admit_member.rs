@@ -238,14 +238,17 @@ async fn a_restart_deposits_no_welcome_again_at_a_peer_that_holds_it() {
     within(async {
         loop {
             granter.welcome_upkeep().await;
-            if granter.waiting_welcomes()[0].2 == [origin.as_str()] {
+            // The peer is named once the deposit is kept, and the deposit
+            // counted once its first attempt has ended.
+            if granter.waiting_welcomes()[0].2 == [origin.as_str()]
+                && granter.welcome_deposits() >= 1
+            {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await;
-    assert!(granter.welcome_deposits() >= 1);
     granter.close().await.unwrap();
     drop((space, known, granter));
 
