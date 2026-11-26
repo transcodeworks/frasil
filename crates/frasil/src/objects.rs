@@ -1515,6 +1515,38 @@ fn named_to_replica(replica: &Replica) -> BTreeSet<Locator> {
     named
 }
 
+/// The objects a replica knows by name ([`named_to_replica`]), with those
+/// of the blob streams' current entries, which a stream loaded from a
+/// snapshot names in no unit the replica holds: what a member may announce
+/// to it without limit (units.md, "Sync", sources between members).
+pub(crate) fn known_objects(replica: &Replica) -> BTreeSet<Locator> {
+    let mut known = named_to_replica(replica);
+    known.extend(blob_entries(replica));
+    known
+}
+
+/// The objects of the blob streams' current entries, references among
+/// them.
+#[cfg(feature = "adapter-blobs")]
+fn blob_entries(replica: &Replica) -> Vec<Locator> {
+    replica
+        .streams()
+        .filter(|(_, adapter)| *adapter == frasil_adapter_blobs::TYPE)
+        .filter_map(|(id, _)| {
+            replica
+                .stream(id)?
+                .as_any()
+                .downcast_ref::<frasil_units::runtime::Stream<frasil_adapter_blobs::Blobs>>()
+        })
+        .flat_map(|blobs| blobs.state().current().map(|(_, entry)| entry.object))
+        .collect()
+}
+
+#[cfg(not(feature = "adapter-blobs"))]
+fn blob_entries(_: &Replica) -> Vec<Locator> {
+    Vec::new()
+}
+
 /// Whether an object is one the device fetches by itself whatever it
 /// keeps of its blobs: the replica knows it by name, and no blob stream's
 /// entry names it.
@@ -2759,25 +2791,7 @@ impl Engine {
         let Some(replica) = state.replicas.get(space) else {
             return Vec::new();
         };
-        #[cfg_attr(not(feature = "adapter-blobs"), allow(unused_mut))]
-        let mut named = named_to_replica(replica);
-        // The objects of the blob streams' current entries, references
-        // among them, which a stream loaded from a snapshot names in no
-        // unit the device holds.
-        #[cfg(feature = "adapter-blobs")]
-        named.extend(
-            replica
-                .streams()
-                .filter(|(_, adapter)| *adapter == frasil_adapter_blobs::TYPE)
-                .filter_map(|(id, _)| {
-                    replica
-                        .stream(id)?
-                        .as_any()
-                        .downcast_ref::<frasil_units::runtime::Stream<frasil_adapter_blobs::Blobs>>(
-                        )
-                })
-                .flat_map(|blobs| blobs.state().current().map(|(_, entry)| entry.object)),
-        );
+        let named = known_objects(replica);
         // A blob is fetched when it is read, unless the device keeps every
         // blob: of the blob streams' objects, only those it means to hold
         // whole are missing, the kept ones and those the application
@@ -2940,19 +2954,43 @@ impl Engine {
             .collect()
     }
 
-    /// `ObjectWant` for the objects a session's other side announced that
-    /// the device now finds missing: a snapshot, a stream snapshot object
+    /// `ObjectHave` for the objects that became whole at this device since
+    /// a session last announced them, and that it still holds whole: each
+    /// at most 4,096 of them (units.md, "Sync", sources between members).
+    /// A connection notes each object as it becomes whole
+    /// ([`SyncSession::note_whole`]) and calls this every so often, so
+    /// that many objects that become whole close together go in few
+    /// messages; an object announced with the units that name it since
+    /// the last call is not announced again. A held object is announced when a member is admitted,
+    /// once its provider has been asked (at-rest.md, "Held objects").
+    pub async fn sync_announce(&self, session: &mut SyncSession) -> Vec<SyncMessage> {
+        if !session.has_announcements() {
+            // A new wait starts.
+            return session.take_announcements(|_| false);
+        }
+        let state = self.lock().await;
+        let Some(replica) = state.replicas.get(&session.space()) else {
+            return session.take_announcements(|_| false);
+        };
+        session.take_announcements(|locator| {
+            replica.holds_object(locator) && !replica.is_held(locator)
+        })
+    }
+
+    /// `ObjectWant` for the objects the device now finds missing that a
+    /// session counts its other side a source of
+    /// ([`SyncSession::is_source`]): a snapshot, a stream snapshot object
     /// or new units may name objects announced before.
     pub(crate) async fn want_announced(&self, session: &mut SyncSession) -> Vec<SyncMessage> {
         let space = session.space();
-        if session.announced().is_empty() {
+        if !session.has_sources() {
             return Vec::new();
         }
         let wanted: Vec<Locator> = self
             .missing_objects(&space)
             .await
             .into_iter()
-            .filter(|locator| session.announced().contains(locator))
+            .filter(|locator| session.is_source(locator))
             .collect();
         let mut out = Vec::new();
         for locator in wanted {

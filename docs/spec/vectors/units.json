@@ -1654,6 +1654,12 @@
         "bytes": {
           "blob": 8
         }
+      },
+      {
+        "name": "ObjectMissing",
+        "type": 64,
+        "member_connections_only": true,
+        "bytes": "a3001840015820a663d7c6e0d187634c603b7c03e3aceb282af8da5738c36fe6e6e2858501209502815840b641a2aa2e06052bd896f5aa4d6e4bf5a68198c3d4863990dbad40936c7f55665681777949236484fd4c8080a2053a06ce51c6feda99c20c81b2154883bdd646"
       }
     ],
     "partial_heads": {
@@ -1686,8 +1692,8 @@
       ]
     },
     "ignorable": {
-      "bytes": "a3001840015820a663d7c6e0d187634c603b7c03e3aceb282af8da5738c36fe6e6e28585012095024c61206c617465722068696e74",
-      "type": 64,
+      "bytes": "a3001864015820a663d7c6e0d187634c603b7c03e3aceb282af8da5738c36fe6e6e28585012095024c61206c617465722068696e74",
+      "type": 100,
       "outcome": "ignored"
     },
     "refusals": [
@@ -1724,6 +1730,11 @@
       {
         "name": "a range from 3 to 2",
         "bytes": "a30002015820a663d7c6e0d187634c603b7c03e3aceb282af8da5738c36fe6e6e2858501209503818358201e1ab585525d9f50c543cc62fe6de3b01d736225ec5d3c2220fba4a9e5cb2cbb0302",
+        "class": "Malformed"
+      },
+      {
+        "name": "an ObjectMissing that names no object",
+        "bytes": "a3001840015820a663d7c6e0d187634c603b7c03e3aceb282af8da5738c36fe6e6e285850120950280",
         "class": "Malformed"
       }
     ],

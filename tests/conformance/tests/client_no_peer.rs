@@ -348,6 +348,27 @@ async fn dropped(blobs: &frasil::Blobs, id: frasil::BlobId) {
     .await;
 }
 
+/// [`reads`], once a member that holds the blob whole has announced it: a
+/// member announces an object on its connection's next tick after it
+/// becomes whole, and a read made before that ends `Missing` when the
+/// other members say they lack the blob (units.md, "Sync", sources
+/// between members).
+async fn reads_once_announced(blobs: &frasil::Blobs, id: frasil::BlobId, file: &[u8]) {
+    let got = within(async {
+        loop {
+            match blobs.get(id, &frasil::Read::new()).await {
+                Ok(None) | Err(Error::Class("Missing")) => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                other => break other,
+            }
+        }
+    })
+    .await;
+    let same = got.as_ref().map(|got| got.as_deref() == Some(file));
+    assert_eq!(same, Ok(true));
+}
+
 async fn state(blobs: &frasil::Blobs, id: frasil::BlobId) -> frasil::BlobState {
     blobs.local(id).await.unwrap().state
 }
@@ -422,4 +443,160 @@ async fn a_blob_evicted_here_is_fetched_again_from_a_member() {
     }
     alice.close().await.unwrap();
     bob.close().await.unwrap();
+}
+
+/// A newcomer admitted to `space` over a nearby connection with the
+/// device that holds it, and the blob stream `id` as the newcomer holds it.
+async fn admitted(
+    space: &frasil::Space,
+    id: frasil::StreamId,
+    key: u8,
+    name: &'static str,
+) -> (Device, frasil::Blobs) {
+    let invitation = space
+        .invite_with(
+            Level::Write,
+            HistoryMode::WithHistory,
+            "Alice's laptop",
+            move |_, newcomer| async move { newcomer == name },
+        )
+        .await
+        .unwrap();
+    let newcomer = device(key).await;
+    let joined = within(
+        newcomer.join(invitation.text(), name, |_, host| async move {
+            host == "Alice's laptop"
+        }),
+    )
+    .await
+    .unwrap();
+    within(invitation.admitted()).await.unwrap();
+    let blobs = blobs_of(&joined, id).await;
+    (newcomer, blobs)
+}
+
+/// The device that put a blob, and dropped it, reads it back from the
+/// member that fetched it whole, on the same connection: the member
+/// announced the blob when it became whole there (units.md, "Sync",
+/// sources between members).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blob_put_and_dropped_is_read_back_from_the_member_that_fetched_it() {
+    use frasil::{BlobState, Read};
+    let (alice, blobs, bob, bobs_blobs) = two_devices(Options::new()).await;
+    for size in [1_500_000, 1000] {
+        let (id, file) = put(&blobs, &bobs_blobs, size).await;
+        assert_eq!(fetched(&bobs_blobs, id).await.unwrap(), file, "{size}");
+        dropped(&blobs, id).await;
+        assert_eq!(state(&blobs, id).await, BlobState::Absent);
+        reads(&blobs, id, Read::new(), &file).await;
+        assert_eq!(state(&blobs, id).await, BlobState::Cached);
+    }
+    alice.close().await.unwrap();
+    bob.close().await.unwrap();
+}
+
+/// Three members with no peer. Alice puts a blob, Bob and Carol fetch it
+/// whole, and Bob drops it: Alice, who dropped it too, reads it from
+/// Carol, Bob saying he no longer holds it. Bob reads it again, so that he
+/// holds it whole once more; Carol drops it, and Alice, who dropped it
+/// again, reads it from Bob once he has announced it. No connection is
+/// made again on the way (units.md, "Sync", sources between members).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_that_dropped_a_blob_is_no_source_until_it_holds_it_again() {
+    use frasil::{BlobState, Read};
+    let alice = device(1).await;
+    let space = alice.create_space().await.unwrap();
+    let blobs = space.create_blobs().unwrap();
+    blobs.put(None, b"first").await.unwrap();
+    let (bob, bobs_blobs) = admitted(&space, blobs.id(), 2, "Bob's laptop").await;
+    let (carol, carols_blobs) = admitted(&space, blobs.id(), 3, "Carol's laptop").await;
+    assert!(alice.peers().is_empty() && bob.peers().is_empty() && carol.peers().is_empty());
+
+    let (id, file) = put(&blobs, &bobs_blobs, 1_500_000).await;
+    within(async {
+        while !carols_blobs
+            .list()
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.id == id)
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert_eq!(fetched(&bobs_blobs, id).await.unwrap(), file);
+    assert_eq!(fetched(&carols_blobs, id).await.unwrap(), file);
+
+    dropped(&bobs_blobs, id).await;
+    dropped(&blobs, id).await;
+    reads_once_announced(&blobs, id, &file).await;
+    assert_eq!(state(&blobs, id).await, BlobState::Cached);
+    assert_eq!(state(&bobs_blobs, id).await, BlobState::Absent);
+
+    reads(&bobs_blobs, id, Read::new(), &file).await;
+    assert_eq!(state(&bobs_blobs, id).await, BlobState::Cached);
+    dropped(&carols_blobs, id).await;
+    dropped(&blobs, id).await;
+    reads_once_announced(&blobs, id, &file).await;
+    assert_eq!(state(&blobs, id).await, BlobState::Cached);
+
+    alice.close().await.unwrap();
+    bob.close().await.unwrap();
+    carol.close().await.unwrap();
+}
+
+/// Three members with no peer, and a blob neither of Alice's members will
+/// serve: Bob fetched it whole and announced it, and Carol never fetched
+/// it. Alice drops it and reads it back from Bob, so Bob is a source of
+/// it; then both drop it. Alice reads it again: Bob says he no longer
+/// holds it, Alice's connection with Carol declines the read as one Carol
+/// announced nothing for, and the read ends at once as `Missing`, long
+/// before a fetch with nothing arriving would stall (units.md, "Sync",
+/// sources between members).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_no_member_will_serve_ends_promptly() {
+    use frasil::{BlobState, Read};
+    let alice = device(1).await;
+    let space = alice.create_space().await.unwrap();
+    let blobs = space.create_blobs().unwrap();
+    blobs.put(None, b"first").await.unwrap();
+    let (bob, bobs_blobs) = admitted(&space, blobs.id(), 2, "Bob's laptop").await;
+    let (carol, carols_blobs) = admitted(&space, blobs.id(), 3, "Carol's laptop").await;
+    assert!(alice.peers().is_empty() && bob.peers().is_empty() && carol.peers().is_empty());
+
+    let (id, file) = put(&blobs, &bobs_blobs, 1_500_000).await;
+    within(async {
+        while !carols_blobs
+            .list()
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.id == id)
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert_eq!(fetched(&bobs_blobs, id).await.unwrap(), file);
+    dropped(&blobs, id).await;
+    reads(&blobs, id, Read::new(), &file).await;
+    dropped(&blobs, id).await;
+    dropped(&bobs_blobs, id).await;
+
+    let started = std::time::Instant::now();
+    let got = within(blobs.get(id, &Read::new())).await;
+    let took = started.elapsed();
+    assert!(
+        matches!(got, Ok(None) | Err(Error::Class("Missing"))),
+        "{:?}",
+        got.map(|bytes| bytes.map(|bytes| bytes.len()))
+    );
+    assert!(took < Duration::from_secs(15), "{took:?}");
+    assert_eq!(state(&blobs, id).await, BlobState::Absent);
+    assert_eq!(state(&carols_blobs, id).await, BlobState::Absent);
+
+    alice.close().await.unwrap();
+    bob.close().await.unwrap();
+    carol.close().await.unwrap();
 }

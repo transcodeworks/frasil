@@ -120,9 +120,10 @@ pub enum FetchEnd {
     Malformed,
     /// The other side of a stream sent nothing the device could keep of
     /// the chunks asked for, time after time: no answer, or chunks it
-    /// could not check or take. What the device holds of the object
-    /// stays, and the object is not refused: a request made afterwards
-    /// asks for it again.
+    /// could not check or take; or a member said in `ObjectMissing` that
+    /// it does not hold the object (units.md, "Sync", sources between
+    /// members). What the device holds of the object stays, and the object
+    /// is not refused: a request made afterwards asks for it again.
     Unserved,
 }
 
@@ -215,6 +216,11 @@ struct Taking {
     /// The requests whose chunks it left unserved, by their numbers: it
     /// asks no further for them, and has not given their object up.
     unserved: BTreeSet<u64>,
+    /// The requests it does not take, by their numbers: those of objects
+    /// that the member on its other side, which admitted this device,
+    /// does not count as holding (units.md, "Sync", sources between
+    /// members). It is done with them unless it takes them later.
+    declined: BTreeSet<u64>,
 }
 
 impl Live {
@@ -244,8 +250,10 @@ impl Live {
 
     /// Tells each request of a space that has no end yet the one it has
     /// now, if every connection that would have tried gave its object up,
-    /// or left the request's chunks unserved: after one of them went, or
-    /// left chunks unserved, and once no connection is being made.
+    /// left the request's chunks unserved or declined the request, and
+    /// one at least left them unserved: after one of them went, left
+    /// chunks unserved or declined a request, and once no connection is
+    /// being made.
     fn tell_again(&self, space: &EventId) {
         if self.expecting(space) {
             return;
@@ -265,7 +273,8 @@ impl Live {
             let done = takers.all(|taking| {
                 let left = taking.unserved.contains(&request.id);
                 unserved |= left;
-                left || taking.given_up.contains_key(&request.locator)
+                left || taking.declined.contains(&request.id)
+                    || taking.given_up.contains_key(&request.locator)
             });
             if done && unserved {
                 request.ended.send_replace(Some(FetchEnd::Unserved));
@@ -365,6 +374,7 @@ impl Requests {
                 space,
                 given_up: BTreeMap::new(),
                 unserved: BTreeSet::new(),
+                declined: BTreeSet::new(),
             },
         );
         Taker {
@@ -572,9 +582,44 @@ impl Taker {
         if let Some(taking) = live.takers.get_mut(&self.id) {
             // Those of requests that ended are of no use any more.
             taking.unserved.retain(|id| known.contains(id));
+            taking.declined.retain(|id| known.contains(id));
             taking.unserved.extend(wanted);
         }
         live.tell_again(&self.space);
+    }
+
+    /// The connection does not take these requests: the member on its
+    /// other side admitted this device and does not hold their objects,
+    /// as far as it knows (units.md, "Sync", sources between members). It
+    /// is done with them, as with chunks it left unserved, but tells no
+    /// request it is unserved: each ends once every other connection is
+    /// done with it too and one of them left it unserved.
+    pub(crate) fn decline(&self, ids: &[u64]) {
+        let mut live = self.requests.live();
+        let known: BTreeSet<u64> = live.requests.keys().copied().collect();
+        let Some(taking) = live.takers.get_mut(&self.id) else {
+            return;
+        };
+        taking.declined.retain(|id| known.contains(id));
+        let mut more = false;
+        for id in ids {
+            more |= known.contains(id) && taking.declined.insert(*id);
+        }
+        if more {
+            live.tell_again(&self.space);
+        }
+    }
+
+    /// The connection takes a request, and asks the other side for its
+    /// chunks: whatever it left unserved of it or declined before, it
+    /// tries it again, and counts toward it what it brings
+    /// ([`progressed`](Self::progressed)).
+    pub(crate) fn took(&self, id: u64) {
+        let mut live = self.requests.live();
+        if let Some(taking) = live.takers.get_mut(&self.id) {
+            taking.unserved.remove(&id);
+            taking.declined.remove(&id);
+        }
     }
 }
 
@@ -983,9 +1028,10 @@ impl Asks {
             .is_some_and(|asked| asked.awaited.contains(&index))
     }
 
-    /// Forgets an object: nothing of it is awaited.
-    pub(crate) fn forget(&mut self, locator: &Locator) {
-        self.objects.remove(locator);
+    /// Forgets an object: nothing of it is awaited. Whether any chunk of
+    /// it was awaited or yet to ask.
+    pub(crate) fn forget(&mut self, locator: &Locator) -> bool {
+        self.objects.remove(locator).is_some()
     }
 
     /// Wants the chunks `chunks` of an object: the `ObjectWant`s to send

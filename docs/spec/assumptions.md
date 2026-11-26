@@ -238,7 +238,7 @@ timer".
 | Lower, on the deciding device's timeline | `gap_key_timeout` (a restored member's gap keys, the content of a refused unit, a snapshot, erased content dropped without stability), `rotation_step`, `anchor_interval`, `replica_release_retention`, `agent_waiting_period`, `version_compaction_interval`, `link_lifetime`'s and `session_lifetime`'s maximum at an administering device |
 | Lower, on the peer's timeline | `erasure_timeout` (T), `release_retention`, `orphan_grace`, `file_version_retention`, `detached_grace`, `allowance_window` |
 | Upper | `bounded_window`, `online_freshness`, `token_period`. Across a restart with no known wall clock the upper estimate is unbounded, so the time counts as over. |
-| The monotonic clock | `handshake_deadline`, `probation`, `gossip_interval`, `present_retry`, `reconnect_wait`, `pairing_deadline`, the ephemeral deadlines |
+| The monotonic clock | `handshake_deadline`, `probation`, `gossip_interval`, `reannounce_interval`, `present_retry`, `reconnect_wait`, `pairing_deadline`, the ephemeral deadlines |
 | The device's or the peer's timeline | `endpoint_rotation`, `mailbox_retention`, `uncollected_retention` |
 | The receiver's wall clock, never the timeline | The five instants of [overview.md](overview.md), 6.6 "Instants exchanged between parties" |
 | The verifier's wall clock | A service verifier's waiting period for a member rooted in an agent ([ext-app-requests.md](ext-app-requests.md), 3.3 "Who signs"): a verifier keeps no timeline, so a clock moved forward after its first sight shortens the wait, while it runs or not ([ext-app-requests.md](ext-app-requests.md), 4) |
