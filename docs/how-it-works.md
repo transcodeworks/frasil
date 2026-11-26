@@ -215,21 +215,24 @@ space.admit_member_administrator(known.id(), device_id, rank).await?;
   the device that signed the grant hands its welcome over; another member
   does not carry it. With a peer, the welcome also goes to the device's
   mailbox there.
-- If the device is not connected, the welcome waits until it is. If this
-  device restarts first, it makes the welcome again when the two meet and
-  the device refuses the space, from the space's log and a fresh key
-  delivery: once for each device and space each time it starts, and only
-  for a grant it signed itself. The welcome stops being offered once the
-  device has attached the space with this device, or once it is removed
-  from the space; a device removed while away is neither handed nor sent
-  the welcome at a peer.
+- If the device is not connected, the welcome waits until it is. This
+  device keeps it at rest, in the same commit as the grant, so it waits
+  through restarts: the next member connection with the device hands it
+  over, and each peer this device connects to receives it once, even a
+  peer it reaches only after a restart. The welcome stops waiting once
+  the device has attached the space with this device, once it is removed
+  from the space (a device removed while away is neither handed nor sent
+  the welcome at a peer), after 30 days, the longest a peer keeps a
+  mailbox item, and when it is the oldest of more than 256 waiting. A
+  welcome is never made again: a device that has not taken the space up
+  by then is removed and admitted again.
 - It refuses a device that the known space reaches only through a person,
   a guest there, a device whose grant there has no effect or that forked
   there, a device the space has already, and, for a restricted space, a
   device its parent does not reach. It also refuses when the known space
   no longer reaches this device. A rank is at most the caller's own.
 - A device that forgets the space while it is still in the roster can
-  follow it again from a later welcome, from this device or from its
+  follow it again from a welcome still waiting at this device or in its
   mailbox at a peer. Remove it from the space to stop that.
 
 What the grant proves is only that some administrator of the known space
