@@ -691,6 +691,7 @@ value is a policy field that every replica checks (section 6.7).
 | `probation` | an unknown member after a proven key state | 30, and 4,096 events | fixed | protocol | monotonic | [transport.md](transport.md) |
 | `endpoint_rotation` | a device's member endpoint key | 24 hours, and at each new network | at most 24 hours | the implementation | the device's timeline | [transport.md](transport.md) |
 | `gossip_interval` | head gossip and member addresses, per attach | 5 | at least 5 | the implementation | monotonic | [transport.md](transport.md) |
+| `reannounce_interval` | a member connection's announcing again every object held whole, after it missed some that became whole | 30 | at least 30 | the implementation | monotonic | [units.md](units.md) |
 | `withholding_grace` | a peer's `Missing` for a head statement's heads before it shows withholding | 300 | 60 to 3,600 | the implementation | monotonic, from the peer's first `Missing` for them | [units.md](units.md) |
 | `present_retry` | presenting a refused read credential again | 1 | 1 to 30 | the implementation | monotonic | [transport.md](transport.md) |
 | `reconnect_wait` | the random wait before the first attempt after a `reconnect` close | 5 | fixed | protocol | monotonic | [transport.md](transport.md) |

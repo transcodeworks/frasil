@@ -27,8 +27,10 @@
 //!    those it lacks; answers travel on object streams, one per transfer
 //!    (units.md, "Sync", objects). Each object that becomes whole at the
 //!    device afterwards is announced too, gathered with the others that do
-//!    within a tick, and a side asked for an object it does not hold whole
-//!    answers `ObjectMissing` (units.md, "Sync", sources between members).
+//!    within a tick; a connection that falls behind on them announces
+//!    every object again, at most once per `reannounce_interval`. A side
+//!    asked for an object it does not hold whole answers `ObjectMissing`
+//!    (units.md, "Sync", sources between members).
 //! 5. **Welcomes**: a welcome waiting for the other device, such as one for
 //!    a space that grants its person, goes over as an item of its device
 //!    mailbox; the other side follows the space and attaches it on the
@@ -243,10 +245,58 @@ struct Driver {
     /// The admitted attaches whose member the links count as reached, with
     /// their tokens.
     reached: BTreeMap<u32, u64>,
+    /// When every object held whole is announced again, after the
+    /// connection missed some that became whole.
+    reannounce: Reannounce,
     /// The device's number for this connection, which names what it
     /// delivered on the ephemeral channel (ext-ephemeral.md, "Relaying").
     #[cfg(feature = "ephemeral")]
     ephemeral_connection: u64,
+}
+
+/// `reannounce_interval`: how often at most a connection announces again
+/// every object the device holds whole, after it missed some that became
+/// whole (units.md, "Sync", sources between members).
+fn reannounce_interval() -> Duration {
+    Duration::from_secs(
+        frasil_base::time::Timer::ReannounceInterval
+            .spec()
+            .default
+            .unwrap_or(30),
+    )
+}
+
+/// When a connection announces again every object the device holds
+/// whole: once it missed some that became whole, on its next tick, and
+/// at most once per `reannounce_interval`, however often it misses some
+/// meanwhile (units.md, "Sync", sources between members).
+#[derive(Debug, Default)]
+struct Reannounce {
+    /// It missed some since it last announced every object.
+    due: bool,
+    /// When it last announced every object again.
+    last: Option<Instant>,
+}
+
+impl Reannounce {
+    /// The connection missed objects that became whole.
+    fn lagged(&mut self) {
+        self.due = true;
+    }
+
+    /// Whether to announce every object again now.
+    fn take(&mut self, now: Instant) -> bool {
+        if !self.due
+            || self
+                .last
+                .is_some_and(|last| now.saturating_duration_since(last) < reannounce_interval())
+        {
+            return false;
+        }
+        self.due = false;
+        self.last = Some(now);
+        true
+    }
 }
 
 /// Further spaces to attach on a connection, as its node learns of them,
@@ -380,6 +430,7 @@ pub async fn run_member_with(
         handed: BTreeSet::new(),
         counted: BTreeMap::new(),
         reached: BTreeMap::new(),
+        reannounce: Reannounce::default(),
         #[cfg(feature = "ephemeral")]
         ephemeral_connection: crate::ephemeral::ephemeral_connection(),
     };
@@ -402,7 +453,7 @@ async fn drive(
     let mut notices = device.subscribe();
     // Objects as they become whole at the device, announced to each
     // admitted attach of their space on the next tick.
-    let mut arrivals = device.subscribe_arrivals();
+    let mut wholes = device.subscribe_wholes();
     if driver.connection.role() == Role::Dialer {
         driver.offer_next().await?;
     }
@@ -435,11 +486,11 @@ async fn drive(
                 }
                 Err(broadcast::error::RecvError::Closed) => return Ok(()),
             },
-            arrival = arrivals.recv() => match arrival {
-                Ok((space, locator)) => driver.on_arrival(space, locator),
+            whole = wholes.recv() => match whole {
+                Ok((space, locator)) => driver.on_whole(space, locator),
                 // Some were missed: every object held whole is announced
-                // again.
-                Err(broadcast::error::RecvError::Lagged(_)) => driver.announce_all().await?,
+                // again, at most once per `reannounce_interval`.
+                Err(broadcast::error::RecvError::Lagged(_)) => driver.reannounce.lagged(),
                 Err(broadcast::error::RecvError::Closed) => return Ok(()),
             },
             _ = tick.tick() => {
@@ -792,6 +843,7 @@ impl Driver {
                             start_ephemeral(&self.device, space).await;
                         }
                         self.share(attach).await?;
+                        self.sources_known(attach).await?;
                     }
                     Event::Detached { attach, .. } => {
                         let space = self.attaches.get(&attach).map(|state| state.space);
@@ -866,6 +918,8 @@ impl Driver {
         entry.sync = SyncSession::new(space);
         // Being made: it takes the space's requests once it has started.
         entry.sync.expect(self.device.fetches());
+        // What the other side holds is known once it admits this side.
+        entry.sync.set_sources_known(false);
         let own = frasil_transport::member::Role::of_attach(attach) == self.connection.role();
         if own {
             let (sender, receiver) = self
@@ -978,7 +1032,25 @@ impl Driver {
         for message in &early {
             self.on_sync(attach, message).await?;
         }
+        self.sources_known(attach).await?;
         Ok(events)
+    }
+
+    /// The other side admitted this side for an attach this side started,
+    /// and so announced the objects it holds whole: the attach declines
+    /// each request for an object it does not count the other side a
+    /// source of, so that one no other connection serves ends (units.md,
+    /// "Sync", sources between members).
+    async fn sources_known(&mut self, attach: u32) -> Result<()> {
+        let Some(state) = self.attaches.get_mut(&attach) else {
+            return Ok(());
+        };
+        if !state.started || !state.remote_admitted || state.sync.sources_known() {
+            return Ok(());
+        }
+        state.sync.set_sources_known(true);
+        let wants = self.device.want_requests(&mut state.sync, true).await;
+        self.queue(attach, wants).await
     }
 
     /// This side admitted the other for an attach: the links count it, a
@@ -1458,12 +1530,12 @@ impl Driver {
         Ok(())
     }
 
-    /// An object became whole at the device, or was dropped: each admitted
-    /// attach of its space notes it, and announces it on the next tick if
-    /// the device still holds it whole then (units.md, "Sync", sources
-    /// between members). An attach not admitted yet announces every
-    /// object held whole once it is.
-    fn on_arrival(&mut self, space: EventId, locator: frasil_adapter::Locator) {
+    /// An object became whole at the device: each admitted attach of its
+    /// space notes it, and announces it on the next tick if the device
+    /// still holds it whole then (units.md, "Sync", sources between
+    /// members). An attach not admitted yet announces every object held
+    /// whole once it is.
+    fn on_whole(&mut self, space: EventId, locator: frasil_adapter::Locator) {
         for state in self.attaches.values_mut() {
             if state.space == space && state.local == Local::Admitted {
                 state.sync.note_whole(&[locator]);
@@ -1472,9 +1544,12 @@ impl Driver {
     }
 
     /// Announces every object held whole again on each admitted attach,
-    /// as after the admission: some objects that became whole were not
-    /// heard of.
+    /// as after the admission, when some objects that became whole were
+    /// not heard of: at most once per `reannounce_interval`.
     async fn announce_all(&mut self) -> Result<()> {
+        if !self.reannounce.take(Instant::now()) {
+            return Ok(());
+        }
         let attaches: Vec<(u32, EventId)> = self
             .attaches
             .iter()
@@ -1489,14 +1564,9 @@ impl Driver {
     }
 
     /// `ObjectHave` on each attach for the objects that became whole since
-    /// its last tick.
+    /// its last tick, and not announced with the units that name them.
     async fn announce_whole(&mut self) -> Result<()> {
-        let attaches: Vec<u32> = self
-            .attaches
-            .iter()
-            .filter(|(_, a)| a.sync.has_announcements())
-            .map(|(n, _)| *n)
-            .collect();
+        let attaches: Vec<u32> = self.attaches.keys().copied().collect();
         for attach in attaches {
             let Some(state) = self.attaches.get_mut(&attach) else {
                 continue;
@@ -1709,6 +1779,7 @@ impl Driver {
             self.state_heads(attach).await?;
             self.share(attach).await?;
         }
+        self.announce_all().await?;
         self.announce_whole().await?;
         self.hand_welcomes().await?;
         if self.shared_due {
@@ -1791,5 +1862,69 @@ mod tests {
                 carried: Vec::new(),
             })
         );
+    }
+
+    /// However often a connection falls behind on the objects that become
+    /// whole, it announces every object again at most once per
+    /// `reannounce_interval`, and not at all while it has not fallen
+    /// behind (units.md, "Sync", sources between members).
+    #[test]
+    fn falling_behind_announces_everything_at_most_once_per_interval() {
+        use super::{Reannounce, reannounce_interval};
+        let interval = reannounce_interval();
+        assert_eq!(interval, std::time::Duration::from_secs(30));
+        let start = std::time::Instant::now();
+        let mut reannounce = Reannounce::default();
+        assert!(!reannounce.take(start));
+        reannounce.lagged();
+        assert!(reannounce.take(start));
+        assert!(!reannounce.take(start));
+        // Falling behind again and again within the interval: nothing.
+        let mut at = start;
+        for _ in 0..100 {
+            reannounce.lagged();
+            at += std::time::Duration::from_millis(250);
+            assert!(!reannounce.take(at));
+        }
+        // Once the interval passed, once.
+        assert!(reannounce.take(start + interval));
+        assert!(!reannounce.take(start + interval));
+        // Not at all without falling behind.
+        assert!(!reannounce.take(start + 3 * interval));
+    }
+
+    /// An object that becomes whole tells blob feeds and member
+    /// connections; dropping it tells blob feeds alone, since member
+    /// connections announce only what becomes whole.
+    #[cfg(feature = "adapter-blobs")]
+    #[tokio::test]
+    async fn a_drop_is_not_announced() {
+        use crate::adapters::AdapterRegistry;
+        use crate::device::Engine;
+        use tokio::sync::broadcast::error::TryRecvError;
+        let device = Engine::create(
+            crate::platform::Platform::memory(),
+            &[7; 32],
+            AdapterRegistry::with_builtins(),
+        )
+        .await
+        .unwrap()
+        .0;
+        let space = device.create_space().await.unwrap();
+        let files = device
+            .new_stream(<frasil_adapter_blobs::Blobs as frasil_adapter::Adapter>::TYPE)
+            .unwrap();
+        let mut wholes = device.subscribe_wholes();
+        let mut arrivals = device.subscribe_arrivals();
+        let (_, locator) = device
+            .put_blob(space, &files, None, &[1; 100])
+            .await
+            .unwrap();
+        device.arrived(space, locator);
+        assert_eq!(wholes.try_recv(), Ok((space, locator)));
+        assert_eq!(arrivals.try_recv(), Ok((space, locator)));
+        device.drop_local_object(space, &locator).await.unwrap();
+        assert_eq!(arrivals.try_recv(), Ok((space, locator)));
+        assert_eq!(wholes.try_recv(), Err(TryRecvError::Empty));
     }
 }

@@ -2944,11 +2944,13 @@ impl Engine {
     /// A connection notes each object as it becomes whole
     /// ([`SyncSession::note_whole`]) and calls this every so often, so
     /// that many objects that become whole close together go in few
-    /// messages. A held object is announced when a member is admitted,
+    /// messages; an object announced with the units that name it since
+    /// the last call is not announced again. A held object is announced when a member is admitted,
     /// once its provider has been asked (at-rest.md, "Held objects").
     pub async fn sync_announce(&self, session: &mut SyncSession) -> Vec<SyncMessage> {
         if !session.has_announcements() {
-            return Vec::new();
+            // A new wait starts.
+            return session.take_announcements(|_| false);
         }
         let state = self.lock().await;
         let Some(replica) = state.replicas.get(&session.space()) else {
@@ -2959,19 +2961,20 @@ impl Engine {
         })
     }
 
-    /// `ObjectWant` for the objects a session's other side announced that
-    /// the device now finds missing: a snapshot, a stream snapshot object
+    /// `ObjectWant` for the objects the device now finds missing that a
+    /// session counts its other side a source of
+    /// ([`SyncSession::is_source`]): a snapshot, a stream snapshot object
     /// or new units may name objects announced before.
     pub(crate) async fn want_announced(&self, session: &mut SyncSession) -> Vec<SyncMessage> {
         let space = session.space();
-        if session.announced().is_empty() {
+        if !session.has_sources() {
             return Vec::new();
         }
         let wanted: Vec<Locator> = self
             .missing_objects(&space)
             .await
             .into_iter()
-            .filter(|locator| session.announced().contains(locator))
+            .filter(|locator| session.is_source(locator))
             .collect();
         let mut out = Vec::new();
         for locator in wanted {

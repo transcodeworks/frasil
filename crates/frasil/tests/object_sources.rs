@@ -4,7 +4,10 @@
 //! asked for an object it does not hold whole answers `ObjectMissing`,
 //! after which it is no source of it until it announces it again. An
 //! announcement asks for nothing in return, and a session keeps a bounded
-//! number of announcements of objects its replica does not know.
+//! number of announcements of objects its replica does not know; past
+//! the bound, it counts the member a source of every object. A read ends
+//! once every member is done with it: one said it lacks the object, and
+//! the others never announced it.
 #![cfg(feature = "adapter-blobs")]
 
 use frasil::advanced::sync::{MAX_UNKNOWN_ANNOUNCED, SyncSession};
@@ -102,10 +105,22 @@ impl<'a> Pair<'a> {
         }
     }
 
-    /// Both sides open, and messages go both ways until neither has more.
+    /// Both sides open, and messages go both ways until neither has more;
+    /// then each side's connection ticks.
     async fn sync(&mut self) {
         let to_b = self.a.device.sync_start(&mut self.a.session).await.unwrap();
         let to_a = self.b.device.sync_start(&mut self.b.session).await.unwrap();
+        self.pump(to_b, to_a).await;
+        self.tick().await;
+    }
+
+    /// Each side's connection ticks, announcing what became whole at it
+    /// since its last tick, and the pair goes on until quiet: what either
+    /// side announces with units after it is announced again when it
+    /// becomes whole.
+    async fn tick(&mut self) {
+        let to_b = self.a.device.sync_announce(&mut self.a.session).await;
+        let to_a = self.b.device.sync_announce(&mut self.b.session).await;
         self.pump(to_b, to_a).await;
     }
 
@@ -527,7 +542,9 @@ async fn a_session_keeps_a_bounded_number_of_objects_it_does_not_know() {
         .await
         .unwrap();
     bob_alice.pump(Vec::new(), offered).await;
-    assert!(bob_alice.a.session.announced().contains(&locator));
+    // Past the bound, Bob counts Alice a source of every object, and no
+    // longer works out which ones his replica knows.
+    assert!(bob_alice.a.session.is_source(&locator));
     let fetch = s
         .bob
         .fetch_chunks(s.space, locator, 0..u64::MAX, FetchPriority::Position);
@@ -561,18 +578,32 @@ fn the_bound_counts_only_objects_the_replica_does_not_know() {
     let late = locator(u32::MAX, 2);
     session.note_announced(&[late]);
     assert!(!session.announced().contains(&late));
+    // Past the bound, the other side is a possible source of every
+    // object, announced or not.
+    assert!(session.is_source(&late));
+    assert!(session.is_source(&locator(7, 9)));
+    assert!(session.has_sources());
 }
 
-/// A member that predates `ObjectMissing` still interoperates, both ways.
-/// A member of the released version reads every sync message type from 64
-/// as ignorable and drops it, so the new answer reaches it as nothing at
-/// all, which is also what such a member answers for an object it lacks.
-/// Either way the side that asked waits for the chunks, gives them up after
-/// the wait and asks again, as it always did; and the `ObjectHave` that
-/// announces the object once it is whole again is a type every version
-/// reads.
+/// Below the bound, the other side is a source only of what it announced.
+#[test]
+fn below_the_bound_a_member_is_a_source_only_of_what_it_announced() {
+    let mut session = SyncSession::new(EventId([1; 32]));
+    assert!(!session.has_sources());
+    session.note_announced(&[[1; 64]]);
+    assert!(session.is_source(&[1; 64]));
+    assert!(!session.is_source(&[2; 64]));
+}
+
+/// A side that drops type 64, as a receiver that does not know it does
+/// (units.md, 2.14), still gets the object. `ObjectMissing` is of an
+/// ignorable type, sent between members only. Bob drops Alice's answer:
+/// he goes on counting her as a source and awaiting the chunks, and his
+/// request goes on. Alice holds the blob whole again and announces it in
+/// `ObjectHave`; Bob gives up the chunks he awaited after the wait, asks
+/// for them again, and Alice serves them.
 #[tokio::test]
-async fn a_member_that_predates_object_missing_still_interoperates() {
+async fn a_side_that_drops_type_64_waits_and_asks_again() {
     let s = space().await;
     // Its type is in the ignorable range, between members only.
     let answer = missing(s.space, vec![s.locator]);
@@ -597,8 +628,7 @@ async fn a_member_that_predates_object_missing_still_interoperates() {
     for want in asked {
         answers.extend(receive(&s.bob, &mut bob_alice.b, want).await);
     }
-    // What reaches Bob from a released Alice, or what a released Bob
-    // keeps of Alice's answer: nothing of an ignorable type.
+    // What Bob keeps of Alice's answer when he drops type 64: nothing.
     assert_eq!(answers, vec![answer]);
     answers.retain(|message| message.message.type_code() < FIRST_IGNORABLE);
     assert!(answers.is_empty());
@@ -639,4 +669,278 @@ async fn a_member_that_predates_object_missing_still_interoperates() {
         s.plaintext
     );
     drop(fetch);
+}
+
+/// Two members, and neither will serve the blob: Alice, who announced it,
+/// says she no longer holds it, and Carol never announced it. Bob's read
+/// ends as soon as both connections are done with it, rather than after
+/// the wait for chunks: Carol's, once it looks at the request, declines it
+/// as one its member is no source of.
+#[tokio::test]
+async fn a_read_ends_when_one_member_says_missing_and_the_other_never_announced_it() {
+    let s = space().await;
+    let mut bob_alice = Pair::new(s.space, &s.bob, &s.alice);
+    bob_alice.sync().await;
+    assert!(bob_alice.a.session.announced().contains(&s.locator));
+    // Carol holds the space's units, not the blob: she announces nothing.
+    let mut carol_bob = Pair::new(s.space, &s.carol, &s.bob);
+    carol_bob.sync().await;
+    assert!(!holds(&s.carol, &s).await);
+    assert!(!carol_bob.b.session.is_source(&s.locator));
+    // Both of Bob's sessions take his requests.
+    for session in [&mut bob_alice.a.session, &mut carol_bob.b.session] {
+        assert!(s.bob.sync_fetches(session).await.is_empty());
+    }
+
+    s.alice
+        .drop_local_object(s.space, &s.locator)
+        .await
+        .unwrap();
+    let fetch = s
+        .bob
+        .fetch_chunks(s.space, s.locator, 0..u64::MAX, FetchPriority::Position);
+    let asked = s.bob.sync_fetches(&mut bob_alice.a.session).await;
+    assert!(!asked.is_empty());
+    let mut answers = Vec::new();
+    for want in asked {
+        answers.extend(receive(&s.bob, &mut bob_alice.b, want).await);
+    }
+    assert_eq!(answers, vec![missing(s.space, vec![s.locator])]);
+    for answer in answers {
+        receive(&s.alice, &mut bob_alice.a, answer).await;
+    }
+    // Carol's connection has not looked at the request yet.
+    assert_eq!(fetch.end(), None);
+    // It does, as on the change of the device's requests: it asks Carol
+    // for nothing, and the request ends.
+    assert!(
+        s.bob
+            .sync_fetches(&mut carol_bob.b.session)
+            .await
+            .is_empty()
+    );
+    assert_eq!(fetch.end(), Some(FetchEnd::Unserved));
+}
+
+/// An `ObjectMissing` for an object the member was never asked for, and
+/// never announced, changes nothing: Bob's request goes on.
+#[tokio::test]
+async fn object_missing_for_what_was_never_asked_changes_nothing() {
+    let s = space().await;
+    // Alice drops the blob before she meets Bob, so she does not announce
+    // it, and Bob's request is not asked of her.
+    s.alice
+        .drop_local_object(s.space, &s.locator)
+        .await
+        .unwrap();
+    let mut bob_alice = Pair::new(s.space, &s.bob, &s.alice);
+    bob_alice.sync().await;
+    assert!(!bob_alice.a.session.is_source(&s.locator));
+    let fetch = s
+        .bob
+        .fetch_chunks(s.space, s.locator, 0..u64::MAX, FetchPriority::Position);
+    assert!(
+        s.bob
+            .sync_fetches(&mut bob_alice.a.session)
+            .await
+            .is_empty()
+    );
+    let answers = receive(
+        &s.alice,
+        &mut bob_alice.a,
+        missing(s.space, vec![s.locator]),
+    )
+    .await;
+    assert!(answers.is_empty());
+    // Not left unserved on Bob's one connection: no end.
+    assert_eq!(fetch.end(), None);
+}
+
+/// A member that said it lacks a blob, holds it whole again and announces
+/// it is asked for the same request again, and is counted as serving it:
+/// when Bob's other source, Carol, says she lacks the blob, the request
+/// goes on, and Alice serves it.
+#[tokio::test]
+async fn a_member_asked_again_after_saying_missing_serves_the_same_request() {
+    let s = space().await;
+    let mut carol_alice = Pair::new(s.space, &s.carol, &s.alice);
+    carol_alice.sync().await;
+    fetch_whole(&s, &mut carol_alice).await;
+    let mut bob_alice = Pair::new(s.space, &s.bob, &s.alice);
+    bob_alice.sync().await;
+    let mut carol_bob = Pair::new(s.space, &s.carol, &s.bob);
+    carol_bob.sync().await;
+    carol_bob.a_announces(&[s.locator]).await;
+    for session in [&mut bob_alice.a.session, &mut carol_bob.b.session] {
+        assert!(s.bob.sync_fetches(session).await.is_empty());
+    }
+
+    // Alice drops the blob, and says so when Bob asks.
+    s.alice
+        .drop_local_object(s.space, &s.locator)
+        .await
+        .unwrap();
+    let fetch = s
+        .bob
+        .fetch_chunks(s.space, s.locator, 0..u64::MAX, FetchPriority::Position);
+    let asked = s.bob.sync_fetches(&mut bob_alice.a.session).await;
+    bob_alice.pump(asked, Vec::new()).await;
+    assert!(!bob_alice.a.session.is_source(&s.locator));
+    assert_eq!(fetch.end(), None);
+
+    // She fetches it back from Carol, who announced it to her, and
+    // announces it to Bob, who asks her again for the same request.
+    carol_alice.a_announces(&[s.locator]).await;
+    let refetch = s
+        .alice
+        .fetch_chunks(s.space, s.locator, 0..u64::MAX, FetchPriority::Position);
+    let asked = s.alice.sync_fetches(&mut carol_alice.b.session).await;
+    carol_alice.pump(Vec::new(), asked).await;
+    assert!(holds(&s.alice, &s).await);
+    drop(refetch);
+    bob_alice.b.session.note_whole(&[s.locator]);
+    let mut wants = Vec::new();
+    for have in s.alice.sync_announce(&mut bob_alice.b.session).await {
+        wants.extend(receive(&s.alice, &mut bob_alice.a, have).await);
+    }
+    assert!(!wants.is_empty(), "Bob asks Alice again");
+
+    // Carol says she lacks it: Alice still serves the request.
+    let answers = receive(
+        &s.carol,
+        &mut carol_bob.b,
+        missing(s.space, vec![s.locator]),
+    )
+    .await;
+    assert!(answers.is_empty());
+    assert_eq!(fetch.end(), None);
+    bob_alice.pump(wants, Vec::new()).await;
+    assert_eq!(
+        s.bob.object(&s.space, &s.locator).await.unwrap(),
+        s.plaintext
+    );
+    assert_eq!(fetch.end(), None);
+}
+
+/// Past the bound, a newcomer still reads what the member holds: Alice
+/// floods Bob's session past the bound, then puts a blob whose unit
+/// reaches Bob without its announcement. Bob asks Alice for it all the
+/// same, and she serves it; once she says she lacks one, Bob asks her for
+/// it no more.
+#[tokio::test]
+async fn past_the_bound_a_member_is_asked_for_every_object_the_replica_knows() {
+    let s = space().await;
+    let mut bob_alice = Pair::new(s.space, &s.bob, &s.alice);
+    bob_alice.sync().await;
+    let mut count = 0u32;
+    for _ in 0..MAX_UNKNOWN_ANNOUNCED / MAX_MESSAGE_ITEMS + 1 {
+        let locators: Vec<[u8; 64]> = (0..MAX_MESSAGE_ITEMS)
+            .map(|_| {
+                count += 1;
+                let mut locator = [0xff; 64];
+                locator[..4].copy_from_slice(&count.to_be_bytes());
+                locator
+            })
+            .collect();
+        let have = SyncMessage {
+            space: s.space,
+            message: Message::ObjectHave {
+                locators,
+                counts: None,
+            },
+        };
+        receive(&s.alice, &mut bob_alice.a, have).await;
+    }
+
+    // A blob put now: its unit reaches Bob, and not its announcement.
+    let files = s
+        .alice
+        .new_stream(<frasil_adapter_blobs::Blobs as frasil_adapter::Adapter>::TYPE)
+        .unwrap();
+    let later = vec![3u8; 100];
+    let (unit, locator) = s
+        .alice
+        .put_blob(s.space, &files, Some("later"), &later)
+        .await
+        .unwrap();
+    let mut offered = s
+        .alice
+        .sync_offer(&mut bob_alice.b.session, &[unit])
+        .await
+        .unwrap();
+    offered.retain(|message| !matches!(message.message, Message::ObjectHave { .. }));
+    bob_alice.pump(Vec::new(), offered).await;
+    assert!(!bob_alice.a.session.announced().contains(&locator));
+    assert!(bob_alice.a.session.is_source(&locator));
+    let fetch = s
+        .bob
+        .fetch_chunks(s.space, locator, 0..u64::MAX, FetchPriority::Position);
+    let asked = s.bob.sync_fetches(&mut bob_alice.a.session).await;
+    assert!(!asked.is_empty(), "Bob asks Alice");
+    bob_alice.pump(asked, Vec::new()).await;
+    assert_eq!(s.bob.object(&s.space, &locator).await.unwrap(), later);
+    drop(fetch);
+
+    // Alice dropped the first blob: asked, she says so, and is no longer
+    // asked for it on the session.
+    s.alice
+        .drop_local_object(s.space, &s.locator)
+        .await
+        .unwrap();
+    let fetch = s
+        .bob
+        .fetch_chunks(s.space, s.locator, 0..u64::MAX, FetchPriority::Position);
+    let asked = s.bob.sync_fetches(&mut bob_alice.a.session).await;
+    assert!(!asked.is_empty());
+    bob_alice.pump(asked, Vec::new()).await;
+    assert!(!bob_alice.a.session.is_source(&s.locator));
+    assert_eq!(fetch.end(), Some(FetchEnd::Unserved));
+}
+
+/// A blob put while a session is open is announced once, with the unit
+/// that names it, and not again on the connection's next tick, whichever
+/// the device hears of first.
+#[tokio::test]
+async fn a_blob_put_is_announced_once() {
+    let s = space().await;
+    let mut alice_bob = Pair::new(s.space, &s.alice, &s.bob);
+    alice_bob.sync().await;
+    let files = s
+        .alice
+        .new_stream(<frasil_adapter_blobs::Blobs as frasil_adapter::Adapter>::TYPE)
+        .unwrap();
+    for (i, whole_first) in [false, true].into_iter().enumerate() {
+        let (unit, locator) = s
+            .alice
+            .put_blob(s.space, &files, None, &[i as u8; 100])
+            .await
+            .unwrap();
+        if whole_first {
+            alice_bob.a.session.note_whole(&[locator]);
+        }
+        let offered = s
+            .alice
+            .sync_offer(&mut alice_bob.a.session, &[unit])
+            .await
+            .unwrap();
+        let haves = offered
+            .iter()
+            .filter(|message| {
+                matches!(&message.message, Message::ObjectHave { locators, .. } if locators.contains(&locator))
+            })
+            .count();
+        assert_eq!(haves, 1, "with the unit");
+        if !whole_first {
+            alice_bob.a.session.note_whole(&[locator]);
+        }
+        assert!(
+            s.alice
+                .sync_announce(&mut alice_bob.a.session)
+                .await
+                .is_empty(),
+            "not again on the tick"
+        );
+        alice_bob.pump(offered, Vec::new()).await;
+        assert!(alice_bob.b.session.announced().contains(&locator));
+    }
 }

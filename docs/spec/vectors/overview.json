@@ -213,6 +213,18 @@
       ]
     },
     {
+      "name": "reannounce_interval",
+      "bounds": "a member connection's announcing again every object held whole, after it missed some that became whole",
+      "default": 30,
+      "minimum": 30,
+      "maximum": null,
+      "set_by": "the implementation",
+      "counted": "monotonic",
+      "in": [
+        "units.md"
+      ]
+    },
+    {
       "name": "withholding_grace",
       "bounds": "a peer's Missing for a head statement's heads before it shows withholding",
       "default": 300,
