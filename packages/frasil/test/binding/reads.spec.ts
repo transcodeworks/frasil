@@ -291,6 +291,70 @@ test("a cancelled stream and an aborted read leave the reader readable and the b
   await page.context().close();
 });
 
+test("a closed reader leaves its blob free to drop, though a read of it was still running", async ({
+  browser,
+}) => {
+  const { page, errors, space } = await opened(browser);
+  const seen = await page.evaluate(async (space) => {
+    const { agent, helpers } = window as unknown as ReadsWindow;
+    const data = helpers.pattern(3 * 1_048_536);
+    const { blobs, blob } = await agent.absent(space, data);
+    // Until the call runs in the module and has asked for a chunk the peer has not sent yet.
+    const running = async () => {
+      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+    };
+    const drop = () =>
+      blobs.dropLocal(blob).then(
+        () => "dropped",
+        (error: { code: string }) => error.code,
+      );
+    // A read never awaited before its reader is closed: it has ended, and the reader with it,
+    // once the close resolves.
+    const left = await blobs.openReader(blob, { readAhead: 0 });
+    let settled = false;
+    const read = left.read(1_048_536, 10).then(
+      () => {
+        settled = true;
+        return "resolved";
+      },
+      (error: { code: string }) => {
+        settled = true;
+        return error.code;
+      },
+    );
+    await running();
+    await left.close();
+    const endedFirst = settled;
+    const afterRead = await drop();
+    // A stream cancelled while its read waits, then its reader closed.
+    const streamed = await blobs.openReader(blob, { readAhead: 0 });
+    const stream = streamed.stream().getReader();
+    const waiting = stream.read();
+    await running();
+    await stream.cancel();
+    await streamed.close();
+    const afterStream = await drop();
+    return {
+      endedFirst,
+      afterRead,
+      read: await read,
+      afterStream,
+      streamDone: (await waiting).done,
+      local: (await blobs.local(blob)).state,
+    };
+  }, space);
+  expect(seen).toEqual({
+    endedFirst: true,
+    afterRead: "dropped",
+    read: "disposed",
+    afterStream: "dropped",
+    streamDone: true,
+    local: "absent",
+  });
+  expect(errors).toEqual([]);
+  await page.context().close();
+});
+
 test("the cache stays within its budget over reads of more than the budget", async ({
   browser,
 }) => {
