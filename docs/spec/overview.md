@@ -701,6 +701,7 @@ value is a policy field that every replica checks (section 6.7).
 | `mailbox_retention` | a person's or a device's mailbox | the operator's | at most 30 days | the operator | the peer's timeline | [transport.md](transport.md) |
 | `uncollected_retention` | an item of a device mailbox that is not claimed | 72 hours | 1 hour to `mailbox_retention`, so at most 30 days | the operator | the peer's timeline, from the deposit | [transport.md](transport.md) |
 | `welcome_retention` | a welcome its signer keeps waiting to hand over or deposit | 30 days | fixed | protocol | the signer's timeline, from keeping it | [admission.md](admission.md), [at-rest.md](at-rest.md) |
+| `welcome_redeposit` | a waiting welcome's deposit at a peer, made again | 48 hours | fixed | protocol | the signer's timeline, from its last deposit at that peer | [admission.md](admission.md), [at-rest.md](at-rest.md) |
 | `link_lifetime` | an invite, ended by a revocation | 7 days | 15 minutes to 7 days | the inviter's client | wall, the inviter's clock; lower, from each administering device's first sight, for the maximum | [ext-invite-links.md](ext-invite-links.md) |
 | `session_lifetime` | a guest session, ended by a removal | none | 15 minutes to 30 days | the granter's client | as `link_lifetime` | [ext-guests.md](ext-guests.md) |
 | `bounded_window` | writing without hearing from another member | off | 1 hour to 90 days | space policy | upper, from the signing of this device's newest event another member has followed | [ext-guests.md](ext-guests.md) |

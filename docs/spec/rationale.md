@@ -1166,7 +1166,14 @@ signer only reaches later. The record costs the signer the size of a
 mailbox item, and nothing in it opens without the device's keys, to which
 the welcome is sealed before it is kept. Its life is a peer's: after `mailbox_retention`'s
 maximum no peer still holds a deposit of it, and a device that has not
-taken the space up by then is admitted again. The trust is carried, not
+taken the space up by then is admitted again. A peer keeps an item for
+less in a mailbox its device has never collected (`uncollected_retention`,
+72 hours by default), so the signer deposits again at each peer every
+`welcome_redeposit`, 48 hours: a day under that default, which leaves room
+for a deposit delayed by `busy` or `rate_limited` and its waits of up to an
+hour, and for a connection to the peer that drops for a while, at the cost
+of one mailbox item per peer every two days. A second copy is harmless,
+since a device keeps one welcome per space. The trust is carried, not
 shared: a later removal from the known space does not reach the grant,
 which is therefore the application's to mirror.
 
