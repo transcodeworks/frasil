@@ -30,26 +30,6 @@ impl Engine {
         state.vault.get_device_item(table, item).await
     }
 
-    /// Puts device-wide records and one record of a space's log in one
-    /// commit, such as a deposit of a welcome and the welcome's record that
-    /// names the peer (at-rest.md, "Tables", `welcome`).
-    #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
-    pub(crate) async fn commit_device_with(
-        &self,
-        puts: Vec<DevicePut>,
-        (space, (table, item, value)): (frasil_events::EventId, crate::welcomes::LogRecord),
-    ) -> Result<()> {
-        let mut state = self.lock().await;
-        let mut batch = Batch::default();
-        for (table, item, value) in &puts {
-            state.vault.put_device(&mut batch, *table, item, value)?;
-        }
-        state
-            .vault
-            .put(&mut batch, &space.0, table, &item, &value)?;
-        state.vault.commit(batch).await
-    }
-
     /// Deletes and puts device-wide records in one commit: its deletes
     /// first (at-rest.md, "Committing").
     pub(crate) async fn commit_device(

@@ -3,10 +3,11 @@
 //! granter deposits the device's welcome in its device mailbox at the peer,
 //! and the device collects it there. A welcome of a space whose roster no
 //! longer reaches the device is deposited nowhere. The granter keeps its
-//! waiting welcomes at rest, with the peers that hold each (admission.md,
-//! 3.10 Welcomes, "A welcome that waits"), so a restart neither loses a
-//! deposit nor makes one twice. Every wait has a deadline, and nothing
-//! leaves the host.
+//! waiting welcomes at rest, with the peers it deposited each at and when
+//! (admission.md, 3.10 Welcomes, "A welcome that waits"), so a restart
+//! neither loses a deposit nor makes one again before it is due, and it
+//! deposits each again at a peer before the peer lets it go. Every wait
+//! has a deadline, and nothing leaves the host.
 
 use frasil::{Device, Level, Options, Space, SpaceId, Storage};
 use frasil_conformance::spawn_loopback;
@@ -215,7 +216,7 @@ async fn a_welcome_kept_before_a_restart_is_deposited_at_a_peer_reached_after_it
 
 /// A welcome deposited at a peer is kept with that peer named, so the
 /// granter, opened again and connected to the same peer, does not deposit
-/// it there a second time.
+/// it there again before `welcome_redeposit` has passed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restart_deposits_no_welcome_again_at_a_peer_that_holds_it() {
     let peer = spawn_loopback().await.unwrap();
@@ -258,7 +259,7 @@ async fn a_restart_deposits_no_welcome_again_at_a_peer_that_holds_it() {
         .await
         .unwrap();
     granter.welcome_upkeep().await;
-    assert_eq!(granter.welcome_deposits(), 0, "deposited there once");
+    assert_eq!(granter.welcome_deposits(), 0, "not due there yet");
 
     // The member still finds it there.
     member.connect(&origin).await.unwrap();
@@ -270,4 +271,75 @@ async fn a_restart_deposits_no_welcome_again_at_a_peer_that_holds_it() {
     drop(space);
     peer.shutdown().await;
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A peer keeps an item of a mailbox its device has never collected for
+/// `uncollected_retention`, 72 hours by default, so the granter deposits a
+/// waiting welcome there again every `welcome_redeposit`, 48 hours: a
+/// member that first reaches the peer on the fourth day still finds it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_welcome_is_deposited_again_before_the_peer_lets_it_go() {
+    const HOUR: u64 = 3_600;
+    let peer = spawn_loopback().await.unwrap();
+    let origin = peer.origin.clone();
+    let clock = std::sync::Arc::new(frasil::advanced::ManualClock::new(
+        1_000,
+        Some(1_800_000_000),
+    ));
+    let granter = Device::open_with(
+        Storage::Memory,
+        &[87; 32],
+        Options::new().loopback().clock(clock.clone()),
+    )
+    .await
+    .expect("a device");
+    let member = device(88).await;
+    let known = known(&granter, &member).await;
+    let space = with_note(&granter, "again").await;
+    let space_id = space.id();
+    space
+        .admit_member(known.id(), member.id(), Level::Read)
+        .await
+        .unwrap();
+    granter.connect(&origin).await.unwrap();
+    within(space.wait_durable(Duration::from_secs(60)))
+        .await
+        .unwrap();
+    let deposited = |at_least: u64| {
+        let granter = granter.clone();
+        async move {
+            within(async {
+                while granter.welcome_deposits() < at_least {
+                    granter.welcome_upkeep().await;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await;
+        }
+    };
+    deposited(1).await;
+    let first = granter.welcome_deposits();
+
+    // A day later, nothing is due yet.
+    peer.advance(24 * HOUR).await;
+    clock.advance(24 * HOUR);
+    granter.welcome_upkeep().await;
+    assert_eq!(granter.welcome_deposits(), first);
+
+    // Two days after the first deposit, the granter deposits again.
+    peer.advance(24 * HOUR).await;
+    clock.advance(24 * HOUR);
+    deposited(first + 1).await;
+
+    // On the fourth day of the peer's, the first copy is gone and the
+    // second is not; the granter's clock stays, so it deposits no third.
+    peer.advance(48 * HOUR).await;
+    member.connect(&origin).await.unwrap();
+    reads(&member, space_id, "again").await;
+
+    for device in [granter, member] {
+        device.close().await.unwrap();
+    }
+    drop((space, known));
+    peer.shutdown().await;
 }

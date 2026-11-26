@@ -1124,9 +1124,10 @@ pub struct WelcomeRecord {
     pub sealed: Vec<u8>,
     /// Key 3: the timeline's `T` at which the device kept it.
     pub since: u64,
-    /// Key 4: the origins of the peers that hold it in the newcomer's
-    /// device mailbox, 0 to 64, strictly ascending by their bytes.
-    pub deposited: Vec<String>,
+    /// Key 4: the peers it was deposited at in the newcomer's device
+    /// mailbox, each by its origin with the timeline's `T` of the latest
+    /// deposit there, 0 to 64, strictly ascending by the origins' bytes.
+    pub deposited: Vec<(String, u64)>,
 }
 
 /// What a cached object's last read is rounded down to, in seconds of the
@@ -1429,17 +1430,20 @@ fn read_welcome(value: &[u8]) -> Result<WelcomeRecord, ErrorClass> {
             if !(1..=MAX_WELCOME_PEERS).contains(&peers.len()) {
                 return Err(malformed);
             }
-            let mut out: Vec<String> = Vec::with_capacity(peers.len());
-            for peer in peers {
+            let mut out: Vec<(String, u64)> = Vec::with_capacity(peers.len());
+            for entry in peers {
+                let [peer, at] = entry.as_array()? else {
+                    return Err(malformed);
+                };
                 let peer = peer.as_text().map_err(|_| malformed)?;
                 if !(1..=MAX_PEER_URL).contains(&peer.len())
                     || out
                         .last()
-                        .is_some_and(|prior| prior.as_bytes() >= peer.as_bytes())
+                        .is_some_and(|(prior, _)| prior.as_bytes() >= peer.as_bytes())
                 {
                     return Err(malformed);
                 }
-                out.push(peer.to_owned());
+                out.push((peer.to_owned(), at.as_unsigned()?));
             }
             out
         }
@@ -1910,7 +1914,9 @@ impl TableValue {
                             welcome
                                 .deposited
                                 .iter()
-                                .map(|peer| peer.as_str().into())
+                                .map(|(peer, at)| {
+                                    Value::Array(vec![peer.as_str().into(), (*at).into()])
+                                })
                                 .collect(),
                         ),
                     );

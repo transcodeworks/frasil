@@ -22,6 +22,12 @@ pub(crate) const WAITING: usize = 256;
 /// a peer keeps a mailbox item.
 pub(crate) const WELCOME_RETENTION: u64 = 30 * 24 * 3600;
 
+/// How long after its latest deposit at a peer a waiting welcome is
+/// deposited there again: `welcome_redeposit` (overview.md, "Every
+/// timer"), under the 72 hours a peer keeps by default an item of a
+/// mailbox its device has not collected (`uncollected_retention`).
+pub(crate) const WELCOME_REDEPOSIT: u64 = 48 * 3600;
+
 /// A welcome sealed to its recipient.
 #[derive(Debug, Clone)]
 #[cfg_attr(
@@ -39,9 +45,58 @@ pub(crate) struct Waiting {
     pub sealed: Vec<u8>,
     /// The timeline's `T` at which the device kept it.
     pub since: u64,
-    /// The peers, by origin, that hold it in the recipient's device
-    /// mailbox, ascending.
-    pub deposited: Vec<String>,
+    /// The peers, by origin, it was deposited at in the recipient's
+    /// device mailbox, ascending, each with the timeline's `T` of the
+    /// latest deposit there: as its `welcome` record names them.
+    pub deposited: Vec<(String, u64)>,
+    /// The peers, by origin, that refused its deposit for good, each with
+    /// the timeline's `T` of the deposit: kept in memory only, so that a
+    /// restart deposits there again.
+    pub refused: Vec<(String, u64)>,
+}
+
+#[cfg_attr(
+    not(any(feature = "server", feature = "iroh", feature = "server-socket")),
+    allow(dead_code)
+)]
+impl Waiting {
+    /// Whether it is due at the peer at `origin` at `now`: deposited and
+    /// refused there never, or `WELCOME_REDEPOSIT` or longer before.
+    fn due_at(&self, origin: &str, now: u64) -> bool {
+        self.deposited
+            .iter()
+            .chain(&self.refused)
+            .filter(|(peer, _)| peer == origin)
+            .all(|(_, at)| now.saturating_sub(*at) >= WELCOME_REDEPOSIT)
+    }
+
+    /// The same welcome as `other`: the same recipient, space, event and
+    /// sealed bytes.
+    pub(crate) fn same(&self, other: &Waiting) -> bool {
+        (self.recipient, self.space, self.event) == (other.recipient, other.space, other.event)
+            && self.sealed == other.sealed
+    }
+
+    /// Deposited at the peer at `origin` at `at`: named there with that
+    /// `T`, and refused there no longer.
+    pub(crate) fn deposit_at(&mut self, origin: &str, at: u64) {
+        self.refused.retain(|(peer, _)| peer != origin);
+        match self
+            .deposited
+            .binary_search_by(|(peer, _)| peer.as_str().cmp(origin))
+        {
+            Ok(index) => self.deposited[index].1 = at,
+            Err(index) => self.deposited.insert(index, (origin.to_owned(), at)),
+        }
+    }
+
+    /// Refused for good at the peer at `origin` at `at`: named there no
+    /// longer, and held in memory to be deposited again later.
+    pub(crate) fn refused_at(&mut self, origin: &str, at: u64) {
+        self.deposited.retain(|(peer, _)| peer != origin);
+        self.refused.retain(|(peer, _)| peer != origin);
+        self.refused.push((origin.to_owned(), at));
+    }
 }
 
 /// A peer's origin as a `deposit` record names it: its URL with no
@@ -140,12 +195,16 @@ impl Links {
         self.welcomes.retain(|w| w.space != *space);
     }
 
-    /// The welcomes the peer at `url` does not hold yet.
-    pub(crate) fn to_deposit(&self, url: &str) -> Vec<Waiting> {
+    /// The welcomes due at the peer at `url` at `now`, on the device's
+    /// timeline: never deposited there, or last deposited or refused
+    /// there `WELCOME_REDEPOSIT` or longer before. A `T` past `now`, as
+    /// after a timeline that started again, is not due until `now` passes
+    /// it by that much.
+    pub(crate) fn to_deposit(&self, url: &str, now: u64) -> Vec<Waiting> {
         let url = origin(url);
         self.welcomes
             .iter()
-            .filter(|w| !w.deposited.iter().any(|at| at == url))
+            .filter(|w| w.due_at(url, now))
             .cloned()
             .collect()
     }
@@ -163,16 +222,23 @@ impl Links {
             .cloned()
     }
 
-    /// The peer at `url` holds a welcome in its recipient's device mailbox.
-    pub(crate) fn deposited(&mut self, recipient: &DeviceId, space: &EventId, url: &str) {
-        let url = origin(url);
-        for welcome in &mut self.welcomes {
-            if (welcome.recipient, welcome.space) == (*recipient, *space)
-                && let Err(at) = welcome.deposited.binary_search_by(|p| p.as_str().cmp(url))
-            {
-                welcome.deposited.insert(at, url.to_owned());
-            }
-        }
+    /// The waiting welcome that is the same as `welcome`, to change.
+    pub(crate) fn same_mut(&mut self, welcome: &Waiting) -> Option<&mut Waiting> {
+        self.welcomes.iter_mut().find(|w| w.same(welcome))
+    }
+
+    /// The waiting welcome a deposit of `item` at the device mailbox
+    /// `address` carries, where `address_of` gives a recipient's address.
+    pub(crate) fn carried(
+        &self,
+        address: &[u8; 32],
+        item: &[u8],
+        address_of: impl Fn(&DeviceId) -> [u8; 32],
+    ) -> Option<Waiting> {
+        self.welcomes
+            .iter()
+            .find(|w| w.sealed == item && address_of(&w.recipient) == *address)
+            .cloned()
     }
 
     /// The welcomes waiting for a recipient.
