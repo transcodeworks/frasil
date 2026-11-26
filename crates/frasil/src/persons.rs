@@ -870,6 +870,22 @@ impl Engine {
                 "administrator delivery needs the same administrators and device keys",
             ));
         }
+        self.deliver_locked(&mut state, space, recipients).await
+    }
+
+    /// Signs and commits a delivery of the current state to `recipients`
+    /// in the signing transaction `state` holds, once the caller's checks
+    /// passed in it.
+    pub(crate) async fn deliver_locked(
+        &self,
+        state: &mut crate::device::State,
+        space: EventId,
+        recipients: Vec<Recipient>,
+    ) -> Result<(
+        EventId,
+        std::collections::BTreeMap<DeviceId, writer::WrapOf>,
+    )> {
+        let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
         let current = replica
             .current()
             .cloned()
@@ -887,7 +903,7 @@ impl Engine {
                 .state_grant(&state)
                 .map(|grant| HeldGrant { state, grant })
         });
-        let (seq, prev) = Self::next(&state, &space, &self.device_id());
+        let (seq, prev) = Self::next(state, &space, &self.device_id());
         let parents = replica.parents(prev);
         let cuts = replica.cuts_for(&parents)?;
         let signed = writer::space_event(
@@ -914,9 +930,7 @@ impl Engine {
                 grantless: false,
             },
         )?;
-        let id = self
-            .commit_signed(&mut state, space, &signed.signed)
-            .await?;
+        let id = self.commit_signed(state, space, &signed.signed).await?;
         Ok((id, signed.wraps))
     }
 

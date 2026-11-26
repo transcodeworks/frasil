@@ -228,9 +228,9 @@ struct Driver {
     /// side offers one once its own view admits it.
     declined: BTreeSet<EventId>,
     /// The spaces of this side's own offers that the other side refused on
-    /// this connection: it holds no state of them that matched. Each one
-    /// whose welcome no longer waits, as after a restart, is welcomed
-    /// again (admission.md, 3.10 Welcomes).
+    /// this connection: it holds no state of them that matched. This side
+    /// may make the welcome of each one again, at most once on the
+    /// connection (admission.md, 3.10 Welcomes).
     refused: BTreeSet<EventId>,
     /// The device's spaces or their rosters may have changed since this
     /// side last looked for spaces it shares with the other device.
@@ -1196,12 +1196,12 @@ impl Driver {
 
     /// Hands the other device the welcomes waiting for it, each once on
     /// this connection, as items of its device mailbox (transport.md,
-    /// "Mailboxes"), once its `Identify` has verified. A space the other
-    /// device refused on this connection, whose welcome no longer waits,
-    /// is welcomed again first; a welcome of a space whose roster no
-    /// longer reaches the other device waits no longer, and goes nowhere
-    /// (admission.md, 3.10 Welcomes, "A welcome that waits for a member
-    /// connection").
+    /// "Mailboxes"), once its `Identify` has verified. The welcome of a
+    /// space the other device refused on this connection is made again
+    /// first, where [`Engine::welcome_again`] makes it; a welcome of a
+    /// space whose roster no longer reaches the other device waits no
+    /// longer, and goes nowhere (admission.md, 3.10 Welcomes, "A welcome
+    /// that waits for a member connection").
     async fn hand_welcomes(&mut self) -> Result<()> {
         let Some(remote) = self.session.remote_device().copied() else {
             return Ok(());

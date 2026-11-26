@@ -15,6 +15,14 @@ impl Space {
     /// or to drop a space this device no longer wants to hold. Changes not
     /// yet durable at a peer are lost.
     ///
+    /// While the roster still grants this device, a welcome it receives
+    /// later makes it follow the space again (admission.md, 3.10
+    /// Welcomes): one still in its device mailbox at a peer, which
+    /// [`Device::receive_welcomes_via_peer`](super::Device::receive_welcomes_via_peer)
+    /// collects from the mailbox's start, or one the device that granted it
+    /// makes again over a member connection when this device never
+    /// attached the space with it. A removal from the space ends that.
+    ///
     /// # Errors
     ///
     /// The store's.

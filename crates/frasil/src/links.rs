@@ -72,6 +72,11 @@ struct Held {
 pub(crate) struct Links {
     /// Welcomes not yet known to have arrived, oldest first.
     welcomes: Vec<Waiting>,
+    /// The spaces and devices this device made a welcome again for, or
+    /// whose attach a member connection admitted, since it opened: it
+    /// makes none of them again (admission.md, 3.10 Welcomes, "A welcome
+    /// that waits for a member connection").
+    settled: std::collections::BTreeSet<(EventId, DeviceId)>,
     /// For each space, the admitted attaches that serve it.
     attached: BTreeMap<EventId, usize>,
     /// For each space and member, the admitted attaches with that member.
@@ -144,6 +149,19 @@ impl Links {
             .any(|w| (w.recipient, w.space) == (*recipient, *space))
     }
 
+    /// Whether a welcome for a device and space may be made again, which
+    /// it may once since the device opened: `true` the first time, which
+    /// counts as that once.
+    pub(crate) fn may_welcome_again(&mut self, space: EventId, device: DeviceId) -> bool {
+        self.settled.insert((space, device))
+    }
+
+    /// A welcome made again for a device and space was not made after all:
+    /// it may be made later.
+    pub(crate) fn not_welcomed_again(&mut self, space: &EventId, device: &DeviceId) {
+        self.settled.remove(&(*space, *device));
+    }
+
     /// The recipient holds the space, or the space's roster no longer
     /// reaches it: its welcome no longer waits.
     pub(crate) fn delivered(&mut self, recipient: &DeviceId, space: &EventId) {
@@ -152,11 +170,13 @@ impl Links {
     }
 
     /// An attach admitted for a space, with the member on the other side
-    /// if it identified itself.
+    /// if it identified itself, which has then taken the space up: no
+    /// welcome of the space is made again for it.
     pub(crate) fn attach(&mut self, space: EventId, member: Option<DeviceId>) {
         *self.attached.entry(space).or_default() += 1;
         if let Some(member) = member {
             *self.members.entry((space, member)).or_default() += 1;
+            self.settled.insert((space, member));
         }
     }
 

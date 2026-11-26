@@ -218,12 +218,15 @@ impl Space {
     /// and no peer (admission.md, 3.16 A member of another space). The
     /// grant carries the keys that `known_space`'s roster names, which the
     /// ID commits to, is made with history, and records `via` = `none`. It
-    /// commits at once, offline. The device's welcome is sealed to its keys
+    /// commits at once, offline, and the call returns once it has, whatever
+    /// becomes of the welcome. The device's welcome is sealed to its keys
     /// and handed over the next member connection with it, such as the one
-    /// the two devices hold for `known_space`; after a restart, this device
-    /// makes it again when they meet. It goes to the device's mailbox at
-    /// this device's peers too, as [`Space::grant_person`]'s welcomes do.
-    /// The device follows the space as it follows a person grant's.
+    /// the two devices hold for `known_space`; after a restart, this device,
+    /// and no other administrator, makes it again when they meet, once in
+    /// each run. It goes to the device's mailbox at this device's peers
+    /// too, as [`Space::grant_person`]'s welcomes do, unless the space no
+    /// longer reaches the device. The device follows the space as it
+    /// follows a person grant's.
     ///
     /// The grant rests only on `known_space`'s roster: any administrator of
     /// that space could have put the device there, and a removal from it
@@ -236,10 +239,12 @@ impl Space {
     /// [`Space::admit_member_administrator`] gives at a rank;
     /// [`Error::UnknownSpace`] when this device does not hold `known_space`;
     /// [`Error::NotAllowed`] unless this device administers the space, when
-    /// `known_space` does not grant the device directly (it grants no such
-    /// device, or only through a person), when the device is a guest there,
-    /// when this space reaches the device already, and when it is
-    /// restricted and its parent does not reach the device.
+    /// `known_space` does not reach this device, when it does not grant the
+    /// device directly (it grants no such device, or only through a
+    /// person), when the device is a guest there, when its grant there has
+    /// no effect or the device forked there, when this space reaches the
+    /// device already, and when it is restricted and its parent does not
+    /// reach the device.
     pub async fn admit_member(
         &self,
         known_space: SpaceId,

@@ -20,7 +20,8 @@ use std::time::Duration;
 /// every peer this device is connected to that does not hold it yet, once
 /// the event it names is no longer waiting for a peer's acknowledgement,
 /// so that the recipient finds the event there (admission.md, 3.10
-/// Welcomes).
+/// Welcomes). A welcome of a space whose roster no longer reaches its
+/// recipient waits no longer, and goes nowhere.
 pub(super) async fn deposit_welcomes(device: &Device) {
     let engine = device.engine();
     for peer in device.peers() {
@@ -30,6 +31,16 @@ pub(super) async fn deposit_welcomes(device: &Device) {
         let url = peer.url().to_owned();
         let waiting = engine.links().to_deposit(&url);
         for welcome in waiting {
+            let reaches = engine
+                .read(&welcome.space, |replica| {
+                    replica.level_of(&welcome.recipient).is_some()
+                })
+                .await
+                .unwrap_or(false);
+            if !reaches {
+                engine.links().delivered(&welcome.recipient, &welcome.space);
+                continue;
+            }
             if engine.outbox(&welcome.space).await.contains(&welcome.event) {
                 continue;
             }

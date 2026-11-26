@@ -156,6 +156,20 @@ async fn grant_of(
         .unwrap()
 }
 
+/// The events of `space` that `device` signed, in its own replica.
+async fn signed_by(device: &Device, space: SpaceId) -> usize {
+    let me = device_of(device.id());
+    device
+        .engine()
+        .read(&ev(space), |replica| {
+            replica
+                .log()
+                .map_or(0, |log| log.events().filter(|e| *e.author() == me).count())
+        })
+        .await
+        .unwrap()
+}
+
 /// Two devices and no peer: an administrator of a space admits a device
 /// that another space grants directly; the device follows the space over
 /// the member connection the two hold for the other space, reads what was
@@ -185,6 +199,35 @@ async fn a_direct_member_of_one_space_is_admitted_to_another_with_no_peer() {
         .await
         .unwrap();
     reads(&space, &note, "before, after").await;
+    granter.close().await.unwrap();
+    device.close().await.unwrap();
+}
+
+/// A device admitted as an administrator arrives as one, at its rank, and
+/// administers the space.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_admitted_as_an_administrator_arrives_as_one() {
+    let granter = memory(63).await;
+    let device = memory(64).await;
+    let known = known_space(&granter, &device).await;
+    let (space, note) = space_with_note(&granter).await;
+
+    space
+        .admit_member_administrator(known.id(), device.id(), 1)
+        .await
+        .unwrap();
+    let arrived = arrives(&device, space.id()).await;
+    assert_eq!(arrived.level().await, Some(Level::Administer));
+    reads(&arrived, &note, "before").await;
+    assert_eq!(
+        grant_of(&device, space.id(), device.id()).await,
+        Some((
+            Level::Administer,
+            Some(1),
+            HistoryMode::WithHistory,
+            Via::None
+        ))
+    );
     granter.close().await.unwrap();
     device.close().await.unwrap();
 }
@@ -238,12 +281,15 @@ async fn a_granter_that_restarts_welcomes_the_device_again() {
         .admit_member(known.id(), id, Level::Write)
         .await
         .unwrap();
+    let before = signed_by(&granter, space_id).await;
     granter.close().await.unwrap();
     drop((space, note, known, granter));
 
     let granter = stored_with(&dir.join("granter"), 45, discovering()).await;
     let device = stored_with(&dir.join("device"), 46, discovering()).await;
     let arrived = arrives(&device, space_id).await;
+    // One delivery made the welcome again.
+    assert_eq!(signed_by(&granter, space_id).await, before + 1);
     assert_eq!(arrived.level().await, Some(Level::Write));
     let theirs = arrived
         .document_when_available(note_id, DEADLINE)
@@ -329,25 +375,24 @@ async fn a_device_removed_before_it_connects_is_offered_nothing() {
         .await
         .unwrap();
     space.remove(id).await.unwrap();
-
-    let device = stored(&dir, 48).await;
-    // The two meet again for the known space: what the granter writes
-    // there reaches the device.
-    let theirs = arrives(&device, known.id()).await;
-    let note = known.create_document().unwrap();
-    note.edit(|doc| doc.get_text("body").insert(0, "met"))
+    // A later grant whose welcome waits behind the first: a connection
+    // hands welcomes over oldest first, on one ordered stream, so once the
+    // device follows this space it has been offered all it will be.
+    let (later, _) = space_with_note(&granter).await;
+    later
+        .admit_member(known.id(), id, Level::Read)
         .await
         .unwrap();
-    reads(&theirs, &note, "met").await;
-    // Several rounds of the connection's upkeep, which hands welcomes over.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let device = stored(&dir, 48).await;
+    let arrived = arrives(&device, later.id()).await;
     assert!(
         !device.engine().spaces().await.contains(&ev(space.id())),
         "the device never follows the space"
     );
     granter.close().await.unwrap();
     device.close().await.unwrap();
-    drop((theirs, device));
+    drop((arrived, device));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -498,6 +543,139 @@ async fn the_granter_refuses_what_the_known_space_does_not_vouch_for() {
     );
 }
 
+/// The known space must reach the granter, whose view of its roster is
+/// otherwise no longer kept current, and its grant of the device must be
+/// in effect: a device that forked there is refused.
+#[tokio::test]
+async fn the_known_space_must_reach_the_granter_and_the_device() {
+    use frasil::advanced::{AdapterRegistry, Engine, Platform};
+    use frasil_store::{Commit, DeviceBoundSlot, MemorySlot, MemoryStore, Store};
+    use std::sync::Arc;
+
+    let founder = memory(73).await;
+    let granter = memory(74).await;
+    let device = memory(75).await;
+    let known = founder.create_space().await.unwrap();
+    let space = granter.create_space().await.unwrap();
+    for member in [&granter, &device] {
+        founder
+            .engine()
+            .grant_device(
+                ev(known.id()),
+                member.engine().public_keys().clone(),
+                Level::Write,
+                HistoryMode::WithHistory,
+                Via::Code,
+            )
+            .await
+            .unwrap();
+    }
+    founder
+        .engine()
+        .remove(ev(known.id()), MemberRef::device(device_of(granter.id())))
+        .await
+        .unwrap();
+    carry(&founder, &granter, known.id()).await;
+    not_allowed(
+        space
+            .admit_member(known.id(), device.id(), Level::Read)
+            .await,
+        "a known space that no longer reaches the granter",
+    );
+
+    // A device of the known space that signs one sequence number twice.
+    let store = Arc::new(MemoryStore::new());
+    let slot: Arc<dyn DeviceBoundSlot> = Arc::new(MemorySlot::new());
+    let (forker, sealed) = Engine::create(
+        Platform::new(store.clone(), slot.clone()),
+        &[76; 32],
+        AdapterRegistry::with_builtins(),
+    )
+    .await
+    .unwrap();
+    let forker_id = forker.device_id();
+    let engine = founder.engine();
+    let known = ev(known.id());
+    engine
+        .grant_device(
+            known,
+            forker.public_keys().clone(),
+            Level::Write,
+            HistoryMode::WithHistory,
+            Via::Code,
+        )
+        .await
+        .unwrap();
+    forker.follow(known).await;
+    forker
+        .ingest(known, engine.events(&known).await)
+        .await
+        .unwrap();
+    let doc = forker.new_document().unwrap();
+    forker
+        .edit_document(known, &doc, |d| {
+            d.get_text("body").insert(0, "one").unwrap();
+        })
+        .await
+        .unwrap();
+    let saved = store.scan(&[]).await.unwrap();
+    forker
+        .edit_document(known, &doc, |d| {
+            d.get_text("body").insert(3, " two").unwrap();
+        })
+        .await
+        .unwrap();
+    engine
+        .ingest(known, forker.events(&known).await)
+        .await
+        .unwrap();
+    drop(forker);
+    let restored = Arc::new(MemoryStore::new());
+    assert!(
+        restored
+            .commit(&Commit::new(saved, Vec::new()))
+            .await
+            .unwrap()
+    );
+    let forker = Engine::open(
+        Platform::new(restored, slot),
+        &sealed,
+        &[76; 32],
+        AdapterRegistry::with_builtins(),
+    )
+    .await
+    .unwrap();
+    forker.synced(&known).await.unwrap();
+    forker
+        .edit_document(known, &doc, |d| {
+            d.get_text("body").insert(3, " other").unwrap();
+        })
+        .await
+        .unwrap();
+    engine
+        .ingest(known, forker.events(&known).await)
+        .await
+        .unwrap();
+    assert!(
+        engine
+            .read(&known, |replica| replica.forked(&forker_id))
+            .await
+            .unwrap(),
+        "the device forked in the known space"
+    );
+    let theirs = founder.create_space().await.unwrap();
+    not_allowed(
+        theirs
+            .admit_member(
+                SpaceId::from_bytes(known.0),
+                MemberId::from_bytes(forker_id.0),
+                Level::Read,
+            )
+            .await,
+        "a device that forked in the known space",
+    );
+}
+
 /// A guest of the known space is not admitted by it.
 #[cfg(feature = "ext-guests")]
 #[tokio::test]
@@ -557,4 +735,37 @@ async fn a_restricted_space_admits_only_a_device_its_parent_reaches() {
         .admit_member(known.id(), device.id(), Level::Read)
         .await
         .unwrap();
+}
+
+/// A restricted known space whose parent does not reach the device grants
+/// it with no effect, and vouches for nothing.
+#[cfg(feature = "ext-restricted-spaces")]
+#[tokio::test]
+async fn a_restricted_known_space_vouches_only_for_a_device_its_parent_reaches() {
+    let granter = memory(77).await;
+    let device = memory(78).await;
+    let parent = granter.create_space().await.unwrap();
+    let known = parent.create_restricted().await.unwrap();
+    let space = granter.create_space().await.unwrap();
+    granter
+        .engine()
+        .grant_device(
+            ev(known.id()),
+            device.engine().public_keys().clone(),
+            Level::Write,
+            HistoryMode::WithHistory,
+            Via::Code,
+        )
+        .await
+        .unwrap();
+    not_allowed(
+        space
+            .admit_member(known.id(), device.id(), Level::Read)
+            .await,
+        "a grant with no effect",
+    );
+    parent
+        .admit_member(known.id(), device.id(), Level::Read)
+        .await
+        .unwrap_err();
 }
