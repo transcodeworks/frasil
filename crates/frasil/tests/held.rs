@@ -359,9 +359,12 @@ async fn a_reference_is_held_but_never_served() {
             .unwrap();
     within(invitation.admitted()).await.unwrap();
     let carols_files = until_stream(&carols_library, library_files.id()).await;
+    // Not held yet. Read locally: once Carol's member connection to Alice
+    // is attached, a read that may fetch waits for the blob, which Alice
+    // never announces in the library space, until the fetch stops moving.
     assert!(
         carols_files
-            .get(reference, &frasil::Read::new())
+            .get(reference, &frasil::Read::new().local())
             .await
             .unwrap()
             .is_none(),
