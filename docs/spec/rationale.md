@@ -1123,6 +1123,23 @@ redundant resolution keeps a batch from repeating work across every pair
 of independent spaces. Lists, units, guests, restricted parents, partial
 bases, stubs and undecided events keep the full resolution path.
 
+The same reasoning admits a direct device member of one space to another
+with no peer at all (admission.md, "A member of another space"): the
+granter reads the device ID and its keys from a roster it trusts, signs an
+ordinary grant with `via` = `none`, since no code was compared for it, and
+hands the welcome over the member connection the two devices already share.
+The welcome comes only from its signer, as a person's grant's does, so a
+member that merely carries it cannot point a device at a space of its
+choosing. Rather than keep waiting welcomes at rest, the signer makes one
+again from the log when it meets the device and the device refuses the
+space: the roster says the device is a member, the member tickets say it
+has not attached the space, and a fresh delivery supplies a wrap, since a
+delivery's wraps name no recipient and even their author cannot tell which
+one is whose. That costs one delivery event per restart before the device
+takes the space up, and no new record. The trust is carried, not shared: a
+later removal from the known space does not reach the grant, which is
+therefore the application's to mirror.
+
 ## References
 
 - RFC 2104 (HMAC), RFC 5869 (HKDF), RFC 7748 (X25519), RFC 8032 (EdDSA),

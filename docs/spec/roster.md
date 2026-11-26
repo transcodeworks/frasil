@@ -257,7 +257,10 @@ device's keys"). A grant whose keys give another ID is `NotCommitted`.
   device the granter means rests on how the granter learned it: an
   admission code, which commits to it, a list `add`, whose possession
   proof binds the keys to the person, or a roster it reads
-  ([admission.md](admission.md); [identity.md](identity.md)).
+  ([admission.md](admission.md); [identity.md](identity.md)). A grant
+  from a roster it reads carries that roster's trust and no more: it shows
+  only that an administrator of that space granted the device ID there
+  ([admission.md](admission.md), "A member of another space").
 
 ### 2.5 The space descriptor
 

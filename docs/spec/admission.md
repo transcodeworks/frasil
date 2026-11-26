@@ -44,7 +44,7 @@ rests on. It is shown and never checked.
 | `code` | a compared admission code (section 3.2), or a setup code (section 3.8) | the approver |
 | `link` | an invite link ([ext-invite-links.md](ext-invite-links.md)) | the invite key, in its successor |
 | `lookup` | an account's answer, with no code (section 3.9) | an administering device |
-| `none` | no admission step: a founder, an administrator's own new device, an access request answered from a roster both read (section 3.14) | an administering device |
+| `none` | no admission step: a founder, an administrator's own new device, an access request answered from a roster both read (section 3.14), a direct device member of another space (section 3.16) | an administering device |
 
 A client offers a person "with history", and a guest and a device member
 "from now on", and lets the administrator change it. An admission from now
@@ -683,10 +683,41 @@ wrap with the welcome's key names, derives the read credential, fetches the
 log, finds the event, and checks that it holds exactly this wrap. A welcome
 handed over a member connection by its approver is fetched from there: the
 newcomer attaches the space on that connection with the state the wrap
-holds. Nothing in a welcome is trusted: the event and the roster decide.
+holds. A device takes a welcome over a member connection only from the
+welcome's approver, so the device that signed the admission, or a later
+delivery, is the one that hands it over; no other member carries it.
+Nothing in a welcome is trusted: the event and the roster decide.
 An application MAY also carry a welcome by a route of its own, such as a
 message to its person; the welcome's checks are the same however it
 arrives.
+
+**A welcome that waits for a member connection.** The signer keeps each
+welcome it means to hand over a member connection until one of these ends
+it:
+
+- a member connection admits the newcomer's attach of the space;
+- the space's roster, in the signer's current view, no longer reaches the
+  newcomer, as after its removal: the signer then hands nothing over;
+- the signer's bound on welcomes it keeps waiting passes it, oldest first.
+
+Waiting welcomes need not survive a restart. When the signer next meets a
+device over a member connection, offers it a space ([transport.md](transport.md),
+"Further attaches"), and the device refuses the attach, the signer makes
+the welcome again, when all of these hold in its current view:
+
+1. It administers the space.
+2. The roster grants the device directly, with no `session`, or grants a
+   person whose list vouches for it.
+3. No member connection has admitted the device's attach of the space,
+   which the signer knows by the member ticket it keeps of the device for
+   that space ([transport.md](transport.md), "Reconnecting").
+4. No welcome for the device and space waits already.
+
+It signs a delivery of the current state to the device, sealed to the keys
+its grant or its person's list names, and hands over a welcome naming that
+delivery. A device that holds the space already drops it, as any welcome
+of a space it holds. The rule covers a person's devices and a device member
+alike, and needs no record beyond the space's log and the member tickets.
 
 A peer does not authenticate who deposits in a device mailbox, so a
 newcomer that collects a welcome there, with no exchange that named the
@@ -840,6 +871,47 @@ checks (section 3.10) are the same.
   over the member channel. A core implementation never puts key 13 in an
   offer, and a core joiner refuses an offer that carries it as `Malformed`.
 
+### 3.16 A member of another space
+
+An administrator of a space MAY grant a device that, in its current view,
+another space it holds (the **known space**) grants directly: by that
+device's ID, with the keys the known space's grant names, which the ID
+commits to ([roster.md](roster.md), "A device's keys"). No code is
+compared and no peer is needed. The grant is a device grant at `read` or
+`write`, or at `administer` at a rank at most the granter's own, with
+history, and `via` = `none`. Before it signs, the granter checks, in
+order, and refuses the grant when one fails; nothing is signed or sent for
+a refusal, which is the granter's own and has no class on the wire:
+
+1. The granter administers the space.
+2. The known space's roster grants the device directly, not only through a
+   person.
+3. That grant carries no `session`: the device is not a guest there.
+4. The space does not reach the device yet, directly, through a person or
+   through a space.
+5. A restricted space's parent reaches the device
+   ([ext-restricted-spaces.md](ext-restricted-spaces.md), "Membership of a
+   restricted space").
+
+Then roster.md's checks of the change apply as for any grant, the rank's
+among them. Replicas check none of the five: the grant is an ordinary
+device grant, valid by roster.md's rules alone.
+
+The grant commits at once, offline. Its welcome is sealed to the device's
+X-Wing key and waits for a member connection with the device, as section
+3.10 says, which hands it over and, after a restart, makes it again; the
+signer also deposits it in the device's mailbox at the peers it is
+connected to, as for a person's grant. Over a member connection, the
+device takes it only from the signer: the two devices meet on a connection
+formed for any space they share, such as the known space, and the granted
+device follows the space and attaches it there.
+
+What the grant proves is only that some administrator of the known space
+granted that device ID there; the welcome opens for that device alone. It
+proves nothing about the device's person, and the known space's later
+changes do not reach the new grant: a removal from the known space leaves
+the device in this one until an administrator removes it here.
+
 ## 4. Security considerations
 
 - **One guess.** Towards the approver, the relay's last choice is the
@@ -884,6 +956,12 @@ checks (section 3.10) are the same.
   A person's new device still signs its possession proof, which binds its
   keys to the person and to the approver as adder; a device ID binds
   neither ([identity.md](identity.md), "The possession statement").
+- **A member of another space** (section 3.16) is admitted on the trust
+  of the known space's roster alone: any administrator of the known space
+  could have put the device ID there. A granter that admits a known
+  space's members to its own space gives that space's administrators the
+  power to choose whom it admits, and a removal there does not reach the
+  grant here.
 - **Forks a newcomer cannot see.** A newcomer judges a granted space's
   roster from its space events alone. If an author of that space forked
   only in units the newcomer never receives, the newcomer does not void
