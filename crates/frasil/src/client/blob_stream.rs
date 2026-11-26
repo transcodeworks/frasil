@@ -489,7 +489,8 @@ impl Blobs {
     /// `Missing` when nothing is connected that could send the object,
     /// from the start or once the last connection went while it waited,
     /// or when the space's connections ask for it no further for want of
-    /// an answer ([`FetchEnd::Unserved`]); `ObjectMismatch` when what they
+    /// an answer, or because the members asked said they do not hold it
+    /// and no other member announced it ([`FetchEnd::Unserved`]); `ObjectMismatch` when what they
     /// were sent failed its checks ([`FetchEnd::Refused`]) and `Malformed`
     /// when it did not read as the object ([`FetchEnd::Malformed`]), each
     /// as soon as every connection of the space gave the request up and

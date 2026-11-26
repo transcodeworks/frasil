@@ -551,7 +551,8 @@ async fn a_blob_dropped_is_asked_of_the_member_that_announced_it_again() {
             .await
             .unwrap();
         assert!(!holds(&blob, 0).await && !holds(&blob, 1).await);
-        // Bob serves nothing of what he dropped.
+        // Bob serves nothing of what he dropped, and says he does not
+        // hold it (units.md, "Sync", sources between members).
         let want = SyncMessage {
             space: blob.space,
             message: Message::ObjectWant {
@@ -566,7 +567,13 @@ async fn a_blob_dropped_is_asked_of_the_member_that_announced_it_again() {
             .sync_receive(&mut bobs, by_alice, want)
             .await
             .unwrap();
-        assert!(answers.is_empty(), "round {round}: {answers:?}");
+        let missing = SyncMessage {
+            space: blob.space,
+            message: Message::ObjectMissing {
+                locators: vec![blob.locator],
+            },
+        };
+        assert_eq!(answers, vec![missing], "round {round}");
     }
 }
 

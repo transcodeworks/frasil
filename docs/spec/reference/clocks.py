@@ -76,6 +76,9 @@ PARAMETERS = [
        "the device's timeline", ["transport.md"], "24 hours, and at each new network"),
     _t("gossip_interval", "head gossip and member addresses, per attach", 5, 5, None, "the implementation",
        "monotonic", ["transport.md"]),
+    _t("reannounce_interval", "a member connection's announcing again every object held whole, "
+       "after it missed some that became whole", 30, 30, None, "the implementation", "monotonic",
+       ["units.md"]),
     _t("withholding_grace", "a peer's Missing for a head statement's heads before it shows "
        "withholding", 300, 60, 3600, "the implementation",
        "monotonic, from the peer's first Missing for them", ["units.md"]),

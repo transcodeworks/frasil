@@ -193,8 +193,9 @@ fn head_statements() {
 fn messages() {
     let f = family("messages");
     let cases = f["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 17);
-    for (code, case) in (1u64..).zip(cases) {
+    // Types 1 to 17, and type 64, the ignorable type the text defines.
+    assert_eq!(cases.len(), 18);
+    for (code, case) in (1u64..=17).chain([64]).zip(cases) {
         let data = bytes(&case["bytes"]);
         let Ok(Received::Message(message)) = SyncMessage::read(&data) else {
             panic!("{} does not read", text(&case["name"]));
@@ -247,7 +248,7 @@ fn messages() {
         })
     );
     let refusals = f["refusals"].as_array().unwrap();
-    assert_eq!(refusals.len(), 7);
+    assert_eq!(refusals.len(), 8);
     for row in refusals {
         let read = SyncMessage::read(&bytes(&row["bytes"]));
         assert_eq!(

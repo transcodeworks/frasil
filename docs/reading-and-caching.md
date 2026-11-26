@@ -337,12 +337,16 @@ removed and compacted away before a peer took it is no longer waited for:
 it is cached, or kept if the application asked for that. In a space with no always-on peer no
 other party is known to hold the bytes, so a blob put there is kept until
 the application drops it. `drop_local` refuses, with `NotAllowed`, a blob in
-use and, in a space with an always-on peer, a blob this device put that no
-peer holds yet, whether or not the application asked to keep it: `keep`
-on such a blob is remembered, and decides only what the blob becomes once
-a peer holds it. Putting bytes the device already holds changes nothing of
-that: a kept blob put again is kept once a peer holds it, and a cached one
-is cached again then.
+use: one that a read that has not returned yet, an open reader, `keep`, or a
+request for its chunks is using. A read that returned, and a reader that
+was closed or dropped, uses it no more; chunks fetched for such a read that
+the device is still writing are written first, and `drop_local` waits for
+them rather than refusing. It refuses too, in a space with an always-on
+peer, a blob this device put that no peer holds yet, whether or not the
+application asked to keep it: `keep` on such a blob is remembered, and
+decides only what the blob becomes once a peer holds it. Putting bytes the
+device already holds changes nothing of that: a kept blob put again is kept
+once a peer holds it, and a cached one is cached again then.
 
 **A store that is full.** The budget is the device's own count, and a
 store may have less room than it names, as a browser has past its origin's

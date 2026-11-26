@@ -32,6 +32,14 @@ use std::sync::Arc;
 /// The room a message keeps for its own keys, beside its events.
 const MESSAGE_OVERHEAD: usize = 64;
 
+/// The most objects a session keeps as announced by the other side that
+/// the replica did not know when they were announced: those that no unit,
+/// snapshot or stream snapshot it held named, and of which it held
+/// nothing (units.md, "Sync", sources between members). Objects the
+/// replica knows are kept whatever their number, which the replica's own
+/// size bounds.
+pub const MAX_UNKNOWN_ANNOUNCED: usize = 65_536;
+
 /// What the device does for a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -64,6 +72,13 @@ pub enum Action {
     /// `ObjectHave`: objects the other side holds, which the device may
     /// ask it for.
     ObjectsHeld(Vec<Locator>),
+    /// `ObjectMissing` from a member: it does not hold these objects
+    /// whole, and the session no longer counts it as a source of them;
+    /// only those it counted it a source of, asked it for, or took a
+    /// request for.
+    /// The device stops waiting on it for their chunks (units.md, "Sync",
+    /// sources between members).
+    ObjectsMissing(Vec<Locator>),
     /// `SnapshotWant` from a member this side serves: answer with a space
     /// snapshot and the objects it names.
     SnapshotWanted,
@@ -135,8 +150,8 @@ pub struct SyncSession {
     /// arrived, and those yet to ask.
     asks: Asks,
     /// The device's requests for chunks taken on this session, by their
-    /// numbers.
-    requested: BTreeSet<u64>,
+    /// numbers, with their objects.
+    requested: BTreeMap<u64, Locator>,
     /// The session's place among the connections that take the device's
     /// requests, from the first time it takes them or gives an object
     /// up; copies of the session share it.
@@ -146,8 +161,30 @@ pub struct SyncSession {
     expected: Option<Arc<Expected>>,
     /// Objects the other side announced in `ObjectHave`: asked for once
     /// the device finds them missing, or a request names their chunks,
-    /// for as long as the session lasts.
+    /// until it says in `ObjectMissing` that it does not hold them, or the
+    /// session ends.
     announced: BTreeSet<Locator>,
+    /// Of `announced`, those that count toward the bound: not found to be
+    /// objects the replica knows. At most [`MAX_UNKNOWN_ANNOUNCED`].
+    unknown: BTreeSet<Locator>,
+    /// Whether the bound dropped an announcement: the other side is then a
+    /// possible source of every object, but those in `lacking`.
+    overflowed: bool,
+    /// Objects the other side said in `ObjectMissing` it does not hold,
+    /// of those this side counted it a source of, until it announces them
+    /// again.
+    lacking: BTreeSet<Locator>,
+    /// Whether this side knows which objects the other side announced
+    /// when it admitted this side: until it does, a request for an object
+    /// the other side has not announced is not declined (units.md,
+    /// "Sync", sources between members).
+    sources_known: bool,
+    /// Objects that became whole at this side, to announce to the other
+    /// in `ObjectHave` (units.md, "Sync", sources between members).
+    to_announce: BTreeSet<Locator>,
+    /// Objects announced with the units that name them since the last
+    /// tick: not announced again on it.
+    with_units: BTreeSet<Locator>,
     /// Objects whose chunks from the other side failed their checks: not
     /// asked of it again on this session (units.md, "Sync", objects).
     refused: BTreeSet<Locator>,
@@ -181,10 +218,16 @@ impl SyncSession {
             paths: BTreeMap::new(),
             serving: Serving::Everything,
             asks: Asks::default(),
-            requested: BTreeSet::new(),
+            requested: BTreeMap::new(),
             taker: None,
             expected: None,
             announced: BTreeSet::new(),
+            unknown: BTreeSet::new(),
+            overflowed: false,
+            lacking: BTreeSet::new(),
+            sources_known: true,
+            to_announce: BTreeSet::new(),
+            with_units: BTreeSet::new(),
             refused: BTreeSet::new(),
             snapshot: SnapshotAsk::NotAsked,
             their_streams: None,
@@ -348,14 +391,14 @@ impl SyncSession {
     /// is asked (units.md, "Sync", objects).
     pub fn refuse_object(&mut self, locator: Locator) {
         self.asks.forget(&locator);
-        self.announced.remove(&locator);
+        self.unannounce(&locator);
         self.refused.insert(locator);
     }
 
-    /// Notes a request for chunks the device made: `true` the first time
-    /// this session hears of it.
-    pub(crate) fn take_request(&mut self, id: u64) -> bool {
-        self.requested.insert(id)
+    /// Notes a request for chunks of an object the device made: `true` the
+    /// first time this session hears of it.
+    pub(crate) fn take_request(&mut self, id: u64, locator: Locator) -> bool {
+        self.requested.insert(id, locator).is_none()
     }
 
     /// The session's place among the connections that take the requests
@@ -405,7 +448,7 @@ impl SyncSession {
 
     /// Forgets the device's requests that ended.
     pub(crate) fn keep_requests(&mut self, live: &BTreeSet<u64>) {
-        self.requested.retain(|id| live.contains(id));
+        self.requested.retain(|id, _| live.contains(id));
     }
 
     /// Where this session is with a space snapshot asked of the other side.
@@ -419,21 +462,197 @@ impl SyncSession {
     }
 
     /// Keeps objects the other side announced in `ObjectHave`, which this
-    /// side may ask it for (units.md, "Sync", objects).
+    /// side may ask it for (units.md, "Sync", objects), counting each as
+    /// one the replica does not know: of those, the session keeps at most
+    /// [`MAX_UNKNOWN_ANNOUNCED`].
     pub fn note_announced(&mut self, locators: &[Locator]) {
-        self.announced.extend(
+        self.note_announced_with(locators, |_| false);
+    }
+
+    /// Keeps objects the other side announced in `ObjectHave`: each the
+    /// replica knows, as `known` says, and of the others as many as keep
+    /// those the replica did not know within [`MAX_UNKNOWN_ANNOUNCED`]. An
+    /// announcement not kept is as if it was never made (units.md, "Sync",
+    /// sources between members).
+    /// Once the bound dropped one, the other side is a possible source of
+    /// every object ([`is_source`](Self::is_source)).
+    pub fn note_announced_with(&mut self, locators: &[Locator], known: impl Fn(&Locator) -> bool) {
+        for locator in locators {
+            self.lacking.remove(locator);
+            if self.refused.contains(locator) || self.announced.contains(locator) {
+                continue;
+            }
+            if !known(locator) {
+                if self.unknown.len() >= MAX_UNKNOWN_ANNOUNCED {
+                    self.overflowed = true;
+                    continue;
+                }
+                self.unknown.insert(*locator);
+            }
+            self.announced.insert(*locator);
+        }
+    }
+
+    /// Keeps the objects an `ObjectHave` announces. Each counts toward
+    /// [`MAX_UNKNOWN_ANNOUNCED`] unless the replica holds something of it,
+    /// for as long as they fit; what the replica knows by name is worked
+    /// out, from its units, only when they would not: those it knows then
+    /// stop counting, and of the new ones those it does not know are kept
+    /// while they fit. Once the bound dropped one, the other side is a
+    /// possible source of every object and the replica's units are not
+    /// looked at again: what is not kept costs nothing more.
+    fn note_held(&mut self, replica: &Replica, locators: &[Locator]) {
+        if self.overflowed {
+            self.note_announced_with(locators, |locator| replica.is_located(locator));
+            return;
+        }
+        let fresh = locators
+            .iter()
+            .filter(|locator| {
+                !self.announced.contains(*locator)
+                    && !self.refused.contains(*locator)
+                    && !replica.is_located(locator)
+            })
+            .count();
+        if self.unknown.len().saturating_add(fresh) <= MAX_UNKNOWN_ANNOUNCED {
+            self.note_announced_with(locators, |locator| replica.is_located(locator));
+            return;
+        }
+        let named = crate::objects::known_objects(replica);
+        let known = |locator: &Locator| replica.is_located(locator) || named.contains(locator);
+        self.unknown.retain(|locator| !known(locator));
+        self.note_announced_with(locators, known);
+    }
+
+    /// Forgets that the other side announced an object.
+    fn unannounce(&mut self, locator: &Locator) {
+        self.announced.remove(locator);
+        self.unknown.remove(locator);
+    }
+
+    /// The other side does not hold these objects whole (`ObjectMissing`):
+    /// it is no source of them until it announces them again. The chunks
+    /// awaited of them are awaited no longer, and the requests for them
+    /// this session took are taken again if it announces them again. Of
+    /// the objects named, those this session counted the other side a
+    /// source of, asked it for, or took a request for: the others change
+    /// nothing.
+    fn not_sources(&mut self, locators: &[Locator]) -> Vec<Locator> {
+        let named: BTreeSet<Locator> = locators.iter().copied().collect();
+        let mut taken = BTreeSet::new();
+        self.requested.retain(|_, locator| {
+            let named = named.contains(locator);
+            if named {
+                taken.insert(*locator);
+            }
+            !named
+        });
+        let mut removed = Vec::new();
+        for locator in named {
+            let announced = self.announced.remove(&locator);
+            self.unknown.remove(&locator);
+            let asked = self.asks.forget(&locator);
+            if announced || asked || taken.contains(&locator) {
+                self.lacking.insert(locator);
+                removed.push(locator);
+            }
+        }
+        removed
+    }
+
+    /// Whether this side counts the other as a source of an object: it
+    /// announced it in `ObjectHave` and has not said in `ObjectMissing`
+    /// that it does not hold it since; or the bound dropped an
+    /// announcement of the other side's, and it has not said so of this
+    /// object (units.md, "Sync", sources between members). Never one the
+    /// other side was refused for.
+    pub fn is_source(&self, locator: &Locator) -> bool {
+        if self.refused.contains(locator) {
+            return false;
+        }
+        self.announced.contains(locator) || (self.overflowed && !self.lacking.contains(locator))
+    }
+
+    /// Whether this side counts the other as a source of any object.
+    pub fn has_sources(&self) -> bool {
+        self.overflowed || !self.announced.is_empty()
+    }
+
+    /// Says whether this side knows which objects the other side
+    /// announced when it admitted this side: a member connection's session
+    /// does not until the other side admitted it. Until it does, the
+    /// session declines no request ([`Taker::decline`]).
+    #[cfg_attr(not(feature = "iroh"), allow(dead_code))]
+    pub(crate) fn set_sources_known(&mut self, known: bool) {
+        self.sources_known = known;
+    }
+
+    /// Whether this side knows which objects the other side announced
+    /// when it admitted this side.
+    pub(crate) fn sources_known(&self) -> bool {
+        self.sources_known
+    }
+
+    /// Notes objects that became whole at this side, to announce to the
+    /// other in `ObjectHave` with others that do
+    /// ([`take_announcements`](Self::take_announcements)).
+    /// One announced with the units that name it since the last tick is
+    /// not announced again.
+    pub fn note_whole(&mut self, locators: &[Locator]) {
+        self.to_announce.extend(
             locators
                 .iter()
                 .copied()
-                .filter(|locator| !self.refused.contains(locator)),
+                .filter(|locator| !self.with_units.contains(locator)),
         );
     }
 
-    /// The objects the other side announced on this session, less those
-    /// it was refused for. They say what the other side holds, whatever
-    /// this side holds: an object this side fetched whole and dropped
-    /// since, or held when it was announced, is asked of the other side
-    /// like one it never held.
+    /// Notes objects announced with the units that name them: not
+    /// announced again on the next tick, as objects that became whole.
+    pub(crate) fn announced_with_units(&mut self, locators: &[Locator]) {
+        for locator in locators {
+            self.to_announce.remove(locator);
+            self.with_units.insert(*locator);
+        }
+    }
+
+    /// Whether objects that became whole at this side wait to be
+    /// announced.
+    pub fn has_announcements(&self) -> bool {
+        !self.to_announce.is_empty()
+    }
+
+    /// `ObjectHave` for the objects that became whole at this side since
+    /// the last call, those `held` says it still holds whole: 4,096 to a
+    /// message (units.md, "Sync", sources between members). A new wait
+    /// starts: the objects announced with units before it are announced
+    /// again when they become whole after it.
+    pub fn take_announcements(&mut self, held: impl Fn(&Locator) -> bool) -> Vec<SyncMessage> {
+        self.with_units.clear();
+        let locators: Vec<Locator> = std::mem::take(&mut self.to_announce)
+            .into_iter()
+            .filter(|locator| held(locator))
+            .collect();
+        locators
+            .chunks(MAX_MESSAGE_ITEMS)
+            .map(|chunk| SyncMessage {
+                space: self.space,
+                message: Message::ObjectHave {
+                    locators: chunk.to_vec(),
+                    counts: None,
+                },
+            })
+            .collect()
+    }
+
+    /// The objects the other side announced on this session and that this
+    /// side kept ([`MAX_UNKNOWN_ANNOUNCED`]), less those it was refused
+    /// for and those it said in `ObjectMissing` it does not hold.
+    /// [`is_source`](Self::is_source) says which objects this side may ask
+    /// it for. They say what the other side holds, whatever this side holds:
+    /// an object this side fetched whole and dropped since, or held when
+    /// it was announced, is asked of the other side like one it never
+    /// held.
     pub fn announced(&self) -> &BTreeSet<Locator> {
         &self.announced
     }
@@ -609,7 +828,20 @@ impl SyncSession {
                 index,
                 chunk,
             })],
-            Message::ObjectHave { locators, .. } => vec![Action::ObjectsHeld(locators)],
+            Message::ObjectHave { locators, .. } => {
+                self.note_held(replica, &locators);
+                vec![Action::ObjectsHeld(locators)]
+            }
+            // Between members only (units.md, "Sync", sources between
+            // members): a peer never sends it.
+            Message::ObjectMissing { locators } if self.acknowledges => {
+                let removed = self.not_sources(&locators);
+                if removed.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![Action::ObjectsMissing(removed)]
+                }
+            }
             Message::SnapshotWant { .. } if self.serving == Serving::Everything => {
                 vec![Action::SnapshotWanted]
             }

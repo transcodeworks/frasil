@@ -322,6 +322,9 @@ pub enum Timer {
     EndpointRotation,
     /// Head gossip, per attach.
     GossipInterval,
+    /// A member connection's announcing again every object held whole,
+    /// after it missed some that became whole.
+    ReannounceInterval,
     /// A peer's `Missing` for a head statement's heads before it shows
     /// withholding.
     WithholdingGrace,
@@ -386,10 +389,10 @@ pub const POLICY_VALUES: [Timer; 4] = [
 
 impl Timer {
     /// Every timer, in the table's order.
-    pub const ALL: [Timer; 40] = {
-        let mut all = [Timer::AdmissionCodeLifetime; 40];
+    pub const ALL: [Timer; 41] = {
+        let mut all = [Timer::AdmissionCodeLifetime; 41];
         let mut index = 0;
-        while index < 40 {
+        while index < 41 {
             all[index] = TIMERS[index].timer;
             index += 1;
         }
@@ -444,7 +447,7 @@ const fn row(
 
 /// overview.md's "Every timer", in seconds, one row per [`Timer`] in its
 /// order.
-pub const TIMERS: [TimerSpec; 40] = [
+pub const TIMERS: [TimerSpec; 41] = [
     row(
         Timer::AdmissionCodeLifetime,
         "admission_code_lifetime",
@@ -652,6 +655,18 @@ pub const TIMERS: [TimerSpec; 40] = [
         SetBy::Implementation,
         Some("monotonic"),
         &["transport.md"],
+        None,
+    ),
+    row(
+        Timer::ReannounceInterval,
+        "reannounce_interval",
+        "a member connection's announcing again every object held whole, after it missed some that became whole",
+        Some(30),
+        Some(30),
+        None,
+        SetBy::Implementation,
+        Some("monotonic"),
+        &["units.md"],
         None,
     ),
     row(

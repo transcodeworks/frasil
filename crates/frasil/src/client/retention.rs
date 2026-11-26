@@ -343,6 +343,10 @@ impl Blobs {
     /// still lists the blob. Dropping a blob the device holds nothing of
     /// changes nothing.
     ///
+    /// A read that returned, and a reader that was closed or dropped, use
+    /// the blob no more. Chunks fetched for such a read that the device is
+    /// still writing are written first, and the drop waits for them.
+    ///
     /// A reference's bytes are dropped in this space and in the space that
     /// stores the file, when this device holds that space: where
     /// [`Blobs::keep`] through the reference keeps them, and where the
@@ -358,8 +362,9 @@ impl Blobs {
     /// # Errors
     ///
     /// [`Error::Invalid`] when the stream holds no blob of this ID;
-    /// [`Error::NotAllowed`] while the blob must stay: a read or a fetch
-    /// is using it, this device put it in a space with an always-on peer
+    /// [`Error::NotAllowed`] while the blob must stay: a read that has not
+    /// returned, an open [`BlobReader`](crate::BlobReader) or a fetch is
+    /// using it, this device put it in a space with an always-on peer
     /// and no peer is known to hold its bytes yet, its object is one
     /// Frasil stores for itself, or the device keeps every blob
     /// ([`Options::keep_all_blobs`](crate::Options::keep_all_blobs)) and

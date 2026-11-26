@@ -338,6 +338,11 @@ struct Shared {
     /// parts arrive, and objects it dropped: what a blob feed reports as
     /// arrived or evicted.
     arrivals: broadcast::Sender<(EventId, frasil_adapter::Locator)>,
+    /// Objects that became whole at this device, by space, and not those
+    /// it dropped: what member connections announce (units.md, "Sync",
+    /// sources between members).
+    #[cfg_attr(not(feature = "iroh"), allow(dead_code))]
+    wholes: broadcast::Sender<(EventId, frasil_adapter::Locator)>,
     /// Held objects withdrawn since the device opened, by space and object
     /// ID, until the device holds them again (at-rest.md, "Held objects").
     withdrawn: std::sync::Mutex<BTreeSet<(EventId, [u8; 32])>>,
@@ -489,6 +494,7 @@ impl Engine {
         let timeline = Timeline::start(kept, wall, mono);
         let (notices, _) = broadcast::channel(1024);
         let (arrivals, _) = broadcast::channel(1024);
+        let (wholes, _) = broadcast::channel(1024);
         // A device whose replicas are partial from its first resolution on
         // (units.md, 3.15 Partial replicas): the load resolves each space
         // as one.
@@ -519,6 +525,7 @@ impl Engine {
                 erased_at_peer: std::sync::Mutex::default(),
                 checkpoint_policy: std::sync::Mutex::default(),
                 arrivals,
+                wholes,
                 withdrawn: std::sync::Mutex::new(BTreeSet::new()),
                 readers: readers.clone(),
                 verified: std::sync::Mutex::new(BTreeMap::new()),
@@ -1221,8 +1228,18 @@ impl Engine {
         self.shared.arrivals.subscribe()
     }
 
-    /// Tells blob feeds that an object became whole, and that it is no
-    /// longer withdrawn.
+    /// Objects as they become whole at this device, by space, and not as
+    /// it drops them: member connections announce them (units.md, "Sync",
+    /// sources between members).
+    #[cfg(feature = "iroh")]
+    pub(crate) fn subscribe_wholes(
+        &self,
+    ) -> broadcast::Receiver<(EventId, frasil_adapter::Locator)> {
+        self.shared.wholes.subscribe()
+    }
+
+    /// Tells blob feeds and member connections that an object became
+    /// whole, and that it is no longer withdrawn.
     pub(crate) fn arrived(&self, space: EventId, locator: frasil_adapter::Locator) {
         let mut id = [0; 32];
         id.copy_from_slice(&locator[..32]);
@@ -1232,6 +1249,7 @@ impl Engine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&(space, id));
         let _ = self.shared.arrivals.send((space, locator));
+        let _ = self.shared.wholes.send((space, locator));
     }
 
     /// Tells blob feeds and observers that the device dropped an object it
@@ -3627,6 +3645,8 @@ impl Engine {
         let mut out = Vec::new();
         // Whether what arrived may name objects the other side announced.
         let mut names_more = false;
+        // Objects asked for that this side does not hold whole.
+        let mut lacked = BTreeSet::new();
         for action in actions {
             match action {
                 Action::Send(message) => out.push(message),
@@ -3635,14 +3655,19 @@ impl Engine {
                     first,
                     count,
                 } => {
-                    let mut parts = match self.serve_parts(&space, &locator, first, count).await? {
-                        Some(parts) => parts,
+                    let parts = match self.serve_parts(&space, &locator, first, count).await? {
+                        Some(parts) => Some(parts),
                         // A held object, its chunks sealed again from the
                         // plaintext (at-rest.md, "Held objects").
-                        None => self
-                            .serve_held(space, &locator, first, count)
-                            .await?
-                            .unwrap_or_default(),
+                        None => self.serve_held(space, &locator, first, count).await?,
+                    };
+                    // Not held whole: a member hears so, and asks another
+                    // party (units.md, "Sync", sources between members).
+                    let Some(mut parts) = parts else {
+                        if session.acknowledges() {
+                            lacked.insert(locator);
+                        }
+                        continue;
                     };
                     // The first chunk of an answer carries the header,
                     // whichever index it starts at (units.md, "Sync",
@@ -3679,7 +3704,6 @@ impl Engine {
                     out.extend(wants);
                 }
                 Action::ObjectsHeld(locators) => {
-                    session.note_announced(&locators);
                     let missing = self.missing_objects(&space).await;
                     for locator in locators {
                         if missing.contains(&locator) {
@@ -3688,6 +3712,15 @@ impl Engine {
                     }
                     // Chunks a reader asked for, of an object announced now.
                     out.extend(self.want_requests(session, true).await);
+                }
+                Action::ObjectsMissing(locators) => {
+                    // The requests for them this session took hear of it,
+                    // unless another connection will still try.
+                    if let Some(taker) = session.taker_if_any() {
+                        for locator in &locators {
+                            taker.unserved(locator);
+                        }
+                    }
                 }
                 Action::SnapshotWanted => {
                     if let Acknowledger::Member(remote) = by {
@@ -3745,7 +3778,20 @@ impl Engine {
                 }
             }
         }
-        if names_more && !session.announced().is_empty() {
+        if !lacked.is_empty() {
+            let lacked: Vec<_> = lacked.into_iter().collect();
+            out.extend(
+                lacked
+                    .chunks(frasil_units::limits::MAX_MESSAGE_ITEMS)
+                    .map(|chunk| SyncMessage {
+                        space,
+                        message: frasil_units::messages::Message::ObjectMissing {
+                            locators: chunk.to_vec(),
+                        },
+                    }),
+            );
+        }
+        if names_more && session.has_sources() {
             out.extend(self.want_announced(session).await);
         }
         self.judge_served(session, by, &mut out).await?;
@@ -3781,6 +3827,9 @@ impl Engine {
             let state = self.lock().await;
             if let Some(replica) = state.replicas.get(&space) {
                 let announced = announced_objects(replica, &out);
+                if let Some(have) = &announced {
+                    session.announced_with_units(have_locators(have));
+                }
                 out.extend(announced);
             }
         }
@@ -3805,7 +3854,11 @@ impl Engine {
             .ok_or(Error::UnknownSpace)?;
         let mut out = sends(session.offer(replica, placed));
         if session.acknowledges() {
-            out.extend(announced_objects(replica, &out));
+            let announced = announced_objects(replica, &out);
+            if let Some(have) = &announced {
+                session.announced_with_units(have_locators(have));
+            }
+            out.extend(announced);
         }
         Ok(out)
     }
@@ -4110,8 +4163,12 @@ impl Engine {
 
     /// `ObjectWant`s on a session for the requests for chunks made of
     /// this device ([`Engine::fetch_chunks`]) that the session has not
-    /// taken yet: with `announced`, only for objects the other side
-    /// announced in `ObjectHave`, as a member does.
+    /// taken yet: with `announced`, only for objects the session counts
+    /// the other side a source of ([`SyncSession::is_source`]), as a
+    /// member does. A member's session declines the others once it knows
+    /// what the member announced when it admitted this device, so that
+    /// they end once every other connection is done with them (units.md,
+    /// "Sync", sources between members).
     pub(crate) async fn want_requests(
         &self,
         session: &mut SyncSession,
@@ -4119,19 +4176,30 @@ impl Engine {
     ) -> Vec<SyncMessage> {
         // The session takes the space's requests from now on.
         session.taker(&self.shared.fetches);
+        let Some(taker) = session.taker_if_any() else {
+            return Vec::new();
+        };
         let requests = self.shared.fetches.of(&session.space());
         session.keep_requests(&requests.iter().map(|request| request.id).collect());
         let mut out = Vec::new();
+        let mut declined = Vec::new();
         for request in requests {
-            if announced && !session.announced().contains(&request.locator) {
+            if announced && !session.is_source(&request.locator) {
+                if session.sources_known() {
+                    declined.push(request.id);
+                }
                 continue;
             }
-            if session.take_request(request.id) {
+            if session.take_request(request.id, request.locator) {
+                taker.took(request.id);
                 out.extend(
                     self.want_chunks_in(session, request.locator, request.chunks, request.priority)
                         .await,
                 );
             }
+        }
+        if !declined.is_empty() {
+            taker.decline(&declined);
         }
         out
     }
@@ -5850,6 +5918,14 @@ fn announced_objects(replica: &Replica, messages: &[SyncMessage]) -> Option<Sync
             counts: None,
         },
     })
+}
+
+/// The locators of an `ObjectHave`.
+fn have_locators(have: &SyncMessage) -> &[frasil_adapter::Locator] {
+    match &have.message {
+        frasil_units::messages::Message::ObjectHave { locators, .. } => locators,
+        _ => &[],
+    }
 }
 
 fn sends(actions: Vec<Action>) -> Vec<SyncMessage> {

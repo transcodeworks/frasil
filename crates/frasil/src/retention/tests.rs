@@ -1122,6 +1122,60 @@ async fn an_object_is_not_dropped_while_its_parts_are_being_written() {
     assert!(records(&engine, space).await.is_empty());
 }
 
+/// A drop asked for while parts a fetch brought are being written, with
+/// no read using the object, waits for the write and then drops it; one
+/// refused for a reason the write does not change is refused at once.
+#[tokio::test]
+async fn a_drop_waits_for_parts_being_written_unless_it_is_refused() {
+    let medium = Medium::new();
+    let (engine, _, space) = medium.device().await;
+    let chunk = frasil_units::limits::CHUNK_BYTES;
+    let (a, a_parts) = object(&engine, space, b'a', 2 * chunk + 1).await;
+    // The object is fetched, and its second part's write begins and is
+    // held back in the store.
+    let write = || async {
+        engine.retain(space, &a, false).await.unwrap();
+        engine
+            .receive_sent(space, a_parts[0].clone())
+            .await
+            .unwrap();
+        let (begun, release) = medium.store.hold();
+        let writing = {
+            let engine = engine.clone();
+            let part = a_parts[1].clone();
+            tokio::spawn(async move { engine.receive_sent(space, part).await.unwrap() })
+        };
+        begun.await.unwrap();
+        (release, writing)
+    };
+
+    let (release, writing) = write().await;
+    let dropping = {
+        let engine = engine.clone();
+        tokio::spawn(async move { engine.drop_local_object(space, &a).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(!dropping.is_finished(), "the drop waits for the write");
+    release.send(()).unwrap();
+    assert_eq!(writing.await.unwrap(), Received::Kept);
+    dropping.await.unwrap().unwrap();
+    assert!(!holds(&engine, space, &a).await);
+    assert_eq!(parts_stored(&engine, space).await, 0);
+
+    let (release, writing) = write().await;
+    engine.keep_all_blobs();
+    assert!(matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            engine.drop_local_object(space, &a)
+        )
+        .await,
+        Ok(Err(Error::NotAllowed(_)))
+    ));
+    release.send(()).unwrap();
+    assert_eq!(writing.await.unwrap(), Received::Kept);
+}
+
 /// The stored bytes the device counts in its cache, and beside it.
 async fn counted(engine: &Engine) -> (u64, u64) {
     let state = engine.lock().await;

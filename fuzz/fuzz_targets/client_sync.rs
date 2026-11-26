@@ -3,8 +3,8 @@
 //! replica that holds nothing yet. It never panics; a session answers only
 //! messages of its own space, and each action it asks for carries only what
 //! the message carried: events to place only from `Events`, a path to
-//! witness only from `Path`, and an object, a chunk, held objects, a
-//! snapshot or carriers only from the message that names them.
+//! witness only from `Path`, and an object, a chunk, held or missing
+//! objects, a snapshot or carriers only from the message that names them.
 #![no_main]
 
 use frasil::advanced::replica::Replica;
@@ -59,6 +59,9 @@ fuzz_target!(|data: &[u8]| {
             ),
             Action::ObjectsHeld(locators) => {
                 assert!(matches!(&sent, Message::ObjectHave { locators: l, .. } if *l == locators));
+            }
+            Action::ObjectsMissing(locators) => {
+                assert!(matches!(&sent, Message::ObjectMissing { locators: l } if *l == locators));
             }
             Action::SnapshotWanted => assert!(matches!(sent, Message::SnapshotWant { .. })),
             Action::SnapshotOffered(snapshot) => {

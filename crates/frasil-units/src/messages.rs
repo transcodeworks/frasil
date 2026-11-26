@@ -5,7 +5,8 @@
 //! 0 is its type and key 1 the space ID (bytes(32)); the other keys are the
 //! type's. Arrays of IDs are strictly ascending. A sender splits what does
 //! not fit over several messages. Types 18 to 63 are reserved and must be
-//! understood (`UnknownMessage`); types from 64 are ignorable.
+//! understood (`UnknownMessage`); types from 64 are ignorable, and type 64,
+//! `ObjectMissing`, is read as any other type.
 //!
 //! A receiver refuses a message that breaks its type's shape as
 //! `Malformed`, and drops it.
@@ -26,6 +27,10 @@ use frasil_events::EventId;
 
 /// The first ignorable message type.
 pub const FIRST_IGNORABLE: u64 = 64;
+
+/// `ObjectMissing`'s type: ignorable, so that a receiver that does not
+/// know it drops it (section 3.14, "Sources between members").
+pub const OBJECT_MISSING: u64 = 64;
 
 /// A vector entry of `Heads`: an author's greatest `seq` held and that
 /// event's ID (section 3.13, "Heads and vectors").
@@ -198,6 +203,13 @@ pub enum Message {
         /// Key 2: 1 to 16 signed device-list events.
         events: Vec<Vec<u8>>,
     },
+    /// Type 64, ignorable: objects the sender does not hold whole,
+    /// answering `ObjectWant` (section 3.14, "Sources between members");
+    /// member connections only.
+    ObjectMissing {
+        /// Key 2: 1 to 4,096 locators.
+        locators: Vec<Locator>,
+    },
 }
 
 impl Message {
@@ -221,6 +233,7 @@ impl Message {
             Self::SnapshotWant { .. } => 15,
             Self::SnapshotOffer { .. } => 16,
             Self::ListEvents { .. } => 17,
+            Self::ObjectMissing { .. } => OBJECT_MISSING,
         }
     }
 
@@ -231,12 +244,15 @@ impl Message {
 
     /// Whether the message travels on member connections only.
     pub fn member_connections_only(&self) -> bool {
-        (14..=17).contains(&self.type_code())
+        matches!(self.type_code(), 14..=17 | OBJECT_MISSING)
     }
 }
 
-/// The name of a message type from 1 to 17.
+/// The name of a message type from 1 to 17, or of type 64.
 pub fn name(type_code: u64) -> Option<&'static str> {
+    if type_code == OBJECT_MISSING {
+        return Some("ObjectMissing");
+    }
     const NAMES: [&str; 17] = [
         "Heads",
         "Want",
@@ -272,9 +288,10 @@ pub struct SyncMessage {
 /// What a receiver makes of a sync message's bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Received {
-    /// A message of a type from 1 to 17.
+    /// A message of a type from 1 to 17, or of type 64.
     Message(SyncMessage),
-    /// A message of an ignorable type, from 64.
+    /// A message of an ignorable type from 64 that this side does not
+    /// know.
     Ignored {
         /// Its type.
         type_code: u64,
@@ -497,14 +514,23 @@ impl SyncMessage {
             Message::SnapshotOffer { snapshot } => {
                 map.insert(2, Value::from(snapshot.as_slice()));
             }
+            Message::ObjectMissing { locators } => {
+                let mut locators = locators.clone();
+                locators.sort_unstable();
+                locators.dedup();
+                map.insert(
+                    2,
+                    Value::Array(locators.into_iter().map(Value::from).collect()),
+                );
+            }
         }
         Value::Map(map).encode()
     }
 
     /// Reads a sync message: at most 1,052,672 bytes (`TooLarge`);
     /// deterministic CBOR, a map with an unsigned key 0 and a 32-byte key 1
-    /// (`Malformed`); a type from 64 is ignored; a type this side does not
-    /// know is `UnknownMessage`; then the type's keys and shape
+    /// (`Malformed`); a type from 64 other than 64 is ignored; a type this
+    /// side does not know is `UnknownMessage`; then the type's keys and shape
     /// (`Malformed`).
     ///
     /// # Errors
@@ -518,7 +544,7 @@ impl SyncMessage {
         let map = value.as_map()?;
         let type_code = map.get(&0).ok_or(Malformed)?.as_unsigned()?;
         let space = EventId(map.get(&1).ok_or(Malformed)?.as_byte_array()?);
-        if type_code >= FIRST_IGNORABLE {
+        if type_code >= FIRST_IGNORABLE && type_code != OBJECT_MISSING {
             return Ok(Received::Ignored { type_code });
         }
         if name(type_code).is_none() {
@@ -837,6 +863,9 @@ fn read_keys(type_code: u64, map: &Map) -> Result<Message, Malformed> {
         },
         17 => Message::ListEvents {
             events: read_bytes_array(&map[&2], 1, MAX_LIST_EVENTS)?,
+        },
+        OBJECT_MISSING => Message::ObjectMissing {
+            locators: read_ids::<LOCATOR_BYTES>(&map[&2], 1, MAX_MESSAGE_ITEMS)?,
         },
         _ => return Err(Malformed),
     })

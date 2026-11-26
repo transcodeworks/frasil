@@ -787,6 +787,31 @@ peer needs to store, index and serve units it cannot read.
   object ID is another locator, never named.
 - **Chunks are fixed in size, with synthetic nonces,** so an object has one
   stored form, dedupes within its state, and uploads resume.
+- **Members say what they hold as it changes.** A device drops blobs and
+  its cache evicts them, so what a member announced when the connection
+  started goes stale both ways. An object that becomes whole is announced
+  at once, gathered with others, and a member asked for what it no longer
+  holds says so in `ObjectMissing`. Silence could not say it: it reads the
+  same as a slow answer or chunks past the end, and only a long wait tells
+  them apart. Nor could `ObjectHave` with a count of 0, which a receiver
+  reads as an announcement and would ask for again. `ObjectMissing` is of
+  an ignorable type, so a receiver that does not know type 64 drops it and
+  waits as it waits for any silence, and no new protocol is needed
+  (overview.md, section 5.6). The withdrawal is an answer, not a
+  broadcast: a member that drops ten thousand cached objects sends nothing
+  until someone asks, and announces nothing either.
+- **Falling behind costs one announcement per interval.** A side that
+  cannot tell which objects became whole announces all it holds again, and
+  does so at most once per `reannounce_interval`: a member that serves
+  many small objects quickly cannot make another send its whole inventory
+  over and over.
+- **A flooded bound widens the sources instead of losing them.** Past the
+  bound on unknown announcements, a side asks the member for any object it
+  comes to know. A member gains nothing by forcing that: it could announce
+  every object of the space anyway, and be asked for each. The cost is one
+  `ObjectWant` per object the member lacks, answered by `ObjectMissing`;
+  the side looks no further at what its replica knows on that attach, so a
+  flood of announcements costs it no repeated work.
 
 ### 7.3 Adapters
 

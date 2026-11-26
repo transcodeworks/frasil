@@ -270,18 +270,25 @@ export class BlobReader extends Handle<raw.BlobReader> {
   /**
    * Ends the reader: the call that runs gives up, its fetches stop, what it held in memory is
    * freed, and the device looks at its cache, so that a blob it held for this reader alone goes.
-   * Calls made after it reject with `disposed`. Closing twice does nothing.
+   * It resolves once the calls made before it have ended, so that nothing of the reader uses the
+   * blob then and `Blobs.dropLocal` may drop it. Calls made after it reject with `disposed`.
+   * Closing twice does nothing.
    */
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    // The calls made before: the one that runs in the module stops, and ends the reader there
+    // before it settles; the ones behind it reject without reaching the module.
+    const calls = this.#tail;
     try {
       if (!this.isDisposed) {
         await callAsync(() => this.raw().close() as Promise<void>);
+        await calls;
         this.#verified = call(() => this.raw().verified as Verified);
         this.#size = call(() => this.raw().size as number | undefined);
       }
     } finally {
+      await calls;
       this.free();
     }
   }
