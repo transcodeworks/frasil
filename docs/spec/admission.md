@@ -691,58 +691,56 @@ An application MAY also carry a welcome by a route of its own, such as a
 message to its person; the welcome's checks are the same however it
 arrives.
 
-**A welcome that waits for a member connection.** The signer keeps each
-welcome it means to hand over a member connection until one of these ends
-it:
+**A welcome that waits.** The signer keeps each welcome it means to hand
+over a member connection or deposit at a peer in a list of **waiting
+welcomes**, at rest in its own store, as a `welcome` record in the space's
+log ([at-rest.md](at-rest.md), "Tables"). An entry holds the newcomer's
+device ID, the space, the event the welcome names, the sealed welcome, the
+`T` of the signer's timeline at which it kept the entry
+([overview.md](overview.md), "The local timeline"), and the peers that hold
+the welcome in the newcomer's device mailbox. The welcome is
+sealed to the newcomer's X-Wing key before it is kept, so the signer's
+store holds it only in the form a peer holds it: the signer cannot open it
+again, and nothing in it is readable without the newcomer's keys. A signer
+keeps the entry of a grant it signs in the same commit as the grant's
+event, and starts each run from the entries its store holds, so a waiting
+welcome survives a restart, and its hand-over and its deposits resume
+with no other trigger. One of these ends an entry, and the signer then
+deletes its record:
 
 - a member connection admits the newcomer's attach of the space, whether
   that attach is still live or has ended;
 - the space's roster, in the signer's current view, no longer reaches the
-  newcomer, as after its removal: the signer then hands nothing over and
-  deposits nothing;
-- the signer's bound on welcomes it keeps waiting passes it, oldest first.
+  newcomer, as after its removal: the signer checks this before each
+  hand-over and each deposit, and then hands nothing over and deposits
+  nothing;
+- the signer keeps at most 256 waiting welcomes, and a newer one passes
+  the oldest, first by the `T` at which each was kept;
+- `welcome_retention` ([overview.md](overview.md), "Every timer") has
+  passed on the signer's timeline since it kept the entry: no peer keeps a
+  mailbox item longer (`mailbox_retention`), so a deposit made before then
+  is gone from every peer too.
 
-While it waits, the signer also deposits it in the newcomer's device
-mailbox at each peer it is connected to, once that peer holds the event
-the welcome names, and checks first that the roster still reaches the
-newcomer.
+While it waits, the signer also deposits the welcome in the newcomer's
+device mailbox at each peer it is connected to, once that peer holds the
+event the welcome names, and records the peer in the entry in the commit
+that keeps the deposit ([transport.md](transport.md), "A sender keeps
+what was refused"), so it deposits it at a peer once however often it
+restarts. A space the signer forgets takes its waiting welcomes with its
+log ([at-rest.md](at-rest.md), "Forgetting a log, and re-keying").
 
-Waiting welcomes need not survive a restart. When the signer meets the
-device over a member connection, offers it the space as a further attach
-([transport.md](transport.md), "Further attaches"), and the device refuses
-the attach, the signer makes the welcome again, at most once on that
-connection, when all of these hold in its current view:
-
-1. It administers the space.
-2. The space reaches the device, which has not forked there, and a
-   restricted space's parent reaches it
-   ([ext-restricted-spaces.md](ext-restricted-spaces.md), "Membership of a
-   restricted space").
-3. The roster grants the device with history, by a grant in force that this
-   device signed: the device's own grant, with no `session`, or the grant
-   of a person whose list vouches for the device. Only that grant's signer
-   makes the welcome again; another administrator makes nothing.
-4. No member connection has admitted the device's attach of the space since
-   the signer last started, and the signer keeps no member ticket of the
-   device for that space ([transport.md](transport.md), "Reconnecting").
-5. No welcome for the device and space waits, and the signer has not made
-   one again for them since it last started.
-
-It checks 1 to 3 again in the transaction that signs the delivery: it signs
-a delivery of the current state to the device, sealed to the keys its grant
-or its person's list names, and keeps a welcome naming that delivery, with
-no snapshot, as the grant's own welcome had none. That welcome waits, is
-handed over and is deposited at peers as any other. So the signer signs at
-most one such delivery for a device and space each time it starts, and none
-once the device has taken the space up with it. A device that holds the
-space already drops the welcome, as any welcome of a space it holds. The
-rule needs no record beyond the space's log and the member tickets.
+A welcome that no longer waits is not made again: no member signs another
+delivery to replace one. A newcomer whose welcome ended before it took the
+space up, past the bound or the age, or with the signer's store, is
+admitted again by an administrator, who removes it from the space and
+grants it once more.
 
 A device that forgets a space whose roster still grants it follows the
-space again from a welcome it receives later: one still in its device
-mailbox at a peer, which it collects again after a restart, or one the
-signer makes again because the device never attached the space with it.
-Forgetting a space does not leave its roster; a removal does.
+space again from a welcome it receives later: one still waiting at the
+signer, which hands it over when the two next meet over a member
+connection, or one still in its device mailbox at a peer, which it collects
+again after a restart. Forgetting a space does not leave its roster; a
+removal does.
 
 A peer does not authenticate who deposits in a device mailbox, so a
 newcomer that collects a welcome there, with no exchange that named the
@@ -932,11 +930,11 @@ device grant, valid by roster.md's rules alone.
 The grant commits at once, offline, and the granter reports it once it
 commits, whatever becomes of its welcome. The welcome is sealed to the
 device's X-Wing key, which every device grant carries
-([roster.md](roster.md), "A device's keys"), and waits for a member
-connection with the device, as section 3.10 says, which hands it
-over and, after a restart, has the signer make it again; the signer also
-deposits it in the device's mailbox at the peers it is connected to, as
-for a person's grant. Over a member connection, the device takes it only
+([roster.md](roster.md), "A device's keys"), and waits at the signer, kept
+at rest in the grant's own commit, as section 3.10 says: a member
+connection with the device hands it over, and the signer deposits it in
+the device's mailbox at the peers it is connected to, as for a person's
+grant, before and after a restart. Over a member connection, the device takes it only
 from the signer: the two devices meet on a connection formed for any
 space they share, such as the known space, and the granted device follows
 the space and attaches it there.

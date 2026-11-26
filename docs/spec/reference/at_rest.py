@@ -192,6 +192,7 @@ T_INVITE, T_CLAIM, T_REPLAY, T_VOUCHED, T_ENDPOINT, T_HOST = 0x18, 0x19, 0x1A, 0
 T_HELD, T_PEERS, T_ANNOUNCED = 0x1D, 0x1E, 0x1F
 T_DROPPED = 0x21
 T_RETENTION = 0x22
+T_WELCOME = 0x23
 TABLES = {
     T_HEAD: ("head", DEVICE), T_LOG: ("log", DEVICE), T_TIMELINE: ("timeline", DEVICE),
     T_EPOCH: ("epoch", DEVICE), T_NEXT_ENDPOINT: ("next_endpoint", DEVICE),
@@ -204,7 +205,7 @@ TABLES = {
     T_ENDPOINT: ("endpoint", LOG), T_HELD: ("held", LOG), T_PEERS: ("peers", LOG),
     T_ANNOUNCED: ("announced", LOG),
     T_HOST: ("host", LOG), T_DROPPED: ("dropped", LOG),
-    T_RETENTION: ("retention", LOG),
+    T_RETENTION: ("retention", LOG), T_WELCOME: ("welcome", LOG),
 }
 LOG_SPACE, LOG_LIST = 1, 2
 K_ROTATION, K_STATE, K_BODY, K_GAP, K_RECORD = 1, 2, 3, 4, 5
@@ -248,6 +249,8 @@ MAX_HELD_TOKEN = 1024
 # 1 to 8, and a home peer of the same length.
 MAX_PEER_HINTS = 8
 MAX_PEER_URL = 512
+# The most peers a `welcome` record names as holding its welcome.
+MAX_WELCOME_PEERS = 64
 MAX_HELD_STAMP = 64
 
 
@@ -333,7 +336,7 @@ def item_ok(table: int, item: bytes) -> bool:
         return item == b""
     if table in (T_LOG, T_EVENT, T_ACK, T_LISTING, T_REPLAY, T_INVITE, T_CLAIM, T_VOUCHED,
                  T_ENDPOINT, T_HELD, T_ANNOUNCED, T_DEPOSIT_KEYS, T_DROPPED,
-                 T_RETENTION):
+                 T_RETENTION, T_WELCOME):
         return len(item) == 32
     if table == T_TOKEN:
         return len(item) == 64
@@ -585,6 +588,21 @@ def read_value(table: int, item: bytes, value: bytes, log_id: bytes | None):
         if not (m[1] in (R_KEPT, R_CACHED, R_PUT) and (2 in m) == (m[1] == R_CACHED)
                 and (2 not in m or is_uint(m[2]))
                 and (3 not in m or (m[1] == R_PUT and is_uint(m[3]) and m[3] == 1))):
+            raise SpecError("Malformed")
+        return m
+    if table == T_WELCOME:
+        m = _map(value, {1, 2, 3, 4}, {1, 2, 3})
+        # Key 4, the peers that hold the welcome: origins as a deposit
+        # names its peer, strictly ascending by their bytes, absent when
+        # there are none.
+        peers = m.get(4, [])
+        if not (is_bytes(m[1], 32) and is_bytes(m[2]) and 1 <= len(m[2]) <= MAX_MAILBOX_ITEM
+                and is_uint(m[3])
+                and (4 not in m or (isinstance(peers, list)
+                                    and 1 <= len(peers) <= MAX_WELCOME_PEERS))
+                and all(isinstance(u, str) and 1 <= len(u.encode()) <= MAX_PEER_URL
+                        for u in peers)
+                and all(a.encode() < b.encode() for a, b in zip(peers, peers[1:]))):
             raise SpecError("Malformed")
         return m
     if table == T_PEERS:
@@ -1448,6 +1466,17 @@ def at_rest_vectors(persons: dict | None = None) -> dict:
         ed25519_public(example("at-rest/announced")), space,
         note="ext-next-endpoints.md: the item is the member's device ID, the value the "
              "next member endpoint key it announced")
+    add("a welcome waiting for a member connection", T_WELCOME, example("at-rest/newcomer"),
+        cbor({1: example("at-rest/welcome/event"), 2: b"a sealed welcome", 3: 86400}), space,
+        label="welcome/waiting",
+        note="admission.md, \"A welcome that waits\": the item is the newcomer's device ID; "
+             "deposited nowhere yet")
+    add("a welcome deposited at two peers", T_WELCOME, example("at-rest/newcomer/deposited"),
+        cbor({1: example("at-rest/welcome/event"), 2: b"a sealed welcome", 3: 90000,
+              4: ["https://other.example", "https://peer.example"]}), space,
+        label="welcome/deposited",
+        note="key 4: the peers' origins, strictly ascending, each added in the commit that "
+             "keeps its deposit")
     add("the space's peers and its home peer", T_PEERS, b"",
         cbor({1: ["https://peer.example", "https://other.example"],
               2: "https://home.example"}), space,
@@ -1551,7 +1580,25 @@ def at_rest_vectors(persons: dict | None = None) -> dict:
              cbor({1: R_PUT, 3: 2}), "retention-put-keep-2",
              "key 3, when present, is the unsigned integer 1"),
             ("a retention record with no state", T_RETENTION, cbor({2: 86400}),
-             "retention-stateless", "key 1 is present")):
+             "retention-stateless", "key 1 is present"),
+            ("a welcome record with no time it was kept", T_WELCOME,
+             cbor({1: example("at-rest/welcome/event"), 2: b"a sealed welcome"}),
+             "welcome-since", "keys 1 to 3 are present"),
+            ("a welcome record with an empty welcome", T_WELCOME,
+             cbor({1: example("at-rest/welcome/event"), 2: b"", 3: 86400}),
+             "welcome-empty", "the welcome is 1 to 262,144 bytes"),
+            ("a welcome record with no peer in key 4", T_WELCOME,
+             cbor({1: example("at-rest/welcome/event"), 2: b"a sealed welcome", 3: 86400,
+                   4: []}),
+             "welcome-no-peer", "key 4 is absent when no peer holds the welcome"),
+            ("a welcome record whose peers are out of order", T_WELCOME,
+             cbor({1: example("at-rest/welcome/event"), 2: b"a sealed welcome", 3: 86400,
+                   4: ["https://peer.example", "https://other.example"]}),
+             "welcome-unordered", "key 4 is strictly ascending by the origins' bytes"),
+            ("a welcome record that names a peer twice", T_WELCOME,
+             cbor({1: example("at-rest/welcome/event"), 2: b"a sealed welcome", 3: 86400,
+                   4: ["https://peer.example", "https://peer.example"]}),
+             "welcome-twice", "key 4 is strictly ascending by the origins' bytes")):
         item = b"" if table == T_STATE else unit_id if table == T_EVENT \
             else example(f"at-rest/space/dropped/{label}")
         bad = store.seal(table, item, value, space, f"refused/{label}")
@@ -1937,6 +1984,8 @@ def self_test() -> None:
                      (bytes(range(150)), 64), (b"", units.CHUNK_BYTES))]
     assert {r["item"][:2] for r in a["records"] if r["table"] == T_KEY} == {
         "01", "02", "03", "04", "05"}
+    welcomes = [r["opened"] for r in a["records"] if r["table"] == T_WELCOME]
+    assert [sorted(w) for w in welcomes] == [["1", "2", "3"], ["1", "2", "3", "4"]], welcomes
     errors = {c["name"]: c["error"] for c in a["record_refusals"]}
     assert errors == {
         "moved to another event's address": "Decrypt",
@@ -1966,6 +2015,11 @@ def self_test() -> None:
         "a put object's retention record with a key 3 of 0": "Malformed",
         "a put object's retention record with a key 3 of 2": "Malformed",
         "a retention record with no state": "Malformed",
+        "a welcome record with no time it was kept": "Malformed",
+        "a welcome record with an empty welcome": "Malformed",
+        "a welcome record with no peer in key 4": "Malformed",
+        "a welcome record whose peers are out of order": "Malformed",
+        "a welcome record that names a peer twice": "Malformed",
         "a retention record whose item is not an object ID": "Malformed",
         "a claim naming another space": "Malformed",
         "a device-wide record sealed under a log key": "Decrypt",

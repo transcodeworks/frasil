@@ -94,6 +94,9 @@ PARAMETERS = [
     _t("uncollected_retention", "an item of a device mailbox that is not claimed", 72 * HOUR,
        HOUR, 30 * DAY, "the operator", "the peer's timeline, from the deposit",
        ["transport.md"]),
+    _t("welcome_retention", "a welcome its signer keeps waiting to hand over or deposit",
+       30 * DAY, 30 * DAY, 30 * DAY, "protocol", "the signer's timeline, from keeping it",
+       ["admission.md", "at-rest.md"]),
     _t("link_lifetime", "an invite, ended by a revocation", 7 * DAY, 15 * MINUTE, 7 * DAY,
        "the inviter's client", "wall, the inviter's clock; lower, from each administering "
        "device's first sight, for the maximum", ["ext-invite-links.md"]),

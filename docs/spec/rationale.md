@@ -1130,19 +1130,20 @@ ordinary grant with `via` = `none`, since no code was compared for it, and
 hands the welcome over the member connection the two devices already share.
 The welcome comes only from its signer, as a person's grant's does, so a
 member that merely carries it cannot point a device at a space of its
-choosing. Rather than keep waiting welcomes at rest, the signer makes one
-again from the log when it meets the device and the device refuses the
-space: the roster says the device is a member by a grant the signer made,
-the member tickets say it has not attached the space, and a fresh delivery
-supplies a wrap, since a delivery's wraps name no recipient and even their
-author cannot tell which one is whose. Only the grant's signer does it, so
-a device away at its grant that meets several administrators costs one
-delivery, not one each; and the signer does it at most once for a device
-and space each time it starts, so a device that never takes the space up
-costs at most one delivery event per start of the signer, and no new
-record. The trust is carried, not shared: a later removal from the known
-space does not reach the grant, which is therefore the application's to
-mirror.
+choosing. The signer keeps the welcome waiting at rest, in the commit that
+holds the grant, because nothing else can stand in for it: a delivery's
+wraps name no recipient, so not even their author can tell later which
+wrap is whose, and a welcome made again would need a new delivery event in
+the space for every device that never took the space up. Kept at rest, the
+welcome reaches the device by whichever route comes first after any number
+of restarts: the member connection, or a peer the device reaches and the
+signer only reaches later. The record costs the signer the size of a
+mailbox item, and nothing in it opens without the device's keys, to which
+the welcome is sealed before it is kept. Its life is a peer's: after `mailbox_retention`'s
+maximum no peer still holds a deposit of it, and a device that has not
+taken the space up by then is admitted again. The trust is carried, not
+shared: a later removal from the known space does not reach the grant,
+which is therefore the application's to mirror.
 
 ## References
 

@@ -965,8 +965,8 @@ open. So a welcome reaches a device that no peer serves: a grant of its
 person, or of the device itself as a member of another space the two share
 ([admission.md](admission.md), "A member of another space"). A device
 takes a welcome put only from the welcome's approver, and keeps the welcomes
-it means to hand over as [admission.md](admission.md)'s "Welcomes" says,
-which also says when one ends and how it is made again after a restart.
+it means to hand over at rest, as [admission.md](admission.md)'s "Welcomes"
+says, which also says when one ends.
 
 A device mailbox also carries [admission.md](admission.md)'s welcomes and
 Joins. Welcomes, Joins and device-mailbox items share one wrap layout and

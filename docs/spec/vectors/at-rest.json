@@ -1222,6 +1222,48 @@
       "note": "ext-next-endpoints.md: the item is the member's device ID, the value the next member endpoint key it announced"
     },
     {
+      "name": "a welcome waiting for a member connection",
+      "table": 35,
+      "table_name": "welcome",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "item": "28fdfa3f6a2f76020289264fa3dabfb88a9b71a2425d163df2ed776752ce9da7",
+      "value": "a301582088cd34141fd0d58539d9b1af02569162df2adf7faa7adf0c19d7fc3db090c907025061207365616c65642077656c636f6d65031a00015180",
+      "opened": {
+        "1": "88cd34141fd0d58539d9b1af02569162df2adf7faa7adf0c19d7fc3db090c907",
+        "2": "61207365616c65642077656c636f6d65",
+        "3": 86400
+      },
+      "address": "64679c30bfabf30f9ae6377aa7b8306e23c16bbfb7e6cead2a53b42cae20fc480f",
+      "plaintext": "0000002028fdfa3f6a2f76020289264fa3dabfb88a9b71a2425d163df2ed776752ce9da7a301582088cd34141fd0d58539d9b1af02569162df2adf7faa7adf0c19d7fc3db090c907025061207365616c65642077656c636f6d65031a00015180",
+      "aad": "66726173696c2f61742d726573742f7265636f72642f76310164679c30bfabf30f9ae6377aa7b8306e23c16bbfb7e6cead2a53b42cae20fc480f",
+      "nonce": "2098075c35e2d358ccaf5e66cf143fb1167229746e695959",
+      "record": "012098075c35e2d358ccaf5e66cf143fb1167229746e695959ba2afd9f6254e8b52c86811da641473e204eaa2fd07491bfa8d0f4f5007269205f0d8c11f307d954a0c9afc9d9718d77013de050850f07ee2d9e0cf3263ecac116059523326210f11f3f0571118630c335d9724d0f1581935e4742354f6aed695256276d547276695c89545e4e503200",
+      "note": "admission.md, \"A welcome that waits\": the item is the newcomer's device ID; deposited nowhere yet"
+    },
+    {
+      "name": "a welcome deposited at two peers",
+      "table": 35,
+      "table_name": "welcome",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "item": "b4f32837e7bbf9ff195c7ee740560e9bb96d4ac4c74afe96215f8ad8dd3361fa",
+      "value": "a401582088cd34141fd0d58539d9b1af02569162df2adf7faa7adf0c19d7fc3db090c907025061207365616c65642077656c636f6d65031a00015f9004827568747470733a2f2f6f746865722e6578616d706c657468747470733a2f2f706565722e6578616d706c65",
+      "opened": {
+        "1": "88cd34141fd0d58539d9b1af02569162df2adf7faa7adf0c19d7fc3db090c907",
+        "2": "61207365616c65642077656c636f6d65",
+        "3": 90000,
+        "4": [
+          "https://other.example",
+          "https://peer.example"
+        ]
+      },
+      "address": "64679c30bfabf30f9ae6377aa7b8306e2384a7c45330446e082e3e5e912b33b3c0",
+      "plaintext": "00000020b4f32837e7bbf9ff195c7ee740560e9bb96d4ac4c74afe96215f8ad8dd3361faa401582088cd34141fd0d58539d9b1af02569162df2adf7faa7adf0c19d7fc3db090c907025061207365616c65642077656c636f6d65031a00015f9004827568747470733a2f2f6f746865722e6578616d706c657468747470733a2f2f706565722e6578616d706c65",
+      "aad": "66726173696c2f61742d726573742f7265636f72642f76310164679c30bfabf30f9ae6377aa7b8306e2384a7c45330446e082e3e5e912b33b3c0",
+      "nonce": "37b51010f144e949a6567a357c2297aca21e3cfecb1fe2ab",
+      "record": "0137b51010f144e949a6567a357c2297aca21e3cfecb1fe2abeff7fe0790e4d233bffc05db0c7e83673c42ee7e251d0bb952ece1af8dd8593a875b0e7c4245c91818117b068b291cf226e4ec4c257d58e6e3ebbf224175c173a49d328f5bd69d8745cbf51066c143d4820ca6a48084afb851e9e2aac6ceaa8748e1d640e8eeca1fced0169e3df891c02a6a70102372f3d8497cab789342088ad0f341032e0cf99c11efdc27216958b529f92eed11a2c919728d4d8cc1",
+      "note": "key 4: the peers' origins, strictly ascending, each added in the commit that keeps its deposit"
+    },
+    {
       "name": "the space's peers and its home peer",
       "table": 30,
       "table_name": "peers",
@@ -1502,6 +1544,51 @@
       "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
       "error": "Malformed",
       "reason": "key 1 is present"
+    },
+    {
+      "name": "a welcome record with no time it was kept",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e2338899d778c3bb364184b4552fcfafc40",
+      "record": "0192a1324dc0835c5445f8c087d8d5a669366b945dfcab87f591aa5f59aeda80937962cbce7282a7fc060f202795b2d2958ac23e604dc2afec8c1eda0a46c653221f2ee107051c6f8f1dacb5634ed1911cb8553a67136e3f529ffa47b05c4e3d7aaba4e0e8f668c998544a3f2a2cf86f20db833085f133971c59feaa14385cfcb28075",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "keys 1 to 3 are present"
+    },
+    {
+      "name": "a welcome record with an empty welcome",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e2312ec2b0fbe50a7a24aa35103dc8b5783",
+      "record": "01a2bc388e76fe53916fc225282691e219ec647718320144128b8f6cf636a4316f2d680ebe5468c3dd1fa455e2b1e7757de7ea7995213e0457485eb6cb89674cdca279757097809ca2e70d70e2610f20be013d2d00528adf5f56ef9d12d89d45af09a101e53a82fe6f48a9bb1b1f385e8257cf4aede5e7e47b",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "the welcome is 1 to 262,144 bytes"
+    },
+    {
+      "name": "a welcome record with no peer in key 4",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e237b329172cd49d183a56dd93a765474fd",
+      "record": "0180db921a193e837b69d3a7c9635065f86218cc87b77663c1e49821318dc5c9f33a3af5673662210e152723d9a443dc25a82215ad06234339ec74cccc65f7dcac696ce976f48d0042d07e9c23fa1ce127f75ed78d843fd15c272b38bb159d380de2caca17c7922df6276baebea94648fd1f70b2cb6033a9acfb9d69b865d10fa7b36b7b499bba25a9da9b",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "key 4 is absent when no peer holds the welcome"
+    },
+    {
+      "name": "a welcome record whose peers are out of order",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e233e36ee01e263f3c15db41557d9157e8f",
+      "record": "01236af611e1ed24a3fc125d8f6bd91f241362fcaffbe1fede86e89bd21dd7d5e7ee5ada06cd3b947fb58bf13da97cf32d742ca85fadb3de642a3852bfa1d95cf60bfaa9c412b897ff7c01592ef983f01e33855311477826f9b625a58c1fe7cb60a5775cb901193edd8f2d13d2064489d6c5fdb304e52d95fd898a05c41ecf67625ba692f6090c4d5388ec4c69b248178cb1e5ba8f07b7954df561408a943a438766dea8d17b1780e7e515f2800e9d45653d4f7e7891",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "key 4 is strictly ascending by the origins' bytes"
+    },
+    {
+      "name": "a welcome record that names a peer twice",
+      "address": "64679c30bfabf30f9ae6377aa7b8306e237b308cf664ea63491f445d8372e2896e",
+      "record": "01b51481ee7a954e1e6908e5b8e3abddceecd10d3aff81eab304207b3fd444eb3f0f9f0127b23cbcec2fca2136662ebf7c9599cbf5215d24ebe36d640bf72a6dfd3ac632969fb3c65096e1ff0ace88e3e9c9df10482cc4351c68274ca46b38107f2a02222a92316aec3a97086bb537a5ada54bcf62040999f92a59f9468dae3f4430a7caa18624025ca999eab9a30f75cf50db3d8fb127cad1f413d65ed56c44fe8d6a14695ed100867c725c1dbb60611b8830907e",
+      "log": "a993aa80d5e4a7f9177435e93d152ca2174671491e81a30c2ca3ab05daeed353",
+      "log_key": "05a0a94b15771688f66604ccb184660255a06896faadc2a55b9c3c21ba815bbc",
+      "error": "Malformed",
+      "reason": "key 4 is strictly ascending by the origins' bytes"
     },
     {
       "name": "a retention record whose item is not an object ID",
