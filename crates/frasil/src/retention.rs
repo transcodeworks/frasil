@@ -1935,50 +1935,54 @@ impl Engine {
     /// device keeps every blob ([`Engine::keep_all_blobs`]) and would
     /// fetch it again at once; the store's and the provider's.
     pub async fn drop_local_object(&self, space: EventId, locator: &Locator) -> Result<()> {
-        // A write of parts a fetch brought, with no read or fetch that
-        // uses the object any more, as when a reader went part way
-        // through: it ends once the replica notes them, and the drop
-        // waits for it.
+        // The refusals that waiting would not change come first. Then a
+        // write of parts a fetch brought, with no read or fetch that uses
+        // the object any more, as when a reader went part way through:
+        // it ends once the replica notes them, and the drop waits for it.
         let mut state = loop {
-            let state = self.lock().await;
-            let Some(mut written) = self.only_written(&space, &object_id(locator)) else {
+            let mut state = self.lock().await;
+            self.refresh_held(&mut state);
+            let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
+            let held = replica.is_held(locator);
+            let written = self.only_written(&space, &object_id(locator));
+            if !held {
+                if self.keeps_all_blobs() {
+                    return Err(Error::NotAllowed(
+                        "this device keeps every blob, and would fetch it again",
+                    ));
+                }
+                match self.must_stay(&mut state, &space, locator) {
+                    Some(Stays::Own) => {
+                        return Err(Error::NotAllowed(
+                            "the object is Frasil's own, and the device cannot run without it",
+                        ));
+                    }
+                    Some(Stays::InUse) if written.is_none() => {
+                        return Err(Error::NotAllowed("a read or a fetch is using the blob"));
+                    }
+                    // With no always-on peer the unit may never be durable,
+                    // and the application decides.
+                    Some(Stays::Pending) => {
+                        if self.has_peer(&mut state, &space).await {
+                            return Err(Error::NotAllowed(
+                                "this device put the blob, and no peer holds it yet",
+                            ));
+                        }
+                    }
+                    Some(Stays::InUse | Stays::Kept) | None => {}
+                }
+            }
+            let Some(mut written) = written else {
+                if held {
+                    drop(state);
+                    return self.release_held(&space, locator).await;
+                }
                 break state;
             };
             drop(state);
             // The sender lives as long as the engine.
             let _ = written.changed().await;
         };
-        self.refresh_held(&mut state);
-        let replica = state.replicas.get(&space).ok_or(Error::UnknownSpace)?;
-        if replica.is_held(locator) {
-            drop(state);
-            return self.release_held(&space, locator).await;
-        }
-        if self.keeps_all_blobs() {
-            return Err(Error::NotAllowed(
-                "this device keeps every blob, and would fetch it again",
-            ));
-        }
-        match self.must_stay(&mut state, &space, locator) {
-            Some(Stays::Own) => {
-                return Err(Error::NotAllowed(
-                    "the object is Frasil's own, and the device cannot run without it",
-                ));
-            }
-            Some(Stays::InUse) => {
-                return Err(Error::NotAllowed("a read or a fetch is using the blob"));
-            }
-            // With no always-on peer the unit may never be durable, and
-            // the application decides.
-            Some(Stays::Pending) => {
-                if self.has_peer(&mut state, &space).await {
-                    return Err(Error::NotAllowed(
-                        "this device put the blob, and no peer holds it yet",
-                    ));
-                }
-            }
-            Some(Stays::Kept) | None => {}
-        }
         // An object this device put that no peer is known to hold: the
         // peer of the space is about to take it, unless no unit names the
         // object any more. With no always-on peer no party is bound to,
