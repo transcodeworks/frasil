@@ -23,14 +23,14 @@ ext-invite-links = [
 ext-guests = ["frasil-space/ext-guests", "frasil-transport/ext-guests"]
 
 [dependencies]
-frasil-base = { path = "../frasil-base", version = "0.1.0" }
-frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
-frasil-events = { path = "../frasil-events", version = "0.1.0" }
-frasil-identity = { path = "../frasil-identity", version = "0.1.0" }
-frasil-keys = { path = "../frasil-keys", version = "0.1.0" }
-frasil-space = { path = "../frasil-space", version = "0.1.0" }
-frasil-transport = { path = "../frasil-transport", version = "0.1.0" }
-frasil-units = { path = "../frasil-units", version = "0.1.0" }
+frasil-base = { path = "../frasil-base", version = "0.1.1" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.1" }
+frasil-events = { path = "../frasil-events", version = "0.1.1" }
+frasil-identity = { path = "../frasil-identity", version = "0.1.1" }
+frasil-keys = { path = "../frasil-keys", version = "0.1.1" }
+frasil-space = { path = "../frasil-space", version = "0.1.1" }
+frasil-transport = { path = "../frasil-transport", version = "0.1.1" }
+frasil-units = { path = "../frasil-units", version = "0.1.1" }
 subtle.workspace = true
 zeroize.workspace = true
 

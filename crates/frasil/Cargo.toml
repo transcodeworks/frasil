@@ -133,28 +133,28 @@ index-vendored-openssl = ["index", "rusqlite?/bundled-sqlcipher-vendored-openssl
 p1-full = ["sqlite", "iroh", "server", "server-socket", "browser", "ephemeral", "adapter-loro", "adapter-records", "adapter-blobs", "ext-invite-links", "ext-recovery-agent", "ext-restricted-spaces", "ext-guests", "ext-next-endpoints", "ext-app-requests", "ext-libraries", "ext-deposit-tokens", "ext-drive", "ext-file-versions", "partial-replicas", "space-files", "index", "index-diesel"]
 
 [dependencies]
-frasil-adapter = { path = "../frasil-adapter", version = "0.1.0" }
-frasil-admission = { path = "../frasil-admission", version = "0.1.0" }
-frasil-base = { path = "../frasil-base", version = "0.1.0" }
-frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
-frasil-events = { path = "../frasil-events", version = "0.1.0" }
-frasil-identity = { path = "../frasil-identity", version = "0.1.0" }
-frasil-keys = { path = "../frasil-keys", version = "0.1.0" }
-frasil-peers = { path = "../frasil-peers", version = "0.1.0" }
-frasil-space = { path = "../frasil-space", version = "0.1.0" }
-frasil-store = { path = "../frasil-store", version = "0.1.0", default-features = false }
-frasil-transport = { path = "../frasil-transport", version = "0.1.0" }
-frasil-units = { path = "../frasil-units", version = "0.1.0" }
-frasil-adapter-loro = { path = "../frasil-adapter-loro", version = "0.1.0", optional = true }
-frasil-adapter-records = { path = "../frasil-adapter-records", version = "0.1.0", optional = true }
-frasil-adapter-blobs = { path = "../frasil-adapter-blobs", version = "0.1.0", optional = true }
-frasil-iroh = { path = "../frasil-iroh", version = "0.1.0", optional = true }
-frasil-ephemeral = { path = "../frasil-ephemeral", version = "0.1.0", optional = true }
-frasil-app-requests = { path = "../frasil-app-requests", version = "0.1.0", optional = true }
-frasil-libraries = { path = "../frasil-libraries", version = "0.1.0", optional = true }
-frasil-deposit-tokens = { path = "../frasil-deposit-tokens", version = "0.1.0", optional = true }
-frasil-drive = { path = "../frasil-drive", version = "0.1.0", optional = true }
-frasil-space-file = { path = "../frasil-space-file", version = "0.1.0", optional = true }
+frasil-adapter = { path = "../frasil-adapter", version = "0.1.1" }
+frasil-admission = { path = "../frasil-admission", version = "0.1.1" }
+frasil-base = { path = "../frasil-base", version = "0.1.1" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.1" }
+frasil-events = { path = "../frasil-events", version = "0.1.1" }
+frasil-identity = { path = "../frasil-identity", version = "0.1.1" }
+frasil-keys = { path = "../frasil-keys", version = "0.1.1" }
+frasil-peers = { path = "../frasil-peers", version = "0.1.1" }
+frasil-space = { path = "../frasil-space", version = "0.1.1" }
+frasil-store = { path = "../frasil-store", version = "0.1.1", default-features = false }
+frasil-transport = { path = "../frasil-transport", version = "0.1.1" }
+frasil-units = { path = "../frasil-units", version = "0.1.1" }
+frasil-adapter-loro = { path = "../frasil-adapter-loro", version = "0.1.1", optional = true }
+frasil-adapter-records = { path = "../frasil-adapter-records", version = "0.1.1", optional = true }
+frasil-adapter-blobs = { path = "../frasil-adapter-blobs", version = "0.1.1", optional = true }
+frasil-iroh = { path = "../frasil-iroh", version = "0.1.1", optional = true }
+frasil-ephemeral = { path = "../frasil-ephemeral", version = "0.1.1", optional = true }
+frasil-app-requests = { path = "../frasil-app-requests", version = "0.1.1", optional = true }
+frasil-libraries = { path = "../frasil-libraries", version = "0.1.1", optional = true }
+frasil-deposit-tokens = { path = "../frasil-deposit-tokens", version = "0.1.1", optional = true }
+frasil-drive = { path = "../frasil-drive", version = "0.1.1", optional = true }
+frasil-space-file = { path = "../frasil-space-file", version = "0.1.1", optional = true }
 loro = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true, features = ["sink"] }
@@ -164,7 +164,7 @@ serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 zeroize.workspace = true
 # The index's.
-frasil-index-derive = { path = "../frasil-index-derive", version = "0.1.0", optional = true }
+frasil-index-derive = { path = "../frasil-index-derive", version = "0.1.1", optional = true }
 serde = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 

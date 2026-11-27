@@ -443,18 +443,18 @@ checksum = "ef25905e51abafe4dcea6c15fec58c57b601cdbd0ee53d22ea1d3016c587d39b"
 
 [[package]]
 name = "frasil-adapter"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
 ]
 
 [[package]]
 name = "frasil-base"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "frasil-crypto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chacha20poly1305",
  "curve25519-dalek",
@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-events"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -481,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-identity"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -492,7 +492,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-keys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-libraries"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -511,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-peers"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -543,14 +543,14 @@ dependencies = [
 
 [[package]]
 name = "frasil-resolve"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
 ]
 
 [[package]]
 name = "frasil-space"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -564,7 +564,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-base",
  "frasil-crypto",
@@ -575,7 +575,7 @@ dependencies = [
 
 [[package]]
 name = "frasil-units"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frasil-adapter",
  "frasil-base",

@@ -11,10 +11,10 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-frasil-adapter = { path = "../frasil-adapter", version = "0.1.0" }
-frasil-base = { path = "../frasil-base", version = "0.1.0" }
+frasil-adapter = { path = "../frasil-adapter", version = "0.1.1" }
+frasil-base = { path = "../frasil-base", version = "0.1.1" }
 # SHA-256 and the `frasil/loro-peer/v1` label (crypto.md).
-frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.1" }
 loro.workspace = true
 
 [dev-dependencies]
