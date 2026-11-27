@@ -55,8 +55,13 @@ pub const MAX_SEEN_KEYS: usize = 64;
 pub const TOKEN_BYTES: usize = 129;
 /// The largest mailbox item (transport.md, "Mailboxes").
 pub const MAX_MAILBOX_ITEM: usize = 262_144;
-/// The most peers a `welcome` record names as holding its welcome.
+/// The most peers a `welcome` record names as holding its welcome, and
+/// the most peers its welcome is deposited at.
 pub const MAX_WELCOME_PEERS: usize = 64;
+/// The most deposits of a waiting welcome at one peer: the first and three
+/// repeats, `welcome_redeposit` apart (admission.md, 3.10 Welcomes, "A
+/// welcome that waits").
+pub const WELCOME_DEPOSITS: u8 = 4;
 /// The number of administrator slots; a slot reference's index is below it
 /// (peers.md).
 pub const MAX_SLOT_INDEX: u64 = 64;
@@ -1126,8 +1131,10 @@ pub struct WelcomeRecord {
     pub since: u64,
     /// Key 4: the peers it was deposited at in the newcomer's device
     /// mailbox, each by its origin with the timeline's `T` of the latest
-    /// deposit there, 0 to 64, strictly ascending by the origins' bytes.
-    pub deposited: Vec<(String, u64)>,
+    /// deposit there and the number of deposits made there, 1 to
+    /// [`WELCOME_DEPOSITS`], 0 to 64 peers, strictly ascending by the
+    /// origins' bytes.
+    pub deposited: Vec<(String, u64, u8)>,
 }
 
 /// What a cached object's last read is rounded down to, in seconds of the
@@ -1430,20 +1437,22 @@ fn read_welcome(value: &[u8]) -> Result<WelcomeRecord, ErrorClass> {
             if !(1..=MAX_WELCOME_PEERS).contains(&peers.len()) {
                 return Err(malformed);
             }
-            let mut out: Vec<(String, u64)> = Vec::with_capacity(peers.len());
+            let mut out: Vec<(String, u64, u8)> = Vec::with_capacity(peers.len());
             for entry in peers {
-                let [peer, at] = entry.as_array()? else {
+                let [peer, at, count] = entry.as_array()? else {
                     return Err(malformed);
                 };
                 let peer = peer.as_text().map_err(|_| malformed)?;
+                let count = u8::try_from(count.as_unsigned()?).map_err(|_| malformed)?;
                 if !(1..=MAX_PEER_URL).contains(&peer.len())
+                    || !(1..=WELCOME_DEPOSITS).contains(&count)
                     || out
                         .last()
-                        .is_some_and(|(prior, _)| prior.as_bytes() >= peer.as_bytes())
+                        .is_some_and(|(prior, _, _)| prior.as_bytes() >= peer.as_bytes())
                 {
                     return Err(malformed);
                 }
-                out.push((peer.to_owned(), at.as_unsigned()?));
+                out.push((peer.to_owned(), at.as_unsigned()?, count));
             }
             out
         }
@@ -1914,8 +1923,12 @@ impl TableValue {
                             welcome
                                 .deposited
                                 .iter()
-                                .map(|(peer, at)| {
-                                    Value::Array(vec![peer.as_str().into(), (*at).into()])
+                                .map(|(peer, at, count)| {
+                                    Value::Array(vec![
+                                        peer.as_str().into(),
+                                        (*at).into(),
+                                        u64::from(*count).into(),
+                                    ])
                                 })
                                 .collect(),
                         ),

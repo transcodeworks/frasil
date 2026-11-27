@@ -223,11 +223,13 @@ impl Space {
     /// member connection with it, such as the one the two devices hold for
     /// `known_space`, before or after this device restarts. It goes to the
     /// device's mailbox at this device's peers too, as
-    /// [`Space::grant_person`]'s welcomes do, again every 48 hours while
-    /// it waits, since a peer keeps a mailbox item only a while, unless the
-    /// space no longer reaches the device. It waits at most 30 days, and
-    /// among the newest
-    /// 256 welcomes this device keeps; a device that has not taken the
+    /// [`Space::grant_person`]'s welcomes do, again 48 hours after the
+    /// last deposit at a peer, since a peer keeps a mailbox item only a
+    /// while, four times at each peer at most, unless the space no longer
+    /// reaches the device. It waits until the device attaches the space
+    /// with this device, or this device holds an event the device signed
+    /// in the space after the grant; at most 30 days, and among the newest
+    /// 4,096 welcomes this device keeps. A device that has not taken the
     /// space up by then is removed and admitted again. The device follows
     /// the space as it follows a person grant's.
     ///

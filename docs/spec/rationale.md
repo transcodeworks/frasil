@@ -1171,11 +1171,48 @@ less in a mailbox its device has never collected (`uncollected_retention`,
 72 hours by default), so the signer deposits again at each peer every
 `welcome_redeposit`, 48 hours: a day under that default, which leaves room
 for a deposit delayed by `busy` or `rate_limited` and its waits of up to an
-hour, and for a connection to the peer that drops for a while, at the cost
-of one mailbox item per peer every two days. A second copy is harmless,
-since a device keeps one welcome per space. The trust is carried, not
+hour, and for a connection to the peer that drops for a while. A second
+copy is harmless to the newcomer, since a device keeps one welcome per
+space, but not to its mailbox: once the newcomer has collected there, the
+peer keeps each copy for `mailbox_retention`, up to 30 days, and a mailbox
+holds at most 64 items, oldest evicted, so a deposit every two days for
+the welcome's whole life would leave some fifteen copies at each peer and
+push out what others sent. The signer cannot see the collection, which
+the peer tells no depositor. So it deposits a welcome at one peer four
+times at most, the first and three repeats, and keeps the count beside
+the `T` in the record, so that a restart does not start it again. Four
+deposits 48 hours apart keep a copy at a peer whose newcomer never
+collects there for about 9 days, under the default
+`uncollected_retention`; after that a member connection with the signer,
+or a first deposit at another peer, still delivers it. A deposit a peer
+refused for good counts too, and the peer stays in the record, and the
+signer deposits at no peer past the 64 a record names, so that no peer
+receives a welcome more than four times however often the signer
+restarts. The trust is carried, not
 shared: a later removal from the known space does not reach the grant,
 which is therefore the application's to mirror.
+
+The entry also ends when the signer sees the newcomer at work: an event
+the newcomer's device signed, accepted in full, with the admitting event
+in its past. Holding that event in its past means the device holds the
+event, and with it the wrap the welcome carries, so the welcome has
+nothing left to give it. An event without the admitting event in its past
+ends nothing, so a device that the space granted before under another
+grant, and that keeps writing from its old view, does not end the
+welcome of its new grant. The signal costs the signer nothing it does not
+already keep: a replica holds each author's chain by `seq`, and each
+event names the one before it, so the latest event of the newcomer's
+chain answers for all of them, and the walk back to the admitting event,
+bounded below by that event's height, runs only when that latest event
+changes. A peer could say more, that the newcomer collected its mailbox,
+but it tells no depositor, and saying so would tell anyone who deposits
+when a device comes online. A device that only reads may sign nothing in
+the space; for it the count of four is the only bound on the copies at
+each peer. The waiting welcomes are bounded at 4,096 per device: a
+person's grant makes one per device of the person, so an administrator
+who admits a few dozen people within `welcome_retention` would pass a
+bound of a few hundred, and the oldest welcomes, still waiting, would go
+without a word.
 
 ## References
 

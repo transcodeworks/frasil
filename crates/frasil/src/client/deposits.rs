@@ -470,7 +470,8 @@ pub(crate) fn answer_of(answer: Result<std::result::Result<(), String>>) -> Answ
 
 /// Attempts each kept deposit whose wait has passed: the device's upkeep
 /// runs it. A deposit of a waiting welcome whose space's roster no longer
-/// reaches its recipient is dropped instead, with the welcome
+/// reaches its recipient, or whose recipient signed an event in the space
+/// after the event it names, is dropped instead, with the welcome
 /// (admission.md, 3.10 Welcomes, "A welcome that waits").
 pub(super) async fn retry(device: &Device) {
     let Ok(now) = device.engine().reading().await else {
@@ -490,7 +491,7 @@ pub(super) async fn retry(device: &Device) {
                 )
             });
         if let Some(welcome) = welcome
-            && !super::person_grants::welcome_reaches(device, &welcome).await
+            && !super::person_grants::welcome_waits(device, &welcome).await
         {
             continue;
         }

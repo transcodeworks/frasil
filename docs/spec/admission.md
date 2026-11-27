@@ -699,7 +699,7 @@ device ID, the space, the event the welcome names, the sealed welcome, the
 `T` of the signer's timeline at which it kept the entry
 ([overview.md](overview.md), "The local timeline"), and the peers the
 signer has deposited the welcome at, each with the `T` of its latest
-deposit there. The welcome is
+deposit there and the number of deposits it has made there. The welcome is
 sealed to the newcomer's X-Wing key before it is kept, so the signer's
 store holds it only in the form a peer holds it: the signer cannot open it
 again, and nothing in it is readable without the newcomer's keys. A signer
@@ -713,12 +713,30 @@ ends an entry, and the signer then deletes its record:
 
 - a member connection admits the newcomer's attach of the space, whether
   that attach is still live or has ended;
+- the space's log, in the signer's own view, holds an event the
+  newcomer's device signed, accepted in full ([events.md](events.md),
+  "Accepted in full, and what is cited"), that has the event the welcome
+  names in its past: the newcomer holds that event and the wrap in it,
+  so it needs the welcome no longer. An event the device signed before the
+  grant, or concurrently with it, does not have the grant in its past and
+  ends nothing, so the welcome of a grant to a device the space already
+  reached under another grant or level waits on. The signer checks this
+  before each deposit, a further attempt of a deposit it keeps to go
+  again included, and then drops the deposits of that welcome it keeps;
+  it SHOULD also check it for every waiting welcome from time to time, so
+  that an entry it deposits no more does not keep its place under the
+  bound until its age. It need not check it before a hand-over over a
+  member connection, which takes no room in a mailbox and whose attach
+  ends the entry. Since each event of a device's chain names the one
+  before it as `prev` ([events.md](events.md), "Chains and evidence of a
+  fork"), the signer MAY look only at the latest event of the newcomer's
+  chain in its view, and only when that event changes;
 - the space's roster, in the signer's current view, no longer reaches the
   newcomer, as after its removal: the signer checks this before each
   hand-over and each deposit, a further attempt of a deposit it keeps to
   go again included, and then hands nothing over, deposits nothing, and
   drops the deposits of that welcome it keeps;
-- the signer keeps at most 256 waiting welcomes, and a newer one passes
+- the signer keeps at most 4,096 waiting welcomes, and a newer one passes
   the oldest, first by the `T` at which each was kept;
 - `welcome_retention` ([overview.md](overview.md), "Every timer") has
   passed on the signer's timeline since it kept the entry, the most a peer
@@ -737,26 +755,42 @@ default, while the newcomer has not collected its mailbox at that peer,
 and `mailbox_retention` once it has (transport.md, "Claimed device
 mailboxes"). So the signer deposits the welcome at a peer again once
 `welcome_redeposit` ([overview.md](overview.md), "Every timer") has
-passed since its latest deposit there, for as long as the entry lasts,
-and records the new `T`; while a deposit it keeps to go again at that
-peer still holds the same welcome, it waits for that one instead. The
-newcomer keeps one welcome per space, so a second copy is nothing new
-(transport.md, "A sender keeps what was refused"). A restart does not
-deposit at a recorded peer again before `welcome_redeposit` has passed. A
-record names at most 64 peers; the signer does not record a peer past
-them, nor one that refused the deposit for good (any reason but `busy` or
-`rate_limited`, such as `unsupported`). It deposits at such a peer again
-after `welcome_redeposit`, or when it next starts, whichever comes first.
-A peer whose origin is longer than 512 bytes, which a `deposit` record
-cannot name ([at-rest.md](at-rest.md), "Tables"), is deposited at never.
+passed since its latest deposit there, at most three times: it makes at
+most four deposits of a welcome at one peer, the first and three
+repeats, and after the fourth it deposits that welcome at that peer no
+more, while the entry lasts on until one of the conditions above ends it.
+It records the new `T` and the count of deposits there with each one;
+while a deposit it keeps to go again at that peer still holds the same
+welcome, it waits for that one instead. The newcomer keeps one welcome
+per space, so a second copy is nothing new (transport.md, "A sender
+keeps what was refused"). A restart neither deposits at a recorded peer
+again before `welcome_redeposit` has passed nor counts its deposits there
+again. A deposit the peer refused for good (any reason but `busy` or
+`rate_limited`, such as `unsupported`) counts as one of the four, and
+the peer stays recorded with it. A record names at most 64 peers, and the
+signer deposits a welcome at those only: once its record names 64, it
+deposits that welcome at no other peer. A peer whose origin is longer
+than 512 bytes, which a `deposit` record cannot name
+([at-rest.md](at-rest.md), "Tables"), is deposited at never.
 
-This leaves gaps the signer cannot close: a peer whose operator keeps an
-item for less than `welcome_redeposit` (an `uncollected_retention` or a
-`mailbox_retention` under 48 hours) can drop the welcome before its next
-deposit; a mailbox at its bound of 64 items or 4 MiB (transport.md,
-"Mailboxes") evicts its oldest items, a welcome's copies among them, and
-each copy counts against that bound; and a peer the signer is not
-connected to receives nothing until the two are connected again.
+This leaves gaps the signer cannot close. A peer keeps the welcome for a
+while only: with four deposits `welcome_redeposit` apart and the default
+`uncollected_retention` of 72 hours, a newcomer that never collects its
+mailbox at a peer can find the welcome there for about 9 days after the
+first deposit, and after that only a member connection with the signer,
+or a later first deposit at another peer, delivers it; a peer whose
+operator keeps an item for less than `welcome_redeposit` (an
+`uncollected_retention` or a `mailbox_retention` under 48 hours) can drop
+it between deposits. A mailbox at its bound of 64 items or 4 MiB
+(transport.md, "Mailboxes") evicts its oldest items, a welcome's copies
+among them, and each of the at most four copies a peer receives counts
+against that bound until the peer's retention for it passes. A peer the
+signer is not connected to receives nothing until the two are connected
+again. And a newcomer that collects the welcome from a peer and then
+signs no event in the space, as a device that only reads may never do,
+gives the signer no sign that it holds the space: for it, only the count
+of four bounds the copies at each peer, and the entry lasts until
+`welcome_retention` or the bound passes it.
 
 A space the signer forgets, or drops for its erasure, takes its waiting
 welcomes with its log ([at-rest.md](at-rest.md), "Forgetting a log, and

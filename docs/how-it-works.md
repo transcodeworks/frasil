@@ -221,14 +221,20 @@ space.admit_member_administrator(known.id(), device_id, rank).await?;
   over, and each peer this device connects to receives it, even a peer it
   reaches only after a restart. A peer keeps a mailbox item only a while
   (72 hours by default while the device has never collected there), so
-  this device deposits the welcome at each peer again every 48 hours
-  while it waits. The welcome stops waiting once
-  the device has attached the space with this device, once it is removed
-  from the space (a device removed while away is neither handed nor sent
-  the welcome at a peer), after 30 days, the longest a peer keeps a
-  mailbox item, and when it is the oldest of more than 256 waiting. A
-  welcome is never made again: a device that has not taken the space up
-  by then is removed and admitted again.
+  this device deposits the welcome at each peer again 48 hours after
+  the last deposit there, four times at each peer at most, so that a
+  mailbox the device has collected there, which keeps every copy for up
+  to 30 days, holds no more than four. A device that never collects at a
+  peer finds the welcome there for about 9 days; after that the member
+  connection, or a first deposit at another peer, still brings it. The
+  welcome stops waiting once the device has attached the space with this
+  device, once this device sees an event the device signed in the space
+  after the grant, once it is removed from the space (a device removed
+  while away is neither handed nor sent the welcome at a peer), after 30
+  days, the longest a peer keeps a mailbox item, and when it is the
+  oldest of more than 4,096 waiting. A welcome is never made again: a
+  device that has not taken the space up by then is removed and admitted
+  again.
 - It refuses a device that the known space reaches only through a person,
   a guest there, a device whose grant there has no effect or that forked
   there, a device the space has already, and, for a restricted space, a

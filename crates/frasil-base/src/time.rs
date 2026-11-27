@@ -345,7 +345,8 @@ pub enum Timer {
     UncollectedRetention,
     /// A welcome its signer keeps waiting to hand over or deposit.
     WelcomeRetention,
-    /// A waiting welcome's deposit at a peer, made again.
+    /// A waiting welcome's deposit at a peer, made again, at most 3 times
+    /// there.
     WelcomeRedeposit,
     /// An invite, ended by a revocation.
     LinkLifetime,
@@ -782,14 +783,14 @@ pub const TIMERS: [TimerSpec; 42] = [
     row(
         Timer::WelcomeRedeposit,
         "welcome_redeposit",
-        "a waiting welcome's deposit at a peer, made again",
+        "a waiting welcome's deposit at a peer, made again, at most 3 times there",
         Some(48 * HOUR),
         Some(48 * HOUR),
         Some(48 * HOUR),
         SetBy::Protocol,
         Some("the signer's timeline, from its last deposit at that peer"),
         &["admission.md", "at-rest.md"],
-        None,
+        Some("48 hours, and 3 times"),
     ),
     row(
         Timer::LinkLifetime,

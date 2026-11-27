@@ -8,6 +8,8 @@
 
 use frasil_crypto::device::DeviceId;
 use frasil_events::EventId;
+pub(crate) use frasil_store::tables::WELCOME_DEPOSITS;
+use frasil_store::tables::{MAX_PEER_URL, MAX_WELCOME_PEERS};
 use frasil_transport::addresses::{LEARNED_SECONDS, LEARNED_TICKETS};
 use frasil_transport::ticket::Ticket;
 use std::collections::BTreeMap;
@@ -15,7 +17,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// The most welcomes a device keeps waiting; past it, the oldest go.
-pub(crate) const WAITING: usize = 256;
+pub(crate) const WAITING: usize = 4096;
 
 /// How long a welcome waits at most, on the device's timeline from when it
 /// was kept: `welcome_retention` (overview.md, "Every timer"), the longest
@@ -25,7 +27,8 @@ pub(crate) const WELCOME_RETENTION: u64 = 30 * 24 * 3600;
 /// How long after its latest deposit at a peer a waiting welcome is
 /// deposited there again: `welcome_redeposit` (overview.md, "Every
 /// timer"), under the 72 hours a peer keeps by default an item of a
-/// mailbox its device has not collected (`uncollected_retention`).
+/// mailbox its device has not collected (`uncollected_retention`). A
+/// welcome is deposited at one peer [`WELCOME_DEPOSITS`] times at most.
 pub(crate) const WELCOME_REDEPOSIT: u64 = 48 * 3600;
 
 /// A welcome sealed to its recipient.
@@ -47,12 +50,15 @@ pub(crate) struct Waiting {
     pub since: u64,
     /// The peers, by origin, it was deposited at in the recipient's
     /// device mailbox, ascending, each with the timeline's `T` of the
-    /// latest deposit there: as its `welcome` record names them.
-    pub deposited: Vec<(String, u64)>,
-    /// The peers, by origin, that refused its deposit for good, each with
-    /// the timeline's `T` of the deposit: kept in memory only, so that a
-    /// restart deposits there again.
-    pub refused: Vec<(String, u64)>,
+    /// latest deposit there and the number of deposits there, a deposit
+    /// the peer refused for good included: as its `welcome` record names
+    /// them.
+    pub deposited: Vec<(String, u64, u8)>,
+    /// The recipient's latest event in the space, as this device last
+    /// found it, accepted in full and without the event this welcome
+    /// names in its past: looked at again only once it changes. In memory
+    /// only.
+    pub looked: Option<EventId>,
 }
 
 #[cfg_attr(
@@ -60,14 +66,38 @@ pub(crate) struct Waiting {
     allow(dead_code)
 )]
 impl Waiting {
-    /// Whether it is due at the peer at `origin` at `now`: deposited and
-    /// refused there never, or `WELCOME_REDEPOSIT` or longer before.
+    /// Whether it is due at the peer at `origin` at `now`: deposited there
+    /// never, while it names fewer than 64 peers, or fewer than
+    /// `WELCOME_DEPOSITS` times, the latest `WELCOME_REDEPOSIT` or longer
+    /// before.
     fn due_at(&self, origin: &str, now: u64) -> bool {
+        match self.named(origin) {
+            Ok(index) => {
+                let (_, at, count) = self.deposited[index];
+                count < WELCOME_DEPOSITS && now.saturating_sub(at) >= WELCOME_REDEPOSIT
+            }
+            Err(_) => self.may_deposit_at(origin),
+        }
+    }
+
+    /// Where `origin` is among the peers it was deposited at.
+    fn named(&self, origin: &str) -> std::result::Result<usize, usize> {
         self.deposited
-            .iter()
-            .chain(&self.refused)
-            .filter(|(peer, _)| peer == origin)
-            .all(|(_, at)| now.saturating_sub(*at) >= WELCOME_REDEPOSIT)
+            .binary_search_by(|(peer, _, _)| peer.as_str().cmp(origin))
+    }
+
+    /// Whether one more deposit at the peer at `origin` stays within the
+    /// bounds its record can keep: fewer than `WELCOME_DEPOSITS` there, a
+    /// peer its record names or one more it can, and an origin of 1 to 512
+    /// bytes (admission.md, 3.10 Welcomes, "A welcome that waits").
+    pub(crate) fn may_deposit_at(&self, origin: &str) -> bool {
+        if !(1..=MAX_PEER_URL).contains(&origin.len()) {
+            return false;
+        }
+        match self.named(origin) {
+            Ok(index) => self.deposited[index].2 < WELCOME_DEPOSITS,
+            Err(_) => self.deposited.len() < MAX_WELCOME_PEERS,
+        }
     }
 
     /// The same welcome as `other`: the same recipient, space, event and
@@ -78,24 +108,16 @@ impl Waiting {
     }
 
     /// Deposited at the peer at `origin` at `at`: named there with that
-    /// `T`, and refused there no longer.
+    /// `T`, and one more deposit counted there.
     pub(crate) fn deposit_at(&mut self, origin: &str, at: u64) {
-        self.refused.retain(|(peer, _)| peer != origin);
-        match self
-            .deposited
-            .binary_search_by(|(peer, _)| peer.as_str().cmp(origin))
-        {
-            Ok(index) => self.deposited[index].1 = at,
-            Err(index) => self.deposited.insert(index, (origin.to_owned(), at)),
+        match self.named(origin) {
+            Ok(index) => {
+                let (_, latest, count) = &mut self.deposited[index];
+                *latest = at;
+                *count = count.saturating_add(1).min(WELCOME_DEPOSITS);
+            }
+            Err(index) => self.deposited.insert(index, (origin.to_owned(), at, 1)),
         }
-    }
-
-    /// Refused for good at the peer at `origin` at `at`: named there no
-    /// longer, and held in memory to be deposited again later.
-    pub(crate) fn refused_at(&mut self, origin: &str, at: u64) {
-        self.deposited.retain(|(peer, _)| peer != origin);
-        self.refused.retain(|(peer, _)| peer != origin);
-        self.refused.push((origin.to_owned(), at));
     }
 }
 
@@ -180,6 +202,21 @@ impl Links {
         self.welcomes.drain(..over).collect()
     }
 
+    /// Keeps the welcomes a device loads as it opens, in place of any for
+    /// the same recipient and space, as [`wait`](Links::wait) keeps each
+    /// one, in one sort rather than one insertion each. Returns the
+    /// welcomes the bound passes, the oldest first, which wait no longer.
+    pub(crate) fn load_waiting(&mut self, mut loaded: Vec<Waiting>) -> Vec<Waiting> {
+        let keys: std::collections::BTreeSet<(DeviceId, EventId)> =
+            loaded.iter().map(|w| (w.recipient, w.space)).collect();
+        self.welcomes
+            .retain(|w| !keys.contains(&(w.recipient, w.space)));
+        self.welcomes.append(&mut loaded);
+        self.welcomes.sort_by_key(|w| w.since);
+        let over = self.welcomes.len().saturating_sub(WAITING);
+        self.welcomes.drain(..over).collect()
+    }
+
     /// The welcomes kept `WELCOME_RETENTION` or longer before `now`, on
     /// the device's timeline, which wait no longer.
     pub(crate) fn expire_welcomes(&mut self, now: u64) -> Vec<Waiting> {
@@ -196,8 +233,9 @@ impl Links {
     }
 
     /// The welcomes due at the peer at `url` at `now`, on the device's
-    /// timeline: never deposited there, or last deposited or refused
-    /// there `WELCOME_REDEPOSIT` or longer before. A `T` past `now`, as
+    /// timeline: never deposited there while they name fewer than 64
+    /// peers, or deposited there fewer than `WELCOME_DEPOSITS` times, the
+    /// latest `WELCOME_REDEPOSIT` or longer before. A `T` past `now`, as
     /// after a timeline that started again, is not due until `now` passes
     /// it by that much.
     pub(crate) fn to_deposit(&self, url: &str, now: u64) -> Vec<Waiting> {
@@ -225,6 +263,11 @@ impl Links {
     /// The waiting welcome that is the same as `welcome`, to change.
     pub(crate) fn same_mut(&mut self, welcome: &Waiting) -> Option<&mut Waiting> {
         self.welcomes.iter_mut().find(|w| w.same(welcome))
+    }
+
+    /// Every waiting welcome, to change.
+    pub(crate) fn waiting_mut(&mut self) -> impl Iterator<Item = &mut Waiting> {
+        self.welcomes.iter_mut()
     }
 
     /// The waiting welcome a deposit of `item` at the device mailbox

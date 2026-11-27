@@ -21,20 +21,31 @@ use std::time::Duration;
 /// it names is no longer waiting for a peer's acknowledgement, so that the
 /// recipient finds the event there (admission.md, 3.10 Welcomes, "A
 /// welcome that waits"). A welcome is due at a peer it was never deposited
-/// at, and again `welcome_redeposit` after its latest deposit there, since
-/// a peer keeps an item for a while only. The peer and the `T` of the
-/// deposit are named in the welcome's record in the commit that keeps the
-/// deposit, so a restart does not deposit it there again sooner. A peer
-/// that refused the deposit for good is not named, and is due again
-/// after `welcome_redeposit` or a restart. While a deposit of the welcome
-/// at the peer waits to go again, no other is made there. A welcome kept
-/// `welcome_retention` ago, or of a space whose roster no longer reaches
-/// its recipient, waits no longer, and goes nowhere.
+/// at, while it names fewer than 64 peers, and again `welcome_redeposit`
+/// after its latest deposit there, since a peer keeps an item for a while
+/// only, four deposits there in all. The peer, the `T` of the deposit and
+/// the count there are named in the welcome's record in the commit that
+/// keeps the deposit, so a restart neither deposits it there again sooner
+/// nor counts again; a deposit the peer refused for good counts too.
+/// While a deposit of the welcome at the peer waits to go again, no other
+/// is made there. A welcome kept `welcome_retention` ago, of a space whose
+/// roster no longer reaches its recipient, or whose recipient signed an
+/// event in the space after the event it names, waits no longer, and goes
+/// nowhere.
 pub(super) async fn deposit_welcomes(device: &Device) {
     let engine = device.engine();
     engine.expire_welcomes().await;
+    for welcome in engine.end_acted_welcomes().await {
+        device
+            .forget_deposits_of(
+                &address(Kind::Device, &welcome.recipient.0),
+                &welcome.sealed,
+            )
+            .await;
+    }
     let now = engine.welcome_time().await;
     let mut kept = None;
+    let mut outboxes: BTreeMap<EventId, Vec<EventId>> = BTreeMap::new();
     for peer in device.peers() {
         if !peer.status().connected {
             continue;
@@ -46,32 +57,48 @@ pub(super) async fn deposit_welcomes(device: &Device) {
             continue;
         }
         let waiting = engine.links().to_deposit(&url, now);
+        if waiting.is_empty() {
+            continue;
+        }
+        // The deposits kept to go again at this peer, read once a pass, by
+        // address and item, so that each welcome is looked up in them.
+        if kept.is_none() {
+            kept = Some(device.kept_deposits().await);
+        }
+        let Some(kept) = &kept else {
+            continue;
+        };
+        let held: std::collections::BTreeSet<(&[u8; 32], &[u8])> = kept
+            .iter()
+            .filter(|(_, record, _)| record.peer == crate::links::origin(&url))
+            .map(|(_, record, _)| (&record.address, record.item.as_slice()))
+            .collect();
         for welcome in waiting {
-            if !welcome_reaches(device, &welcome).await {
+            if !welcome_waits(device, &welcome).await {
                 continue;
             }
-            if engine.outbox(&welcome.space).await.contains(&welcome.event) {
+            if let std::collections::btree_map::Entry::Vacant(entry) = outboxes.entry(welcome.space)
+            {
+                entry.insert(engine.outbox(&welcome.space).await);
+            }
+            if outboxes
+                .get(&welcome.space)
+                .is_some_and(|outbox| outbox.contains(&welcome.event))
+            {
                 continue;
             }
             let address = address(Kind::Device, &welcome.recipient.0);
-            let kept = match &mut kept {
-                Some(kept) => kept,
-                None => kept.insert(device.kept_deposits().await),
-            };
-            if kept.iter().any(|(_, record, _)| {
-                record.peer == crate::links::origin(&url)
-                    && record.address == address
-                    && record.item == welcome.sealed
-            }) {
+            if held.contains(&(&address, welcome.sealed.as_slice())) {
                 continue;
             }
             // Once taken, the deposit is the device's to deliver: it keeps
             // it, and deposits it again until the peer accepts it.
-            let Some(delivery) = device.deposit_welcome(&url, address, &welcome).await else {
+            if device
+                .deposit_welcome(&url, address, &welcome)
+                .await
+                .is_none()
+            {
                 continue;
-            };
-            if let super::deposits::Delivery::Refused(_) = delivery {
-                engine.welcome_deposit_refused(&welcome, &url).await;
             }
             device
                 .inner
@@ -81,11 +108,12 @@ pub(super) async fn deposit_welcomes(device: &Device) {
     }
 }
 
-/// Whether the space's roster, in this device's view, still reaches the
-/// recipient of a waiting welcome. When it does not, the welcome waits no
-/// longer, and the deposits of it the device keeps go (admission.md, 3.10
-/// Welcomes, "A welcome that waits").
-pub(super) async fn welcome_reaches(device: &Device, welcome: &crate::links::Waiting) -> bool {
+/// Whether a waiting welcome still waits: the space's roster, in this
+/// device's view, still reaches its recipient, and the recipient has
+/// signed no event in the space after the event the welcome names. When
+/// it does not wait, it ends, and the deposits of it the device keeps go
+/// (admission.md, 3.10 Welcomes, "A welcome that waits").
+pub(super) async fn welcome_waits(device: &Device, welcome: &crate::links::Waiting) -> bool {
     let engine = device.engine();
     let reaches = engine
         .read(&welcome.space, |replica| {
@@ -95,6 +123,9 @@ pub(super) async fn welcome_reaches(device: &Device, welcome: &crate::links::Wai
         .unwrap_or(false);
     if !reaches {
         engine.end_welcome(welcome.recipient, welcome.space).await;
+    }
+    let waits = reaches && !engine.welcome_acted(welcome).await;
+    if !waits {
         device
             .forget_deposits_of(
                 &address(Kind::Device, &welcome.recipient.0),
@@ -102,7 +133,7 @@ pub(super) async fn welcome_reaches(device: &Device, welcome: &crate::links::Wai
             )
             .await;
     }
-    reaches
+    waits
 }
 
 impl Device {
@@ -122,7 +153,7 @@ impl Device {
                     welcome
                         .deposited
                         .into_iter()
-                        .map(|(peer, _)| peer)
+                        .map(|(peer, _, _)| peer)
                         .collect(),
                 )
             })
@@ -237,7 +268,7 @@ impl Device {
                     sealed,
                     since,
                     deposited: Vec::new(),
-                    refused: Vec::new(),
+                    looked: None,
                 }],
             )
             .await?;

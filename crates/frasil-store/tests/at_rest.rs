@@ -271,7 +271,7 @@ fn record_refusals() {
     let browser = Browser::new();
     let cases = family("record_refusals");
     let cases = cases.as_array().unwrap();
-    assert_eq!(cases.len(), 37);
+    assert_eq!(cases.len(), 40);
     for case in cases {
         let name = text(case, "name");
         // The log and the key the case opens it under; a log other than the
