@@ -140,6 +140,7 @@ difference: admission by code is not available in browsers yet (see
 | `space.inviteLink(level, lifetimeSeconds, { history? })`, `device.join(link, name, confirm)` | invite links |
 | `space.exportSpaceFile(kind, options?)`, `space.appendSpaceFile(file)`, `device.importSpaceFile(file, kind, { key? })`, `Device.sniffSpaceFile(file)` | space files: one space as bytes, with a way in (its keys, or an invite), that another device reads, or joins by, with nobody online; an invite comes back as an `invitation` to show, then `accept()` or `decline()` |
 | `space.grantPerson(person, level)`, `space.setLevel(member, level)`, `space.setSuggester(member, on)` | levels and suggesters |
+| `space.admitMember(knownSpace, member, level)`, `space.admitMemberAdministrator(knownSpace, member, rank)` | admits a device that `knownSpace` grants directly, with no code, `via` none; its welcome goes to its mailbox at the peer. It rests on `knownSpace`'s roster alone, and a removal there does not reach this space |
 | `space.createRestricted()`, `document.moveTo(restricted)` | restricted spaces, and documents moved into them |
 | `space.erase()` | erases the whole space at its peers |
 | `space.ephemeral()` | `send(bytes)`, `subscribe((from, bytes) => …)` returning its stop function |

@@ -470,6 +470,48 @@ impl Space {
         }))
     }
 
+    /// Admits a device that `known_space` grants directly to this space at
+    /// `level`, `"read"` or `"write"`, by its member ID, with no code and
+    /// with history; the grant records `via` none, and the device's welcome
+    /// goes to its mailbox at this device's peers.
+    #[wasm_bindgen(js_name = admitMember)]
+    pub fn admit_member(
+        &self,
+        known_space: String,
+        member: String,
+        level_name: String,
+    ) -> Result<Promise, JsValue> {
+        let known_space = id::<frasil::SpaceId>(&known_space)?;
+        let member = id::<frasil::MemberId>(&member)?;
+        let level = level(&level_name)?;
+        let space = self.inner.clone();
+        Ok(promise(async move {
+            space.admit_member(known_space, member, level).await.js()?;
+            Ok(JsValue::UNDEFINED)
+        }))
+    }
+
+    /// Admits a device that `known_space` grants directly to this space as
+    /// an administrator at `rank`, at most this device's own.
+    #[wasm_bindgen(js_name = admitMemberAdministrator)]
+    pub fn admit_member_administrator(
+        &self,
+        known_space: String,
+        member: String,
+        rank: u8,
+    ) -> Result<Promise, JsValue> {
+        let known_space = id::<frasil::SpaceId>(&known_space)?;
+        let member = id::<frasil::MemberId>(&member)?;
+        let space = self.inner.clone();
+        Ok(promise(async move {
+            space
+                .admit_member_administrator(known_space, member, rank)
+                .await
+                .js()?;
+            Ok(JsValue::UNDEFINED)
+        }))
+    }
+
     /// Changes a member's level.
     #[wasm_bindgen(js_name = setLevel)]
     pub fn set_level(&self, member: String, level_name: String) -> Result<Promise, JsValue> {

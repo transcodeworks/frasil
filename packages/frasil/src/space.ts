@@ -607,6 +607,35 @@ export class Space extends Handle<raw.Space> {
   }
 
   /**
+   * Admits a device that `knownSpace` grants directly to this space at `read` or `write`, by its
+   * member ID, with no code: the grant carries the keys `knownSpace`'s roster names, with history,
+   * and records `via` none. It commits at once; the device's welcome goes to its mailbox at this
+   * device's peers, where its device collects it as it collects a person's grant. The grant rests
+   * only on `knownSpace`'s roster: any administrator there could have put the device in it, and a
+   * removal there does not reach this space, so an application that mirrors one space's members
+   * into another mirrors removals too. Fails with `NotAllowed` unless this device administers the
+   * space, when `knownSpace` does not grant the device directly or grants it as a guest, and when
+   * this space has the device already.
+   */
+  admitMember(
+    knownSpace: SpaceId,
+    member: MemberId,
+    level: Exclude<Level, "administer">,
+  ): Promise<void> {
+    return callAsync(() => this.#raw().admitMember(knownSpace, member, level) as Promise<void>);
+  }
+
+  /**
+   * {@link Space.admitMember}, admitting the device as an administrator at `rank`, 0 to 255, at
+   * most this device's own.
+   */
+  admitMemberAdministrator(knownSpace: SpaceId, member: MemberId, rank: number): Promise<void> {
+    return callAsync(
+      () => this.#raw().admitMemberAdministrator(knownSpace, member, rank) as Promise<void>,
+    );
+  }
+
+  /**
    * Changes a member's level to `read` or `write`. The change goes to the space's peers at once;
    * {@link Space.flush} waits until one holds it. An administrator is made at a rank with
    * {@link Space.raise}.

@@ -1491,6 +1491,54 @@ impl Space {
         Ok(run(async move { space.raise(member, rank).await }).await?)
     }
 
+    /// Admits a device that the space `known_space` grants directly to this
+    /// space at `level`, `read` or `write`, by its member ID, with no code
+    /// and no peer, with history; the grant records `via` none. It commits
+    /// at once; the device's welcome goes over the next member connection
+    /// with it, such as the one the two hold for `known_space`, and it
+    /// follows this space as it follows a person's grant. The grant rests
+    /// only on `known_space`'s roster, and a removal there does not reach
+    /// it. It fails unless this device administers the space, when
+    /// `known_space` does not reach this device, does not grant the device
+    /// directly, grants it as a guest or with no effect, and when this
+    /// space has the device already.
+    pub async fn admit_member(
+        &self,
+        known_space: String,
+        member: String,
+        level: String,
+    ) -> Result<()> {
+        let known: frasil::SpaceId = parse(&known_space)?;
+        let member: frasil::MemberId = parse(&member)?;
+        let level = match frasil::Level::from_name(&level) {
+            Some(level) if level != frasil::Level::Administer => level,
+            _ => {
+                return Err(FrasilError::Failed {
+                    reason: "a member is admitted at read or write; to make it an \
+                             administrator, admit it with admitMemberAdministrator at a rank"
+                        .into(),
+                });
+            }
+        };
+        let space = self.inner.clone();
+        Ok(run(async move { space.admit_member(known, member, level).await }).await?)
+    }
+
+    /// Admits a device that `known_space` grants directly to this space as
+    /// an administrator at `rank`, at most this device's own; otherwise as
+    /// `admit_member`.
+    pub async fn admit_member_administrator(
+        &self,
+        known_space: String,
+        member: String,
+        rank: u8,
+    ) -> Result<()> {
+        let known: frasil::SpaceId = parse(&known_space)?;
+        let member: frasil::MemberId = parse(&member)?;
+        let space = self.inner.clone();
+        Ok(run(async move { space.admit_member_administrator(known, member, rank).await }).await?)
+    }
+
     /// Changes an administrator's rank: a lowering to write, then a raise
     /// at `rank`.
     pub async fn set_rank(&self, member: String, rank: u8) -> Result<()> {

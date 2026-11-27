@@ -1065,12 +1065,9 @@ impl Driver {
         if self.counted.insert(attach, (space, remote)).is_some() {
             return Ok(());
         }
-        {
-            let mut links = self.device.links();
-            links.attach(space, remote);
-            if let Some(remote) = self.session.remote_device() {
-                links.delivered(remote, &space);
-            }
+        self.device.links().attach(space, remote);
+        if let Some(remote) = remote {
+            self.device.end_welcome(remote, space).await;
         }
         // Where the other device is, for dialing it again after a restart
         // (transport.md, "Reconnecting"), and for member addresses.
@@ -1274,16 +1271,32 @@ impl Driver {
 
     /// Hands the other device the welcomes waiting for it, each once on
     /// this connection, as items of its device mailbox (transport.md,
-    /// "Mailboxes"), once its `Identify` has verified.
+    /// "Mailboxes"), once its `Identify` has verified. A welcome kept
+    /// `welcome_retention` ago, or of a space whose roster no longer
+    /// reaches the other device, waits no longer, and goes nowhere
+    /// (admission.md, 3.10 Welcomes, "A welcome that waits").
     async fn hand_welcomes(&mut self) -> Result<()> {
         let Some(remote) = self.session.remote_device().copied() else {
             return Ok(());
         };
+        self.device.expire_welcomes().await;
         let waiting = self.device.links().welcomes_for(&remote);
         for welcome in waiting {
-            if !self.handed.insert(welcome.space) {
+            if self.handed.contains(&welcome.space) {
                 continue;
             }
+            let reaches = self
+                .device
+                .read(&welcome.space, |replica| {
+                    replica.level_of(&remote).is_some()
+                })
+                .await
+                .unwrap_or(false);
+            if !reaches {
+                self.device.end_welcome(remote, welcome.space).await;
+                continue;
+            }
+            self.handed.insert(welcome.space);
             let put = MailboxPut {
                 request: 0,
                 address: mailbox::address(MailboxKind::Device, &remote.0),

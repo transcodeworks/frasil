@@ -212,6 +212,110 @@ impl Space {
         Ok(())
     }
 
+    /// Admits a device that `known_space` grants directly to this space at
+    /// `level` (`read` or `write`), by its device ID `member`, with no code
+    /// and no peer (admission.md, 3.16 A member of another space). The
+    /// grant carries the keys that `known_space`'s roster names, which the
+    /// ID commits to, is made with history, and records `via` = `none`. It
+    /// commits at once, offline, and the call returns once it has, whatever
+    /// becomes of the welcome. The device's welcome is sealed to its keys,
+    /// kept at rest in the grant's own commit, and handed over the next
+    /// member connection with it, such as the one the two devices hold for
+    /// `known_space`, before or after this device restarts. It goes to the
+    /// device's mailbox at this device's peers too, as
+    /// [`Space::grant_person`]'s welcomes do, again every 48 hours while
+    /// it waits, since a peer keeps a mailbox item only a while, unless the
+    /// space no longer reaches the device. It waits at most 30 days, and
+    /// among the newest
+    /// 256 welcomes this device keeps; a device that has not taken the
+    /// space up by then is removed and admitted again. The device follows
+    /// the space as it follows a person grant's.
+    ///
+    /// The grant rests only on `known_space`'s roster: any administrator of
+    /// that space could have put the device there, and a removal from it
+    /// does not reach this grant. Select `member` from `known_space`'s
+    /// [`Space::members`], never by a display name.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Invalid`] for `administer`, which
+    /// [`Space::admit_member_administrator`] gives at a rank;
+    /// [`Error::UnknownSpace`] when this device does not hold `known_space`;
+    /// [`Error::NotAllowed`] unless this device administers the space, when
+    /// `known_space` does not reach this device, when it does not grant the
+    /// device directly (it grants no such device, or only through a
+    /// person), when the device is a guest there, when its grant there has
+    /// no effect or the device forked there, when this space reaches the
+    /// device already, and when it is restricted and its parent does not
+    /// reach the device.
+    pub async fn admit_member(
+        &self,
+        known_space: SpaceId,
+        member: MemberId,
+        level: Level,
+    ) -> Result<()> {
+        if level == Level::Administer {
+            return Err(Error::Invalid(
+                "an administrator is admitted at a rank: Space::admit_member_administrator",
+            ));
+        }
+        self.admit_member_at(known_space, member, level, None).await
+    }
+
+    /// [`Space::admit_member`], admitting the device as an administrator at
+    /// `rank`, 0 to 255, at most this device's own: a larger rank outranks a
+    /// smaller one (roster.md, 2.3 Changes, "Ranks").
+    ///
+    /// # Errors
+    ///
+    /// `HigherRank` for a rank above this device's own; as
+    /// [`Space::admit_member`].
+    pub async fn admit_member_administrator(
+        &self,
+        known_space: SpaceId,
+        member: MemberId,
+        rank: u8,
+    ) -> Result<()> {
+        self.admit_member_at(known_space, member, Level::Administer, Some(rank))
+            .await
+    }
+
+    async fn admit_member_at(
+        &self,
+        known_space: SpaceId,
+        member: MemberId,
+        level: Level,
+        rank: Option<u8>,
+    ) -> Result<()> {
+        self.device
+            .engine()
+            .admit_member(
+                self.id().event(),
+                known_space.event(),
+                DeviceId(*member.as_bytes()),
+                level,
+                rank,
+            )
+            .await?;
+        // The welcome, at this device's peers once they hold the grant
+        // (admission.md, 3.10 Welcomes); the upkeep deposits what this does
+        // not.
+        #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
+        {
+            let space = self.clone();
+            self.device.spawn(Box::pin(async move {
+                if space
+                    .wait_durable(std::time::Duration::from_secs(30))
+                    .await
+                    .is_ok()
+                {
+                    super::person_grants::deposit_welcomes(&space.device).await;
+                }
+            }));
+        }
+        Ok(())
+    }
+
     /// Changes a member's level. A demotion to `read` rotates the space's
     /// keys, so the member writes nothing new; a raise hands the member's
     /// devices what they need to write. The change goes to the space's

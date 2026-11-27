@@ -4444,6 +4444,28 @@ public func FfiConverterTypeLossListener_lower(_ value: LossListener) -> UInt64 
 public protocol SpaceProtocol: AnyObject, Sendable {
 
     /**
+     * Admits a device that the space `known_space` grants directly to this
+     * space at `level`, `read` or `write`, by its member ID, with no code
+     * and no peer, with history; the grant records `via` none. It commits
+     * at once; the device's welcome goes over the next member connection
+     * with it, such as the one the two hold for `known_space`, and it
+     * follows this space as it follows a person's grant. The grant rests
+     * only on `known_space`'s roster, and a removal there does not reach
+     * it. It fails unless this device administers the space, when
+     * `known_space` does not reach this device, does not grant the device
+     * directly, grants it as a guest or with no effect, and when this
+     * space has the device already.
+     */
+    func admitMember(knownSpace: String, member: String, level: String) async throws
+
+    /**
+     * Admits a device that `known_space` grants directly to this space as
+     * an administrator at `rank`, at most this device's own; otherwise as
+     * `admit_member`.
+     */
+    func admitMemberAdministrator(knownSpace: String, member: String, rank: UInt8) async throws
+
+    /**
      * A blob stream of the space, by its ID.
      */
     func blobs(id: String) async throws  -> Blobs
@@ -4662,6 +4684,58 @@ open class Space: SpaceProtocol, @unchecked Sendable {
 
 
 
+
+    /**
+     * Admits a device that the space `known_space` grants directly to this
+     * space at `level`, `read` or `write`, by its member ID, with no code
+     * and no peer, with history; the grant records `via` none. It commits
+     * at once; the device's welcome goes over the next member connection
+     * with it, such as the one the two hold for `known_space`, and it
+     * follows this space as it follows a person's grant. The grant rests
+     * only on `known_space`'s roster, and a removal there does not reach
+     * it. It fails unless this device administers the space, when
+     * `known_space` does not reach this device, does not grant the device
+     * directly, grants it as a guest or with no effect, and when this
+     * space has the device already.
+     */
+open func admitMember(knownSpace: String, member: String, level: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_space_admit_member(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(knownSpace),FfiConverterString.lower(member),FfiConverterString.lower(level)
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_void,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_void,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
+
+    /**
+     * Admits a device that `known_space` grants directly to this space as
+     * an administrator at `rank`, at most this device's own; otherwise as
+     * `admit_member`.
+     */
+open func admitMemberAdministrator(knownSpace: String, member: String, rank: UInt8)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_frasil_uniffi_fn_method_space_admit_member_administrator(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(knownSpace),FfiConverterString.lower(member),FfiConverterUInt8.lower(rank)
+                )
+            },
+            pollFunc: ffi_frasil_uniffi_rust_future_poll_void,
+            completeFunc: ffi_frasil_uniffi_rust_future_complete_void,
+            freeFunc: ffi_frasil_uniffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeFrasilError_lift
+        )
+}
 
     /**
      * A blob stream of the space, by its ID.
@@ -8856,6 +8930,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_frasil_uniffi_checksum_method_losslistener_reported() != 62652) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_space_admit_member() != 780) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_frasil_uniffi_checksum_method_space_admit_member_administrator() != 9592) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_frasil_uniffi_checksum_method_space_blobs() != 62151) {

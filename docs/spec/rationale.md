@@ -1148,6 +1148,35 @@ redundant resolution keeps a batch from repeating work across every pair
 of independent spaces. Lists, units, guests, restricted parents, partial
 bases, stubs and undecided events keep the full resolution path.
 
+The same reasoning admits a direct device member of one space to another
+with no peer at all (admission.md, "A member of another space"): the
+granter reads the device ID and its keys from a roster it trusts, signs an
+ordinary grant with `via` = `none`, since no code was compared for it, and
+hands the welcome over the member connection the two devices already share.
+The welcome comes only from its signer, as a person's grant's does, so a
+member that merely carries it cannot point a device at a space of its
+choosing. The signer keeps the welcome waiting at rest, in the commit that
+holds the grant, because nothing else can stand in for it: a delivery's
+wraps name no recipient, so not even their author can tell later which
+wrap is whose, and a welcome made again would need a new delivery event in
+the space for every device that never took the space up. Kept at rest, the
+welcome reaches the device by whichever route comes first after any number
+of restarts: the member connection, or a peer the device reaches and the
+signer only reaches later. The record costs the signer the size of a
+mailbox item, and nothing in it opens without the device's keys, to which
+the welcome is sealed before it is kept. Its life is a peer's: after `mailbox_retention`'s
+maximum no peer still holds a deposit of it, and a device that has not
+taken the space up by then is admitted again. A peer keeps an item for
+less in a mailbox its device has never collected (`uncollected_retention`,
+72 hours by default), so the signer deposits again at each peer every
+`welcome_redeposit`, 48 hours: a day under that default, which leaves room
+for a deposit delayed by `busy` or `rate_limited` and its waits of up to an
+hour, and for a connection to the peer that drops for a while, at the cost
+of one mailbox item per peer every two days. A second copy is harmless,
+since a device keeps one welcome per space. The trust is carried, not
+shared: a later removal from the known space does not reach the grant,
+which is therefore the application's to mirror.
+
 ## References
 
 - RFC 2104 (HMAC), RFC 5869 (HKDF), RFC 7748 (X25519), RFC 8032 (EdDSA),

@@ -322,6 +322,32 @@
       ]
     },
     {
+      "name": "welcome_retention",
+      "bounds": "a welcome its signer keeps waiting to hand over or deposit",
+      "default": 2592000,
+      "minimum": 2592000,
+      "maximum": 2592000,
+      "set_by": "protocol",
+      "counted": "the signer's timeline, from keeping it",
+      "in": [
+        "admission.md",
+        "at-rest.md"
+      ]
+    },
+    {
+      "name": "welcome_redeposit",
+      "bounds": "a waiting welcome's deposit at a peer, made again",
+      "default": 172800,
+      "minimum": 172800,
+      "maximum": 172800,
+      "set_by": "protocol",
+      "counted": "the signer's timeline, from its last deposit at that peer",
+      "in": [
+        "admission.md",
+        "at-rest.md"
+      ]
+    },
+    {
       "name": "link_lifetime",
       "bounds": "an invite, ended by a revocation",
       "default": 604800,

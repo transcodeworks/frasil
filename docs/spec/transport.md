@@ -964,7 +964,12 @@ that connection instead, once the other's `Identify` has verified: a
 `MailboxPut` on the control stream, with kind 3 and that device's mailbox
 address. The receiver opens it as an item of its own mailbox and answers
 nothing. It drops a put of another kind or address, and one that does not
-open. So a welcome reaches a device that no peer serves.
+open. So a welcome reaches a device that no peer serves: a grant of its
+person, or of the device itself as a member of another space the two share
+([admission.md](admission.md), "A member of another space"). A device
+takes a welcome put only from the welcome's approver, and keeps the welcomes
+it means to hand over at rest, as [admission.md](admission.md)'s "Welcomes"
+says, which also says when one ends.
 
 A device mailbox also carries [admission.md](admission.md)'s welcomes and
 Joins. Welcomes, Joins and device-mailbox items share one wrap layout and

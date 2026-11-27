@@ -73,6 +73,9 @@
 //! to many spaces with `Device::admit_spaces_via_peer`; the recipient uses
 //! `Device::receive_spaces_via_peer`. Each space has its own authority check
 //! and progress report, and failed delivery can be retried after reconnecting.
+//! `Space::admit_member` admits a direct device member of another space this
+//! device holds, with no code and no peer: the welcome goes over the member
+//! connection the two devices hold for that space.
 //!
 //! # What a device does by itself
 //!
@@ -293,6 +296,7 @@ pub mod index;
 mod intake;
 #[cfg(feature = "ext-invite-links")]
 mod invite_links;
+mod known_members;
 #[cfg(test)]
 mod later_version_tests;
 mod links;
@@ -342,6 +346,8 @@ mod tasks;
 #[cfg(feature = "adapter-loro")]
 pub(crate) mod text;
 mod top_ups;
+#[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
+mod welcomes;
 mod writer;
 
 pub mod advanced;

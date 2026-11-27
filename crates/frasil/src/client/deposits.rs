@@ -123,23 +123,80 @@ impl Device {
         item: Vec<u8>,
         keep_at_rest: bool,
     ) -> Delivery {
-        let engine = self.engine();
-        let (first, id) = match (engine.reading().await, engine.platform().nonce::<16>()) {
-            (Ok(first), Ok(id)) => (first, id),
-            (Err(error), _) | (_, Err(error)) => return Delivery::Delayed(error.to_string()),
-        };
-        let record = DepositRecord {
-            peer: url.trim_end_matches('/').to_owned(),
-            address,
-            item,
-            first,
-            attempts: 0,
-            next: first.timeline,
-            token: None,
+        let (id, record) = match self.new_deposit(url, address, item).await {
+            Ok(new) => new,
+            Err(error) => return Delivery::Delayed(error.to_string()),
         };
         if let Err(error) = self.keep_deposit(&id, &record, keep_at_rest).await {
             return Delivery::Delayed(error.to_string());
         }
+        self.first_attempt(id, record, keep_at_rest).await
+    }
+
+    /// Deposits a waiting welcome in its recipient's device mailbox at
+    /// `address` at the peer at `url`, as [`Device::deposit`] does, its
+    /// `deposit` record kept in one commit with the welcome's record that
+    /// names the peer (at-rest.md, "Tables", `welcome`), or both in memory
+    /// for a space kept in memory only. `None` when nothing was kept: the
+    /// welcome no longer waits, or the commit failed.
+    pub(crate) async fn deposit_welcome(
+        &self,
+        url: &str,
+        address: [u8; 32],
+        welcome: &crate::links::Waiting,
+    ) -> Option<Delivery> {
+        let (id, record) = self
+            .new_deposit(url, address, welcome.sealed.clone())
+            .await
+            .ok()?;
+        let put = (
+            Table::Deposit,
+            id.to_vec(),
+            TableValue::Deposit(record.clone()),
+        );
+        let at_rest = self
+            .engine()
+            .keep_welcome_deposit(welcome, url, put)
+            .await
+            .ok()??;
+        if !at_rest {
+            self.keep_deposit(&id, &record, false).await.ok()?;
+        }
+        Some(self.first_attempt(id, record, at_rest).await)
+    }
+
+    /// A new deposit of `item` at `address` at the peer at `url`, and the
+    /// ID its record is kept under.
+    async fn new_deposit(
+        &self,
+        url: &str,
+        address: [u8; 32],
+        item: Vec<u8>,
+    ) -> Result<([u8; 16], DepositRecord)> {
+        let engine = self.engine();
+        let first = engine.reading().await?;
+        let id = engine.platform().nonce::<16>()?;
+        Ok((
+            id,
+            DepositRecord {
+                peer: url.trim_end_matches('/').to_owned(),
+                address,
+                item,
+                first,
+                attempts: 0,
+                next: first.timeline,
+                token: None,
+            },
+        ))
+    }
+
+    /// The first attempt of a deposit just kept.
+    async fn first_attempt(
+        &self,
+        id: [u8; 16],
+        record: DepositRecord,
+        keep_at_rest: bool,
+    ) -> Delivery {
         if !self.claim_deposit(id) {
             return Delivery::Delayed("already being deposited".into());
         }
@@ -412,17 +469,49 @@ pub(crate) fn answer_of(answer: Result<std::result::Result<(), String>>) -> Answ
 }
 
 /// Attempts each kept deposit whose wait has passed: the device's upkeep
-/// runs it.
+/// runs it. A deposit of a waiting welcome whose space's roster no longer
+/// reaches its recipient is dropped instead, with the welcome
+/// (admission.md, 3.10 Welcomes, "A welcome that waits").
 pub(super) async fn retry(device: &Device) {
     let Ok(now) = device.engine().reading().await else {
         return;
     };
     for (id, record, at_rest) in device.kept_deposits().await {
-        if record.next > now.timeline || !device.claim_deposit(id) {
+        if record.next > now.timeline {
+            continue;
+        }
+        let welcome = device
+            .engine()
+            .links()
+            .carried(&record.address, &record.item, |recipient| {
+                frasil_transport::mailbox::address(
+                    frasil_transport::mailbox::Kind::Device,
+                    &recipient.0,
+                )
+            });
+        if let Some(welcome) = welcome
+            && !super::person_grants::welcome_reaches(device, &welcome).await
+        {
+            continue;
+        }
+        if !device.claim_deposit(id) {
             continue;
         }
         let _ = device.attempt_deposit(id, record, at_rest).await;
         device.release_deposit(id);
+    }
+}
+
+impl Device {
+    /// Forgets the kept deposits of `item` at `address` that no attempt
+    /// holds now.
+    pub(super) async fn forget_deposits_of(&self, address: &[u8; 32], item: &[u8]) {
+        for (id, record, _) in self.kept_deposits().await {
+            if record.address == *address && record.item == item && self.claim_deposit(id) {
+                self.forget_deposit(&id).await;
+                self.release_deposit(id);
+            }
+        }
     }
 }
 

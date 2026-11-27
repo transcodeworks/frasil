@@ -17,40 +17,134 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 /// Deposits each waiting welcome in its recipient's device mailbox at
-/// every peer this device is connected to that does not hold it yet, once
-/// the event it names is no longer waiting for a peer's acknowledgement,
-/// so that the recipient finds the event there (admission.md, 3.10
-/// Welcomes).
+/// every peer this device is connected to where it is due, once the event
+/// it names is no longer waiting for a peer's acknowledgement, so that the
+/// recipient finds the event there (admission.md, 3.10 Welcomes, "A
+/// welcome that waits"). A welcome is due at a peer it was never deposited
+/// at, and again `welcome_redeposit` after its latest deposit there, since
+/// a peer keeps an item for a while only. The peer and the `T` of the
+/// deposit are named in the welcome's record in the commit that keeps the
+/// deposit, so a restart does not deposit it there again sooner. A peer
+/// that refused the deposit for good is not named, and is due again
+/// after `welcome_redeposit` or a restart. While a deposit of the welcome
+/// at the peer waits to go again, no other is made there. A welcome kept
+/// `welcome_retention` ago, or of a space whose roster no longer reaches
+/// its recipient, waits no longer, and goes nowhere.
 pub(super) async fn deposit_welcomes(device: &Device) {
     let engine = device.engine();
+    engine.expire_welcomes().await;
+    let now = engine.welcome_time().await;
+    let mut kept = None;
     for peer in device.peers() {
         if !peer.status().connected {
             continue;
         }
         let url = peer.url().to_owned();
-        let waiting = engine.links().to_deposit(&url);
+        // A `deposit` record names its peer by an origin of 1 to 512
+        // bytes, so a deposit at a peer with a longer one is never kept.
+        if !(1..=frasil_store::tables::MAX_PEER_URL).contains(&crate::links::origin(&url).len()) {
+            continue;
+        }
+        let waiting = engine.links().to_deposit(&url, now);
         for welcome in waiting {
+            if !welcome_reaches(device, &welcome).await {
+                continue;
+            }
             if engine.outbox(&welcome.space).await.contains(&welcome.event) {
+                continue;
+            }
+            let address = address(Kind::Device, &welcome.recipient.0);
+            let kept = match &mut kept {
+                Some(kept) => kept,
+                None => kept.insert(device.kept_deposits().await),
+            };
+            if kept.iter().any(|(_, record, _)| {
+                record.peer == crate::links::origin(&url)
+                    && record.address == address
+                    && record.item == welcome.sealed
+            }) {
                 continue;
             }
             // Once taken, the deposit is the device's to deliver: it keeps
             // it, and deposits it again until the peer accepts it.
-            let _ = device
-                .deposit(
-                    &url,
-                    address(Kind::Device, &welcome.recipient.0),
-                    welcome.sealed.clone(),
-                    true,
-                )
-                .await;
-            engine
-                .links()
-                .deposited(&welcome.recipient, &welcome.space, &url);
+            let Some(delivery) = device.deposit_welcome(&url, address, &welcome).await else {
+                continue;
+            };
+            if let super::deposits::Delivery::Refused(_) = delivery {
+                engine.welcome_deposit_refused(&welcome, &url).await;
+            }
+            device
+                .inner
+                .welcome_deposits
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
 
+/// Whether the space's roster, in this device's view, still reaches the
+/// recipient of a waiting welcome. When it does not, the welcome waits no
+/// longer, and the deposits of it the device keeps go (admission.md, 3.10
+/// Welcomes, "A welcome that waits").
+pub(super) async fn welcome_reaches(device: &Device, welcome: &crate::links::Waiting) -> bool {
+    let engine = device.engine();
+    let reaches = engine
+        .read(&welcome.space, |replica| {
+            replica.level_of(&welcome.recipient).is_some()
+        })
+        .await
+        .unwrap_or(false);
+    if !reaches {
+        engine.end_welcome(welcome.recipient, welcome.space).await;
+        device
+            .forget_deposits_of(
+                &address(Kind::Device, &welcome.recipient.0),
+                &welcome.sealed,
+            )
+            .await;
+    }
+    reaches
+}
+
 impl Device {
+    /// The welcomes this device keeps waiting, oldest first: each one's
+    /// recipient, space and the peers, by origin, that hold it. For tests
+    /// (admission.md, 3.10 Welcomes, "A welcome that waits").
+    #[doc(hidden)]
+    pub fn waiting_welcomes(&self) -> Vec<(super::MemberId, SpaceId, Vec<String>)> {
+        self.engine()
+            .links()
+            .waiting_welcomes()
+            .into_iter()
+            .map(|welcome| {
+                (
+                    super::MemberId::device(welcome.recipient),
+                    SpaceId::of(welcome.space),
+                    welcome
+                        .deposited
+                        .into_iter()
+                        .map(|(peer, _)| peer)
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// How many welcomes this device has deposited at peers since it
+    /// opened. For tests.
+    #[doc(hidden)]
+    pub fn welcome_deposits(&self) -> u64 {
+        self.inner
+            .welcome_deposits
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Runs what the device's upkeep runs for the welcomes it keeps waiting
+    /// at once: their deposits at each connected peer. For tests.
+    #[doc(hidden)]
+    pub async fn welcome_upkeep(&self) {
+        deposit_welcomes(self).await;
+    }
+
     /// Refreshes the space credentials without replaying the device mailbox.
     async fn reconnect_for_welcome(&self, url: &str) -> Result<()> {
         let spaces = self.engine().presentable_spaces().await;
@@ -130,15 +224,23 @@ impl Device {
         let sealed = welcome
             .seal_with(&keys, &*engine.platform().draw::<64>()?)
             .map_err(Error::class)?;
-        // The existing welcome outbox waits for the snapshot unit, which
-        // is acknowledged only after the peer has its objects.
-        engine.links().wait(crate::links::Waiting {
-            recipient: keys.device_id(),
-            space,
-            event: published,
-            sealed,
-            deposited: Vec::new(),
-        });
+        // The welcome waits for the snapshot unit, which is acknowledged
+        // only after the peer has its objects.
+        let since = engine.welcome_time().await;
+        engine
+            .keep_welcomes(
+                space,
+                vec![crate::links::Waiting {
+                    recipient: keys.device_id(),
+                    space,
+                    event: published,
+                    sealed,
+                    since,
+                    deposited: Vec::new(),
+                    refused: Vec::new(),
+                }],
+            )
+            .await?;
         self.present(space);
         engine
             .lock()
@@ -356,4 +458,82 @@ async fn check_welcome(device: &Device, welcome: &Welcome) -> Result<()> {
             Ok(())
         })
         .await?
+}
+
+#[cfg(all(test, feature = "iroh"))]
+mod tests {
+    //! A welcome's deposit kept to go again, once the roster no longer
+    //! reaches its recipient (admission.md, 3.10 Welcomes, "A welcome that
+    //! waits").
+
+    use crate::platform::{Clock, ManualClock};
+    use crate::{Device, Level, Options, Storage};
+    use frasil_space::{HistoryMode, MemberRef, Via};
+    use frasil_transport::mailbox::{Kind, address};
+    use std::sync::Arc;
+
+    /// A deposit of a waiting welcome that no peer has taken yet goes no
+    /// further once the space's roster no longer reaches the recipient:
+    /// the next attempt drops it, and the welcome with it.
+    #[tokio::test]
+    async fn a_kept_deposit_of_a_welcome_goes_no_further_once_the_roster_drops_its_recipient() {
+        let clock = Arc::new(ManualClock::new(1_000, Some(1_800_000_000)));
+        let granter = Device::open_with(
+            Storage::Memory,
+            &[1; 32],
+            Options::new()
+                .loopback()
+                .never_restored()
+                .clock(clock.clone() as Arc<dyn Clock>),
+        )
+        .await
+        .unwrap();
+        let member = Device::open_with(Storage::Memory, &[2; 32], Options::new().loopback())
+            .await
+            .unwrap();
+        let engine = granter.engine();
+        let id = member.engine().device_id();
+        let known = engine.create_space().await.unwrap();
+        engine
+            .grant_device(
+                known,
+                member.engine().public_keys().clone(),
+                Level::Write,
+                HistoryMode::WithHistory,
+                Via::Code,
+            )
+            .await
+            .unwrap();
+        let space = engine.create_space().await.unwrap();
+        engine
+            .admit_member(space, known, id, Level::Write, None)
+            .await
+            .unwrap();
+        let welcome = engine.links().waiting(&id, &space).unwrap();
+
+        // No peer answers there: the deposit is kept to go again.
+        let delivery = granter
+            .deposit(
+                "http://127.0.0.1:9",
+                address(Kind::Device, &id.0),
+                welcome.sealed.clone(),
+                true,
+            )
+            .await;
+        assert!(
+            matches!(delivery, super::super::deposits::Delivery::Delayed(_)),
+            "{delivery:?}"
+        );
+        assert_eq!(granter.waiting_deposits().await, 1);
+
+        engine.remove(space, MemberRef::device(id)).await.unwrap();
+        clock.advance(super::super::deposits::retry_bound(1) + 1);
+        granter.deposit_upkeep().await;
+        assert_eq!(granter.waiting_deposits().await, 0);
+        assert!(engine.links().waiting(&id, &space).is_none());
+
+        for device in [granter, member] {
+            device.close().await.unwrap();
+        }
+    }
 }

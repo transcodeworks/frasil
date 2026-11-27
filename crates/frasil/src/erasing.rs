@@ -250,6 +250,9 @@ impl Engine {
             .await?;
         state.replicas.remove(space);
         state.outboxes.remove(space);
+        // Its waiting welcomes went with its log (at-rest.md, "Tables",
+        // `welcome`).
+        self.links().forget_welcomes(space);
         #[cfg(feature = "ephemeral")]
         if let Some(ephemeral) = state.ephemeral.as_mut() {
             ephemeral.forget_space(space);

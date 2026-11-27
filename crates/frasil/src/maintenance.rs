@@ -343,12 +343,15 @@ impl Engine {
                 // and the next maintenance tries again.
                 let (delivery, wraps) =
                     Box::pin(self.deliver_with(space, added.recipients)).await?;
-                Box::pin(self.publish_list(space, &added.person)).await?;
+                // The welcomes at rest before the list's copy: a crash
+                // between the delivery and them leaves the add unpublished,
+                // so the next maintenance delivers and welcomes again.
                 #[cfg(any(feature = "server", feature = "iroh", feature = "server-socket"))]
                 Box::pin(self.welcome_person(space, added.person, added.level, delivery, &wraps))
                     .await?;
                 #[cfg(not(any(feature = "server", feature = "iroh", feature = "server-socket")))]
                 let _ = (wraps, added.level);
+                Box::pin(self.publish_list(space, &added.person)).await?;
                 delivered = Some(delivery);
             }
             return Ok(Maintained {

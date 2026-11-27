@@ -44,7 +44,7 @@ rests on. It is shown and never checked.
 | `code` | a compared admission code (section 3.2), or a setup code (section 3.8) | the approver |
 | `link` | an invite link ([ext-invite-links.md](ext-invite-links.md)) | the invite key, in its successor |
 | `lookup` | an account's answer, with no code (section 3.9) | an administering device |
-| `none` | no admission step: a founder, an administrator's own new device, an access request answered from a roster both read (section 3.14) | an administering device |
+| `none` | no admission step: a founder, an administrator's own new device, an access request answered from a roster both read (section 3.14), a direct device member of another space (section 3.16) | an administering device |
 
 A client offers a person "with history", and a guest and a device member
 "from now on", and lets the administrator change it. An admission from now
@@ -683,10 +683,97 @@ wrap with the welcome's key names, derives the read credential, fetches the
 log, finds the event, and checks that it holds exactly this wrap. A welcome
 handed over a member connection by its approver is fetched from there: the
 newcomer attaches the space on that connection with the state the wrap
-holds. Nothing in a welcome is trusted: the event and the roster decide.
+holds. A device takes a welcome over a member connection only from the
+welcome's approver, so the device that signed the admission, or a later
+delivery, is the one that hands it over; no other member carries it.
+Nothing in a welcome is trusted: the event and the roster decide.
 An application MAY also carry a welcome by a route of its own, such as a
 message to its person; the welcome's checks are the same however it
 arrives.
+
+**A welcome that waits.** The signer keeps each welcome it means to hand
+over a member connection or deposit at a peer in a list of **waiting
+welcomes**, at rest in its own store, as a `welcome` record in the space's
+log ([at-rest.md](at-rest.md), "Tables"). An entry holds the newcomer's
+device ID, the space, the event the welcome names, the sealed welcome, the
+`T` of the signer's timeline at which it kept the entry
+([overview.md](overview.md), "The local timeline"), and the peers the
+signer has deposited the welcome at, each with the `T` of its latest
+deposit there. The welcome is
+sealed to the newcomer's X-Wing key before it is kept, so the signer's
+store holds it only in the form a peer holds it: the signer cannot open it
+again, and nothing in it is readable without the newcomer's keys. A signer
+keeps the entry of a grant it signs in the same commit as the grant's
+event, and starts each run from the entries its store holds, so a waiting
+welcome survives a restart, and its hand-over and its deposits resume
+with no other trigger. In a space the signer keeps in memory only
+([at-rest.md](at-rest.md), "A memory-only log"), the entry and its
+deposits are kept in memory only, and a restart loses them. One of these
+ends an entry, and the signer then deletes its record:
+
+- a member connection admits the newcomer's attach of the space, whether
+  that attach is still live or has ended;
+- the space's roster, in the signer's current view, no longer reaches the
+  newcomer, as after its removal: the signer checks this before each
+  hand-over and each deposit, a further attempt of a deposit it keeps to
+  go again included, and then hands nothing over, deposits nothing, and
+  drops the deposits of that welcome it keeps;
+- the signer keeps at most 256 waiting welcomes, and a newer one passes
+  the oldest, first by the `T` at which each was kept;
+- `welcome_retention` ([overview.md](overview.md), "Every timer") has
+  passed on the signer's timeline since it kept the entry, the most a peer
+  keeps a mailbox item (`mailbox_retention`). A copy deposited late in that
+  time can stay in a peer's mailbox after the entry ends, until that
+  peer's retention for it passes; the newcomer's checks decide what it is
+  worth, as for any welcome.
+
+While it waits, the signer also deposits the welcome in the newcomer's
+device mailbox at each peer it is connected to, once that peer holds the
+event the welcome names, and records the peer and the `T` of the deposit
+in the entry, in the commit that keeps the deposit
+([transport.md](transport.md), "A sender keeps what was refused"). A peer
+keeps the item for a while only: `uncollected_retention`, 72 hours by
+default, while the newcomer has not collected its mailbox at that peer,
+and `mailbox_retention` once it has (transport.md, "Claimed device
+mailboxes"). So the signer deposits the welcome at a peer again once
+`welcome_redeposit` ([overview.md](overview.md), "Every timer") has
+passed since its latest deposit there, for as long as the entry lasts,
+and records the new `T`; while a deposit it keeps to go again at that
+peer still holds the same welcome, it waits for that one instead. The
+newcomer keeps one welcome per space, so a second copy is nothing new
+(transport.md, "A sender keeps what was refused"). A restart does not
+deposit at a recorded peer again before `welcome_redeposit` has passed. A
+record names at most 64 peers; the signer does not record a peer past
+them, nor one that refused the deposit for good (any reason but `busy` or
+`rate_limited`, such as `unsupported`). It deposits at such a peer again
+after `welcome_redeposit`, or when it next starts, whichever comes first.
+A peer whose origin is longer than 512 bytes, which a `deposit` record
+cannot name ([at-rest.md](at-rest.md), "Tables"), is deposited at never.
+
+This leaves gaps the signer cannot close: a peer whose operator keeps an
+item for less than `welcome_redeposit` (an `uncollected_retention` or a
+`mailbox_retention` under 48 hours) can drop the welcome before its next
+deposit; a mailbox at its bound of 64 items or 4 MiB (transport.md,
+"Mailboxes") evicts its oldest items, a welcome's copies among them, and
+each copy counts against that bound; and a peer the signer is not
+connected to receives nothing until the two are connected again.
+
+A space the signer forgets, or drops for its erasure, takes its waiting
+welcomes with its log ([at-rest.md](at-rest.md), "Forgetting a log, and
+re-keying").
+
+A welcome that no longer waits is not made again: no member signs another
+delivery to replace one. A newcomer whose welcome ended before it took the
+space up, past the bound or the age, or with the signer's store, is
+admitted again by an administrator, who removes it from the space and
+grants it once more.
+
+A device that forgets a space whose roster still grants it follows the
+space again from a welcome it receives later: one still waiting at the
+signer, which hands it over when the two next meet over a member
+connection, or one still in its device mailbox at a peer, which it collects
+again after a restart. Forgetting a space does not leave its roster; a
+removal does.
 
 A peer does not authenticate who deposits in a device mailbox, so a
 newcomer that collects a welcome there, with no exchange that named the
@@ -840,6 +927,57 @@ checks (section 3.10) are the same.
   over the member channel. A core implementation never puts key 13 in an
   offer, and a core joiner refuses an offer that carries it as `Malformed`.
 
+### 3.16 A member of another space
+
+An administrator of a space MAY grant a device that, in its current view,
+another space it holds (the **known space**) grants directly: by that
+device's ID, with the keys the known space's grant names, which the ID
+commits to ([roster.md](roster.md), "A device's keys"). No code is
+compared and no peer is needed. The grant is a device grant at `read` or
+`write`, or at `administer` at a rank at most the granter's own, with
+history, and `via` = `none`. Before it signs, the granter checks, in
+order, and refuses the grant when one fails; nothing is signed or sent for
+a refusal, which is the granter's own and has no class on the wire:
+
+1. The granter administers the space.
+2. The known space reaches the granter. A device the known space no longer
+   reaches is no longer sent its changes, so its view of that roster is not
+   kept current.
+3. The known space's roster grants the device directly, not only through a
+   person.
+4. That grant carries no `session`: the device is not a guest there.
+5. The known space reaches the device, which has not forked there
+   ([roster.md](roster.md), "Grants of spaces and effective membership"): a
+   grant with no effect, such as one in a restricted space whose parent
+   does not reach the device, vouches for nothing.
+6. The space does not reach the device yet, directly, through a person or
+   through a space.
+7. A restricted space's parent reaches the device
+   ([ext-restricted-spaces.md](ext-restricted-spaces.md), "Membership of a
+   restricted space").
+
+Then roster.md's checks of the change apply as for any grant, the rank's
+among them. Replicas check none of the seven: the grant is an ordinary
+device grant, valid by roster.md's rules alone.
+
+The grant commits at once, offline, and the granter reports it once it
+commits, whatever becomes of its welcome. The welcome is sealed to the
+device's X-Wing key, which every device grant carries
+([roster.md](roster.md), "A device's keys"), and waits at the signer, kept
+at rest in the grant's own commit, as section 3.10 says: a member
+connection with the device hands it over, and the signer deposits it in
+the device's mailbox at the peers it is connected to, as for a person's
+grant, before and after a restart. Over a member connection, the device takes it only
+from the signer: the two devices meet on a connection formed for any
+space they share, such as the known space, and the granted device follows
+the space and attaches it there.
+
+What the grant proves is only that some administrator of the known space
+granted that device ID there; the welcome opens for that device alone. It
+proves nothing about the device's person, and the known space's later
+changes do not reach the new grant: a removal from the known space leaves
+the device in this one until an administrator removes it here.
+
 ## 4. Security considerations
 
 - **One guess.** Towards the approver, the relay's last choice is the
@@ -884,6 +1022,12 @@ checks (section 3.10) are the same.
   A person's new device still signs its possession proof, which binds its
   keys to the person and to the approver as adder; a device ID binds
   neither ([identity.md](identity.md), "The possession statement").
+- **A member of another space** (section 3.16) is admitted on the trust
+  of the known space's roster alone: any administrator of the known space
+  could have put the device ID there. A granter that admits a known
+  space's members to its own space gives that space's administrators the
+  power to choose whom it admits, and a removal there does not reach the
+  grant here.
 - **Forks a newcomer cannot see.** A newcomer judges a granted space's
   roster from its space events alone. If an author of that space forked
   only in units the newcomer never receives, the newcomer does not void
