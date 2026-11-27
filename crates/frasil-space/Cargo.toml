@@ -30,13 +30,13 @@ ext-recovery-agent = ["frasil-identity/ext-recovery-agent"]
 ext-guests = []
 
 [dependencies]
-frasil-base = { path = "../frasil-base", version = "0.1.0" }
-frasil-crypto = { path = "../frasil-crypto", version = "0.1.0" }
-frasil-events = { path = "../frasil-events", version = "0.1.0" }
-frasil-identity = { path = "../frasil-identity", version = "0.1.0" }
-frasil-keys = { path = "../frasil-keys", version = "0.1.0" }
-frasil-peers = { path = "../frasil-peers", version = "0.1.0" }
-frasil-resolve = { path = "../frasil-resolve", version = "0.1.0" }
+frasil-base = { path = "../frasil-base", version = "0.1.1" }
+frasil-crypto = { path = "../frasil-crypto", version = "0.1.1" }
+frasil-events = { path = "../frasil-events", version = "0.1.1" }
+frasil-identity = { path = "../frasil-identity", version = "0.1.1" }
+frasil-keys = { path = "../frasil-keys", version = "0.1.1" }
+frasil-peers = { path = "../frasil-peers", version = "0.1.1" }
+frasil-resolve = { path = "../frasil-resolve", version = "0.1.1" }
 zeroize.workspace = true
 
 [dev-dependencies]
