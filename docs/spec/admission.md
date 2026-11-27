@@ -695,11 +695,15 @@ arrives.
 over a member connection or deposit at a peer in a list of **waiting
 welcomes**, at rest in its own store, as a `welcome` record in the space's
 log ([at-rest.md](at-rest.md), "Tables"). An entry holds the newcomer's
-device ID, the space, the event the welcome names, the sealed welcome, the
-`T` of the signer's timeline at which it kept the entry
+device ID, the space, the **event the entry waits on**, the sealed welcome,
+the `T` of the signer's timeline at which it kept the entry
 ([overview.md](overview.md), "The local timeline"), and the peers the
 signer has deposited the welcome at, each with the `T` of its latest
-deposit there and the number of deposits it has made there. The welcome is
+deposit there and the number of deposits it has made there. The event the
+entry waits on is the event the welcome names, or, for a welcome that
+answers a welcome request (section 3.14), the `frasil:body-keys` unit that
+publishes its snapshot (section 3.11), which the signer writes after that
+event, so that a deposit waits for the snapshot as well. The welcome is
 sealed to the newcomer's X-Wing key before it is kept, so the signer's
 store holds it only in the form a peer holds it: the signer cannot open it
 again, and nothing in it is readable without the newcomer's keys. A signer
@@ -715,9 +719,10 @@ ends an entry, and the signer then deletes its record:
   that attach is still live or has ended;
 - the space's log, in the signer's own view, holds an event the
   newcomer's device signed, accepted in full ([events.md](events.md),
-  "Accepted in full, and what is cited"), that has the event the welcome
-  names in its past: the newcomer holds that event and the wrap in it,
-  so it needs the welcome no longer. An event the device signed before the
+  "Accepted in full, and what is cited"), that has the event the entry
+  waits on in its past: the newcomer holds that event, and with it the
+  event the welcome names and the wrap in it, so it needs the welcome no
+  longer. An event the device signed before the
   grant, or concurrently with it, does not have the grant in its past and
   ends nothing, so the welcome of a grant to a device the space already
   reached under another grant or level waits on. The signer checks this
@@ -729,8 +734,13 @@ ends an entry, and the signer then deletes its record:
   member connection, which takes no room in a mailbox and whose attach
   ends the entry. Since each event of a device's chain names the one
   before it as `prev` ([events.md](events.md), "Chains and evidence of a
-  fork"), the signer MAY look only at the latest event of the newcomer's
-  chain in its view, and only when that event changes;
+  fork"), the signer MAY look at one event of the newcomer's chain only:
+  the newest event accepted in full that `prev` leads to, in at most 64
+  steps, from the chain's latest event in its view, the one with the
+  greatest `seq`. It MAY then judge that event once, and again only once
+  it changes, or, in a log that holds a stub or a witness
+  ([units.md](units.md), "Partial replicas"), where a walk of an event's
+  past stops at what the log does not hold, once that log changes;
 - the space's roster, in the signer's current view, no longer reaches the
   newcomer, as after its removal: the signer checks this before each
   hand-over and each deposit, a further attempt of a deposit it keeps to
@@ -747,7 +757,7 @@ ends an entry, and the signer then deletes its record:
 
 While it waits, the signer also deposits the welcome in the newcomer's
 device mailbox at each peer it is connected to, once that peer holds the
-event the welcome names, and records the peer and the `T` of the deposit
+event the entry waits on, and records the peer and the `T` of the deposit
 in the entry, in the commit that keeps the deposit
 ([transport.md](transport.md), "A sender keeps what was refused"). A peer
 keeps the item for a while only: `uncollected_retention`, 72 hours by
@@ -790,7 +800,12 @@ again. And a newcomer that collects the welcome from a peer and then
 signs no event in the space, as a device that only reads may never do,
 gives the signer no sign that it holds the space: for it, only the count
 of four bounds the copies at each peer, and the entry lasts until
-`welcome_retention` or the bound passes it.
+`welcome_retention` or the bound passes it. A signer that looks at one
+event of the newcomer's chain only, as it MAY, misses in the same way an
+event that `prev` does not lead to from the chain's latest: one on another
+branch of a chain that forked, one of a chain the device started again
+below its latest `seq`, and one more than 64 steps behind events of the
+chain the signer has not accepted in full.
 
 A space the signer forgets, or drops for its erasure, takes its waiting
 welcomes with its log ([at-rest.md](at-rest.md), "Forgetting a log, and

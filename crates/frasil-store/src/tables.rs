@@ -1122,7 +1122,9 @@ pub enum Retention {
 /// waits").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WelcomeRecord {
-    /// Key 1: the event the welcome names.
+    /// Key 1: the event the entry waits on: the event the welcome names,
+    /// or the unit that publishes the snapshot of a welcome that answers a
+    /// welcome request.
     pub event: [u8; 32],
     /// Key 2: the welcome, sealed to the newcomer's X-Wing key, 1 to
     /// 262,144 bytes.

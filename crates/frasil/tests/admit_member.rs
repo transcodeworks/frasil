@@ -868,11 +868,15 @@ async fn an_event_the_newcomer_signs_after_the_grant_ends_its_welcome() {
         1,
         "an event without the grant in its past ends nothing"
     );
+    granter.welcome_upkeep().await;
+    assert_eq!(granter.waiting_welcomes().len(), 1, "nor at a second look");
     granter.close().await.unwrap();
     drop((space, known, granter));
     let granter = stored(&dir, 61).await;
     granter.welcome_upkeep().await;
     assert_eq!(granter.waiting_welcomes().len(), 1, "nor after a restart");
+    granter.welcome_upkeep().await;
+    assert_eq!(granter.waiting_welcomes().len(), 1);
 
     // Once the device holds the grant and writes, its event has the grant
     // in its past: the welcome ends, at rest too.

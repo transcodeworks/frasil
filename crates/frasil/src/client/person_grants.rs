@@ -28,21 +28,17 @@ use std::time::Duration;
 /// keeps the deposit, so a restart neither deposits it there again sooner
 /// nor counts again; a deposit the peer refused for good counts too.
 /// While a deposit of the welcome at the peer waits to go again, no other
-/// is made there. A welcome kept `welcome_retention` ago, of a space whose
-/// roster no longer reaches its recipient, or whose recipient signed an
-/// event in the space after the event it names, waits no longer, and goes
-/// nowhere.
+/// is made there. A welcome is deposited at a peer only while it is due
+/// there at the `T` this pass read before the kept deposits, so that of
+/// passes that run at once, only one deposits it. A welcome kept
+/// `welcome_retention` ago, of a space whose roster no longer reaches its
+/// recipient, or whose recipient signed an event in the space after the
+/// event it names, waits no longer, and goes nowhere, with the deposits of
+/// it the device keeps.
 pub(super) async fn deposit_welcomes(device: &Device) {
     let engine = device.engine();
     engine.expire_welcomes().await;
-    for welcome in engine.end_acted_welcomes().await {
-        device
-            .forget_deposits_of(
-                &address(Kind::Device, &welcome.recipient.0),
-                &welcome.sealed,
-            )
-            .await;
-    }
+    device.forget_unkept_of(&engine.end_acted_welcomes().await);
     let now = engine.welcome_time().await;
     let mut kept = None;
     let mut outboxes: BTreeMap<EventId, Vec<EventId>> = BTreeMap::new();
@@ -94,7 +90,7 @@ pub(super) async fn deposit_welcomes(device: &Device) {
             // Once taken, the deposit is the device's to deliver: it keeps
             // it, and deposits it again until the peer accepts it.
             if device
-                .deposit_welcome(&url, address, &welcome)
+                .deposit_welcome(&url, address, &welcome, now)
                 .await
                 .is_none()
             {
@@ -108,32 +104,23 @@ pub(super) async fn deposit_welcomes(device: &Device) {
     }
 }
 
-/// Whether a waiting welcome still waits: the space's roster, in this
-/// device's view, still reaches its recipient, and the recipient has
-/// signed no event in the space after the event the welcome names. When
-/// it does not wait, it ends, and the deposits of it the device keeps go
-/// (admission.md, 3.10 Welcomes, "A welcome that waits").
+/// Whether a waiting welcome still waits: it is among the waiting
+/// welcomes, the space's roster, in this device's view, still reaches its
+/// recipient, and the recipient has signed no event in the space after
+/// the event the entry waits on. When it does not wait, it ends, and the
+/// deposits of it the device keeps go, those at rest in the commit that
+/// deletes its record (admission.md, 3.10 Welcomes, "A welcome that
+/// waits").
 pub(super) async fn welcome_waits(device: &Device, welcome: &crate::links::Waiting) -> bool {
-    let engine = device.engine();
-    let reaches = engine
-        .read(&welcome.space, |replica| {
-            replica.level_of(&welcome.recipient).is_some()
-        })
-        .await
-        .unwrap_or(false);
-    if !reaches {
-        engine.end_welcome(welcome.recipient, welcome.space).await;
+    match device.engine().check_waiting(welcome).await {
+        crate::welcomes::Check::Waits => true,
+        crate::welcomes::Check::Ended(ended) => {
+            if let Some(ended) = ended {
+                device.forget_unkept_of(std::slice::from_ref(&*ended));
+            }
+            false
+        }
     }
-    let waits = reaches && !engine.welcome_acted(welcome).await;
-    if !waits {
-        device
-            .forget_deposits_of(
-                &address(Kind::Device, &welcome.recipient.0),
-                &welcome.sealed,
-            )
-            .await;
-    }
-    waits
 }
 
 impl Device {
@@ -566,5 +553,263 @@ mod tests {
         for device in [granter, member] {
             device.close().await.unwrap();
         }
+    }
+
+    /// `granter` grants `member` directly in a new space, then admits it to
+    /// another by that one: the other space, with the welcome waiting.
+    async fn admitted(granter: &Device, member: &Device) -> frasil_events::EventId {
+        let engine = granter.engine();
+        let id = member.engine().device_id();
+        let known = engine.create_space().await.unwrap();
+        engine
+            .grant_device(
+                known,
+                member.engine().public_keys().clone(),
+                Level::Write,
+                HistoryMode::WithHistory,
+                Via::Code,
+            )
+            .await
+            .unwrap();
+        let space = engine.create_space().await.unwrap();
+        engine
+            .admit_member(space, known, id, Level::Write, None)
+            .await
+            .unwrap();
+        assert!(engine.links().waiting(&id, &space).is_some());
+        space
+    }
+
+    /// Carries `space`'s events from `from` to `to`, by hand.
+    async fn carry(from: &Device, to: &Device, space: frasil_events::EventId) {
+        to.engine().follow(space).await;
+        to.engine()
+            .ingest(space, from.engine().events(&space).await)
+            .await
+            .unwrap();
+    }
+
+    /// A note `device` writes in `space`.
+    async fn note(device: &Device, space: frasil_events::EventId, text: &str) {
+        let held = device.space(crate::SpaceId::of(space)).await.unwrap();
+        let note = held.create_document().unwrap();
+        note.edit(|doc| doc.get_text("body").insert(0, text))
+            .await
+            .unwrap();
+    }
+
+    /// A look at the recipient of the welcome for `id` in `space` with
+    /// `walks` walks of the log left: what it found, and the walks left.
+    async fn look(
+        engine: &crate::device::Engine,
+        id: frasil_crypto::device::DeviceId,
+        space: frasil_events::EventId,
+        mut walks: usize,
+    ) -> (Option<bool>, usize) {
+        let state = engine.lock().await;
+        let mut links = engine.links();
+        let welcome = links.waiting(&id, &space).unwrap();
+        let waiting = links.same_mut(&welcome).unwrap();
+        let replica = state.replicas.get(&space).unwrap();
+        (crate::welcomes::look(replica, waiting, &mut walks), walks)
+    }
+
+    /// A look that found the newcomer had not acted is remembered: a second
+    /// look at the same event walks the log no more, and a newer event the
+    /// newcomer signs is walked again, and ends the welcome once it has the
+    /// grant in its past (admission.md, 3.10 Welcomes, "A welcome that
+    /// waits").
+    #[tokio::test]
+    async fn a_look_walks_the_log_again_only_for_a_newer_event() {
+        let options = || Options::new().loopback().never_restored();
+        let granter = Device::open_with(Storage::Memory, &[7; 32], options())
+            .await
+            .unwrap();
+        let member = Device::open_with(Storage::Memory, &[8; 32], options())
+            .await
+            .unwrap();
+        let (engine, id) = (granter.engine(), member.engine().device_id());
+        let known = engine.create_space().await.unwrap();
+        let space = engine.create_space().await.unwrap();
+        for held in [known, space] {
+            engine
+                .grant_device(
+                    held,
+                    member.engine().public_keys().clone(),
+                    Level::Write,
+                    HistoryMode::WithHistory,
+                    Via::Code,
+                )
+                .await
+                .unwrap();
+        }
+        // A writer under an earlier grant, which a removal ends, writes
+        // before the new grant and concurrently with it.
+        carry(&granter, &member, space).await;
+        note(&member, space, "before").await;
+        carry(&member, &granter, space).await;
+        engine.remove(space, MemberRef::device(id)).await.unwrap();
+        engine
+            .admit_member(space, known, id, Level::Write, None)
+            .await
+            .unwrap();
+        note(&member, space, "concurrently").await;
+        carry(&member, &granter, space).await;
+
+        assert_eq!(look(engine, id, space, 1).await, (Some(false), 0));
+        assert_eq!(
+            look(engine, id, space, 0).await,
+            (Some(false), 0),
+            "the same event, judged without a walk"
+        );
+        carry(&granter, &member, space).await;
+        note(&member, space, "after").await;
+        carry(&member, &granter, space).await;
+        assert_eq!(
+            look(engine, id, space, 0).await,
+            (None, 0),
+            "a newer event needs a walk"
+        );
+        assert_eq!(look(engine, id, space, 1).await, (Some(true), 0));
+
+        for device in [granter, member] {
+            device.close().await.unwrap();
+        }
+    }
+
+    /// The newcomer's latest event in the space that the granter has not
+    /// accepted in full does not hide an earlier one it signed after the
+    /// grant: the look steps back along its chain by `prev` to the newest
+    /// event accepted in full, which has the grant in its past, and the
+    /// welcome ends (admission.md, 3.10 Welcomes, "A welcome that waits").
+    #[tokio::test]
+    async fn an_unaccepted_latest_event_does_not_hide_an_earlier_one_after_the_grant() {
+        let options = || Options::new().loopback().never_restored();
+        let granter = Device::open_with(Storage::Memory, &[3; 32], options())
+            .await
+            .unwrap();
+        let member = Device::open_with(Storage::Memory, &[4; 32], options())
+            .await
+            .unwrap();
+        let space = admitted(&granter, &member).await;
+        let (engine, id) = (granter.engine(), member.engine().device_id());
+        member.engine().follow(space).await;
+        member
+            .engine()
+            .ingest(space, engine.events(&space).await)
+            .await
+            .unwrap();
+        let held = member.space(crate::SpaceId::of(space)).await.unwrap();
+        for text in ["one", "two"] {
+            let note = held.create_document().unwrap();
+            note.edit(|doc| doc.get_text("body").insert(0, text))
+                .await
+                .unwrap();
+        }
+        engine
+            .ingest(space, member.engine().events(&space).await)
+            .await
+            .unwrap();
+        {
+            let mut state = engine.lock().await;
+            let replica = state.replicas.get_mut(&space).unwrap();
+            let latest = replica.log().unwrap().latest(&id).unwrap();
+            replica.hold_status(&latest);
+            assert!(!replica.accepted(&latest));
+        }
+        granter.welcome_upkeep().await;
+        assert!(engine.links().waiting(&id, &space).is_none());
+
+        drop(held);
+        for device in [granter, member] {
+            device.close().await.unwrap();
+        }
+    }
+
+    /// A deposit of a waiting welcome kept to go again is counted once in
+    /// the welcome's record, across a restart and a further attempt. Once
+    /// the roster no longer reaches the recipient it is dropped with the
+    /// welcome, even while an attempt of it is under way: that attempt,
+    /// unanswered, keeps it no more, and a restart brings it back nowhere.
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn a_kept_deposit_of_a_welcome_under_way_when_it_ends_goes_no_further() {
+        use super::super::deposits::{Delivery, retry_bound};
+        let dir = std::env::temp_dir().join(format!(
+            "frasil-welcome-deposit-under-way-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let clock = Arc::new(ManualClock::new(1_000, Some(1_800_000_000)));
+        let open = || async {
+            Device::open_with(
+                Storage::Directory(dir.clone()),
+                &[5; 32],
+                Options::new()
+                    .loopback()
+                    .never_restored()
+                    .clock(clock.clone() as Arc<dyn Clock>),
+            )
+            .await
+            .unwrap()
+        };
+        let granter = open().await;
+        let member = Device::open_with(Storage::Memory, &[6; 32], Options::new().loopback())
+            .await
+            .unwrap();
+        let space = admitted(&granter, &member).await;
+        let id = member.engine().device_id();
+        let welcome = granter.engine().links().waiting(&id, &space).unwrap();
+        let now = granter.engine().welcome_time().await;
+        let delivery = granter
+            .deposit_welcome(
+                "http://127.0.0.1:9",
+                address(Kind::Device, &id.0),
+                &welcome,
+                now,
+            )
+            .await;
+        assert!(
+            matches!(delivery, Some(Delivery::Delayed(_))),
+            "{delivery:?}"
+        );
+        assert_eq!(granter.waiting_deposits().await, 1);
+
+        granter.close().await.unwrap();
+        let granter = open().await;
+        clock.advance(retry_bound(1) + 1);
+        granter.deposit_upkeep().await;
+        assert_eq!(granter.waiting_deposits().await, 1, "kept to go again");
+        let waiting = granter.engine().links().waiting(&id, &space).unwrap();
+        assert_eq!(waiting.deposited.len(), 1);
+        assert_eq!(waiting.deposited[0].2, 1, "counted once");
+
+        // An attempt holds the deposit when the roster drops the recipient.
+        let (deposit, record, at_rest) = granter.kept_deposits().await.remove(0);
+        assert!(at_rest);
+        assert!(granter.claim_deposit(deposit));
+        granter
+            .engine()
+            .remove(space, MemberRef::device(id))
+            .await
+            .unwrap();
+        clock.advance(retry_bound(2) + 1);
+        granter.deposit_upkeep().await;
+        assert!(granter.engine().links().waiting(&id, &space).is_none());
+        assert_eq!(granter.waiting_deposits().await, 0, "dropped with it");
+        let delivery = granter.attempt_deposit(deposit, record, true).await;
+        granter.release_deposit(deposit);
+        assert!(matches!(delivery, Delivery::Delayed(_)), "{delivery:?}");
+        assert_eq!(granter.waiting_deposits().await, 0, "not kept again");
+
+        granter.close().await.unwrap();
+        let granter = open().await;
+        assert_eq!(granter.waiting_deposits().await, 0);
+        assert!(granter.engine().links().waiting(&id, &space).is_none());
+        for device in [granter, member] {
+            device.close().await.unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

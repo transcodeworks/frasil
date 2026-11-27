@@ -1201,10 +1201,16 @@ ends nothing, so a device that the space granted before under another
 grant, and that keeps writing from its old view, does not end the
 welcome of its new grant. The signal costs the signer nothing it does not
 already keep: a replica holds each author's chain by `seq`, and each
-event names the one before it, so the latest event of the newcomer's
-chain answers for all of them, and the walk back to the admitting event,
-bounded below by that event's height, runs only when that latest event
-changes. A peer could say more, that the newcomer collected its mailbox,
+event names the one before it, so the newest event of the newcomer's
+chain that the signer accepted in full answers for every event `prev`
+leads to from it, and the walk back to the admitting event runs only when
+that event changes. In a full replica that walk goes no lower than the
+admitting event's height, since nothing at or below it can have it in its
+past. In a partial replica a height is a lower bound, so the walk follows
+every event it holds back to stubs and witnesses, and a stub filled in or
+a witness added later can carry it further: the signer judges such a log
+again when it changes, and a round of looks at every waiting welcome
+bounds the walks it makes. A peer could say more, that the newcomer collected its mailbox,
 but it tells no depositor, and saying so would tell anyone who deposits
 when a device comes online. A device that only reads may sign nothing in
 the space; for it the count of four is the only bound on the copies at

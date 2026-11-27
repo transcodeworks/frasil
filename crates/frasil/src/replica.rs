@@ -6556,6 +6556,13 @@ impl Replica {
         accepts(&self.statuses, id)
     }
 
+    /// Holds an event's status back, as a replica that has not judged it
+    /// does, so that it is not accepted in full. For tests.
+    #[cfg(test)]
+    pub(crate) fn hold_status(&mut self, id: &EventId) {
+        self.statuses.remove(id);
+    }
+
     /// What a device cites as parents: the heads of the view of events
     /// accepted in full, every space event maximal among the space events
     /// of that view (units.md, "What a writer does", item 3), and `prev`.
