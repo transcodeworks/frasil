@@ -551,6 +551,11 @@ async fn welcomes_of_grants_made_at_once_are_deposited_once_each() {
             .iter()
             .all(|(_, _, peers)| *peers == [origin.as_str()])
     );
+    assert_eq!(
+        granter.welcome_deposit_counts(&origin),
+        vec![1; usize::from(DEVICES)],
+        "each counted once"
+    );
     for (identity, keys) in &newcomers {
         let items = within(mailbox_items(&peer, identity, keys)).await;
         assert_eq!(items.len(), 1, "one copy at the peer");

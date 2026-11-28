@@ -262,7 +262,11 @@ pub(super) async fn take(
             .commit_device(Vec::new(), vec![(Table::Token, item)])
             .await
             .ok()?;
-        let _ = device.keep_deposit(id, &paid, false).await;
+        // Dropped while the token left the store: the token goes back.
+        if let Ok(false) = device.keep_again(id, &paid, false).await {
+            give_back(device, &record.peer, token).await;
+            return None;
+        }
     }
     Some(token)
 }

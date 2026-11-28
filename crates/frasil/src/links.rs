@@ -64,10 +64,10 @@ pub(crate) struct Waiting {
 
 /// A look at a welcome's recipient that found it had not acted in the
 /// space (admission.md, 3.10 Welcomes, "A welcome that waits"): the event
-/// it judged, and, in a log that holds stubs or witnesses, where a walk of
-/// the past can stop short, how many events the log had placed and its
-/// revision then, so that a stub filled or a witness added is looked at
-/// again.
+/// it judged, and, in a log that holds stubs, witnesses or dropped events,
+/// where a walk of the past can stop short, how many events the log had
+/// placed and its revision then, so that a stub filled, a witness added or
+/// an event held again is looked at again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Looked {
     /// The newest event of the recipient's chain accepted in full, judged
@@ -196,6 +196,10 @@ pub(crate) struct Links {
     /// The welcome the last look for welcomes whose recipient acted
     /// stopped at: the next one starts after it.
     looked_up_to: Option<Key>,
+    /// Welcomes of spaces kept in memory only that a member connection
+    /// ended, oldest first, at most [`WAITING`]: the device drops the
+    /// deposits of them it keeps in memory.
+    ended_in_memory: Vec<Waiting>,
     /// For each space, the admitted attaches that serve it.
     attached: BTreeMap<EventId, usize>,
     /// For each space and member, the admitted attaches with that member.
@@ -414,6 +418,23 @@ impl Links {
         self.of_recipient(recipient).cloned().collect()
     }
 
+    /// Keeps a welcome of a space kept in memory only that ended outside
+    /// the device's own passes, for the device to drop the deposits of it
+    /// it keeps in memory, which no record holds. Past [`WAITING`], the
+    /// oldest goes.
+    pub(crate) fn ended_in_memory(&mut self, welcome: Waiting) {
+        if self.ended_in_memory.len() >= WAITING {
+            self.ended_in_memory.remove(0);
+        }
+        self.ended_in_memory.push(welcome);
+    }
+
+    /// The welcomes [`ended_in_memory`](Links::ended_in_memory) keeps,
+    /// taken out.
+    pub(crate) fn take_ended_in_memory(&mut self) -> Vec<Waiting> {
+        std::mem::take(&mut self.ended_in_memory)
+    }
+
     /// The recipient holds the space, or the space's roster no longer
     /// reaches it: its welcome no longer waits. The one that waited.
     pub(crate) fn delivered(&mut self, recipient: &DeviceId, space: &EventId) -> Option<Waiting> {
@@ -602,5 +623,134 @@ impl Links {
         let keep = Duration::from_secs(LEARNED_SECONDS);
         self.held
             .retain(|h| now.saturating_duration_since(h.at) < keep);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The waiting welcomes in memory (admission.md, 3.10 Welcomes, "A
+    //! welcome that waits"): by recipient and space, in order of age, and
+    //! a round of looks over them that resumes where the last one stopped.
+
+    use super::*;
+
+    /// A welcome for recipient `n` in one space, kept at `since`, its
+    /// sealed bytes `sealed`.
+    fn welcome(n: u16, since: u64, sealed: u8) -> Waiting {
+        let mut recipient = [0; 32];
+        recipient[..2].copy_from_slice(&n.to_be_bytes());
+        Waiting {
+            recipient: DeviceId(recipient),
+            space: EventId([1; 32]),
+            event: EventId([2; 32]),
+            sealed: vec![sealed],
+            since,
+            deposited: Vec::new(),
+            looked: None,
+        }
+    }
+
+    /// The recipient number of a welcome.
+    fn number(welcome: &Waiting) -> u16 {
+        u16::from_be_bytes([welcome.recipient.0[0], welcome.recipient.0[1]])
+    }
+
+    /// The recipients of the waiting welcomes, oldest first.
+    fn in_order(links: &Links) -> Vec<u16> {
+        links.waiting_welcomes().iter().map(number).collect()
+    }
+
+    /// A round with a budget of `walks` looks, each answering whether the
+    /// welcome ends by `ends`: the welcomes looked at, in order, and those
+    /// ended.
+    fn round(links: &mut Links, walks: usize, ends: impl Fn(u16) -> bool) -> (Vec<u16>, Vec<u16>) {
+        let mut left = walks;
+        let mut looked = Vec::new();
+        let ended = links.look_round(|welcome| {
+            left = left.checked_sub(1)?;
+            looked.push(number(welcome));
+            Some(ends(number(welcome)))
+        });
+        (looked, ended.iter().map(number).collect())
+    }
+
+    /// A round stops when its look answers `None`, at 64 walks in a
+    /// device's round, and the next starts after the last welcome looked
+    /// at and goes around to it; a round whose cursor's welcome has gone
+    /// meanwhile starts after where it stood.
+    #[test]
+    fn a_round_of_looks_resumes_where_the_last_stopped() {
+        let mut links = Links::default();
+        for n in 0..70 {
+            links.wait(welcome(n, 10, 0));
+        }
+        let (looked, ended) = round(&mut links, 64, |_| false);
+        assert_eq!(looked, (0..64).collect::<Vec<_>>());
+        assert!(ended.is_empty());
+
+        let (looked, _) = round(&mut links, 64, |_| false);
+        let around: Vec<u16> = (64..70).chain(0..58).collect();
+        assert_eq!(looked, around, "around past the last");
+
+        // The cursor stands at 57; its welcome goes.
+        assert!(
+            links
+                .delivered(&welcome(57, 0, 0).recipient, &EventId([1; 32]))
+                .is_some()
+        );
+        let (looked, ended) = round(&mut links, usize::MAX, |n| n == 60);
+        let all: Vec<u16> = (58..70).chain(0..57).collect();
+        assert_eq!(looked, all, "each once, from after the cursor");
+        assert_eq!(ended, [60]);
+        assert_eq!(links.waiting_welcomes().len(), 68);
+
+        let (looked, _) = round(&mut links, usize::MAX, |_| false);
+        assert_eq!(looked.first(), Some(&58), "after the last looked at");
+        assert_eq!(looked.len(), 68);
+    }
+
+    /// Welcomes stand in order of the `T` each was kept at, those kept at
+    /// the same `T` in the order taken; one that takes the place of
+    /// another for the same recipient and space stands after every other,
+    /// and the bound passes the oldest first.
+    #[test]
+    fn the_waiting_welcomes_stand_in_order_of_age() {
+        let mut links = Links::default();
+        assert!(links.wait(welcome(0, 10, 0)).is_empty());
+        assert!(links.wait(welcome(1, 10, 0)).is_empty());
+        assert!(links.wait(welcome(2, 5, 0)).is_empty());
+        assert_eq!(in_order(&links), [2, 0, 1], "ties in the order taken");
+
+        assert!(links.wait(welcome(0, 10, 1)).is_empty());
+        assert_eq!(
+            in_order(&links),
+            [2, 1, 0],
+            "a replaced one after every other"
+        );
+        let replaced = links
+            .waiting(&welcome(0, 0, 0).recipient, &EventId([1; 32]))
+            .unwrap();
+        assert_eq!(replaced.sealed, [1]);
+        assert_eq!(links.waiting_welcomes().len(), 3);
+
+        for n in 3..u16::try_from(WAITING).unwrap() {
+            assert!(links.wait(welcome(n, 20, 0)).is_empty());
+        }
+        let n = u16::try_from(WAITING).unwrap();
+        let passed: Vec<u16> = links.wait(welcome(n, 20, 0)).iter().map(number).collect();
+        assert_eq!(passed, [2]);
+        let passed: Vec<u16> = links
+            .wait(welcome(n + 1, 20, 0))
+            .iter()
+            .map(number)
+            .collect();
+        assert_eq!(passed, [1], "the one replaced after it stays");
+        let passed: Vec<u16> = links
+            .wait(welcome(n + 2, 20, 0))
+            .iter()
+            .map(number)
+            .collect();
+        assert_eq!(passed, [0]);
+        assert_eq!(links.waiting_welcomes().len(), WAITING);
     }
 }

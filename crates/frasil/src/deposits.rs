@@ -66,6 +66,29 @@ impl Engine {
         Ok(true)
     }
 
+    /// Deletes the `deposit` record `id`, only while it stands. Whether it
+    /// stood: false for one dropped meanwhile, as that of a welcome that
+    /// ended, or for one kept in memory.
+    ///
+    /// # Errors
+    ///
+    /// The store's.
+    pub(crate) async fn forget_deposit(&self, id: &[u8; 16]) -> Result<bool> {
+        let mut state = self.lock().await;
+        if state
+            .vault
+            .get_device_item(Table::Deposit, id)
+            .await?
+            .is_none()
+        {
+            return Ok(false);
+        }
+        let mut batch = Batch::default();
+        state.vault.delete_device(&mut batch, Table::Deposit, id);
+        state.vault.commit(batch).await?;
+        Ok(true)
+    }
+
     /// Deletes and puts device-wide records in one commit: its deletes
     /// first (at-rest.md, "Committing").
     pub(crate) async fn commit_device(

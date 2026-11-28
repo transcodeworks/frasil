@@ -203,9 +203,9 @@ aad       = "frasil/at-rest/record/v1" || u8(1) || address
   record when the welcome no longer waits, in the same commit as the
   `deposit` records of that welcome when it drops them. An attempt of a
   deposit that is under way when its record goes does not keep it again.
-  It deposits the welcome at no peer key 4 cannot name: none whose origin is longer than 512 bytes, none past the first 64,
-  and none whose count is 4 ([admission.md](admission.md), "A welcome that
-  waits").
+  It deposits the welcome at no peer key 4 cannot name: none whose
+  origin is longer than 512 bytes, none past the first 64, and none whose
+  count is 4 ([admission.md](admission.md), "A welcome that waits").
   A device keeps at most 4,096 `welcome` records and none for longer than
   `welcome_retention` ([overview.md](overview.md), "Every timer") past key
   3: when it starts, and before it hands a welcome over or deposits it, it

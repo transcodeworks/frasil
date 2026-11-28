@@ -739,8 +739,10 @@ ends an entry, and the signer then deletes its record:
   steps, from the chain's latest event in its view, the one with the
   greatest `seq`. It MAY then judge that event once, and again only once
   it changes, or, in a log that holds a stub or a witness
-  ([units.md](units.md), "Partial replicas"), where a walk of an event's
-  past stops at what the log does not hold, once that log changes;
+  ([units.md](units.md), "Partial replicas"), or an event it dropped
+  ([roster.md](roster.md), "Forgetting, and starting from a
+  checkpoint"), where a walk of an event's past stops at what the log
+  does not hold, once that log changes;
 - the space's roster, in the signer's current view, no longer reaches the
   newcomer, as after its removal: the signer checks this before each
   hand-over and each deposit, a further attempt of a deposit it keeps to
@@ -805,7 +807,12 @@ event of the newcomer's chain only, as it MAY, misses in the same way an
 event that `prev` does not lead to from the chain's latest: one on another
 branch of a chain that forked, one of a chain the device started again
 below its latest `seq`, and one more than 64 steps behind events of the
-chain the signer has not accepted in full.
+chain the signer has not accepted in full. A signer whose log no longer
+holds the event the entry waits on, as one that dropped it when it forgot
+the past of its kept checkpoint ([roster.md](roster.md), "Forgetting,
+and starting from a checkpoint"), finds it in the past of no event, so
+that entry does not end by the newcomer acting, only by the other
+conditions above.
 
 A space the signer forgets, or drops for its erasure, takes its waiting
 welcomes with its log ([at-rest.md](at-rest.md), "Forgetting a log, and

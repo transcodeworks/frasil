@@ -34,14 +34,14 @@ pub(crate) const WALKS_PER_ROUND: usize = 64;
 /// latest event, to the newest one accepted in full.
 const CHAIN_STEPS: usize = 64;
 
-/// What a check of a waiting welcome found.
-#[derive(Debug)]
-pub(crate) enum Check {
-    /// It waits.
-    Waits,
-    /// It waits no longer: the welcome the check ended, with its record and
-    /// the `deposit` records of it, or none when it had ended already.
-    Ended(Option<Box<Waiting>>),
+/// What a check of waiting welcomes found.
+#[derive(Debug, Default)]
+pub(crate) struct Checked {
+    /// Those that wait.
+    pub waits: Vec<Waiting>,
+    /// Those the check ended, with their records and the `deposit` records
+    /// of them. One that had ended already is in neither list.
+    pub ended: Vec<Waiting>,
 }
 
 /// A record to put in a space's log: its table, item and value.
@@ -257,48 +257,74 @@ impl Engine {
         Ok(Some(at_rest))
     }
 
-    /// The welcome for `recipient` and `space` waits no longer: the
+    /// The welcomes for `recipient` in `spaces` wait no longer: the
     /// recipient attached the space, or the roster no longer reaches it.
-    /// Its record goes, with the `deposit` records of it, in one commit.
-    /// Returns the welcome it ended.
-    pub(crate) async fn end_welcome(&self, recipient: DeviceId, space: EventId) -> Option<Waiting> {
+    /// Their records go, with the `deposit` records of them, in one commit.
+    /// Those of a space kept in memory only are kept for the device to
+    /// drop their deposits kept in memory ([`Links::ended_in_memory`]).
+    /// Returns the welcomes it ended.
+    ///
+    /// [`Links::ended_in_memory`]: crate::links::Links::ended_in_memory
+    #[cfg_attr(not(feature = "iroh"), allow(dead_code))]
+    pub(crate) async fn end_welcomes(
+        &self,
+        recipient: DeviceId,
+        spaces: &[EventId],
+    ) -> Vec<Waiting> {
+        if spaces.is_empty() {
+            return Vec::new();
+        }
         let mut state = self.lock().await;
-        let ended = self.links().delivered(&recipient, &space)?;
-        drop_ended(&mut state.vault, std::slice::from_ref(&ended)).await;
-        Some(ended)
+        let ended: Vec<Waiting> = {
+            let mut links = self.links();
+            let ended: Vec<Waiting> = spaces
+                .iter()
+                .filter_map(|space| links.delivered(&recipient, space))
+                .collect();
+            for welcome in &ended {
+                if state.vault.is_memory_only(&welcome.space.0) {
+                    links.ended_in_memory(welcome.clone());
+                }
+            }
+            ended
+        };
+        drop_ended(&mut state.vault, &ended).await;
+        ended
     }
 
-    /// Whether `welcome` still waits, as the signer checks before each
-    /// deposit (admission.md, 3.10 Welcomes, "A welcome that waits"): it
+    /// Which of `welcomes` still wait, as the signer checks before each
+    /// deposit (admission.md, 3.10 Welcomes, "A welcome that waits"): one
     /// is among the waiting welcomes, the space's roster in this device's
     /// view reaches its recipient, and the recipient has not acted in the
-    /// space after the event it names ([`look`]). When it does not, it
-    /// ends here, and its record and the `deposit` records of it go in one
-    /// commit.
-    pub(crate) async fn check_waiting(&self, welcome: &Waiting) -> Check {
+    /// space after the event the entry waits on ([`look`]). Those that do
+    /// not end here, and their records and the `deposit` records of them
+    /// go in one commit, which reads the `deposit` records once.
+    pub(crate) async fn check_waiting(&self, welcomes: Vec<Waiting>) -> Checked {
         let mut state = self.lock().await;
-        let ended = {
+        let mut checked = Checked::default();
+        {
             let mut links = self.links();
-            let Some(waiting) = links.same_mut(welcome) else {
-                return Check::Ended(None);
-            };
-            let mut walks = usize::MAX;
-            let ends = match state.replicas.get(&welcome.space) {
-                Some(replica) => {
-                    replica.level_of(&welcome.recipient).is_none()
-                        || look(replica, waiting, &mut walks) == Some(true)
+            for welcome in welcomes {
+                let Some(waiting) = links.same_mut(&welcome) else {
+                    continue;
+                };
+                let mut walks = usize::MAX;
+                let ends = match state.replicas.get(&welcome.space) {
+                    Some(replica) => {
+                        replica.level_of(&welcome.recipient).is_none()
+                            || look(replica, waiting, &mut walks) == Some(true)
+                    }
+                    None => true,
+                };
+                if !ends {
+                    checked.waits.push(waiting.clone());
+                } else if let Some(ended) = links.delivered(&welcome.recipient, &welcome.space) {
+                    checked.ended.push(ended);
                 }
-                None => true,
-            };
-            if !ends {
-                return Check::Waits;
             }
-            links.delivered(&welcome.recipient, &welcome.space)
-        };
-        if let Some(ended) = &ended {
-            drop_ended(&mut state.vault, std::slice::from_ref(ended)).await;
         }
-        Check::Ended(ended.map(Box::new))
+        drop_ended(&mut state.vault, &checked.ended).await;
+        checked
     }
 
     /// Ends every waiting welcome whose recipient signed an event in the
@@ -359,8 +385,9 @@ impl Engine {
     /// Loads the waiting welcomes from the `welcome` records of every space
     /// this device keeps, as the device opens: those kept
     /// `welcome_retention` or longer ago, and the oldest past 4,096, go.
-    /// The records are read once and sorted once, so that a full list
-    /// costs no more than its sort.
+    /// The records are read once, each taken into the waiting welcomes by
+    /// its key and its place in order of age, and those past the bound are
+    /// deleted in one commit.
     ///
     /// # Errors
     ///
@@ -460,9 +487,10 @@ async fn drop_ended(vault: &mut Vault, ended: &[Waiting]) {
 /// when that event has the welcome's event in its past.
 ///
 /// A look that finds it has not is remembered in `welcome.looked`, with
-/// the log's placed count and revision when the log holds a stub or a
-/// witness, where a walk of the past can stop short of what a later stub
-/// or witness fills in; the log is walked again only when that changes.
+/// the log's placed count and revision when the log holds a stub, a
+/// witness or a dropped event, where a walk of the past can stop short of
+/// what a later stub, witness or event held again fills in; the log is
+/// walked again only when that changes.
 /// Each walk takes one from `walks`; with none left, the look answers
 /// `None` and judges nothing.
 pub(crate) fn look(replica: &Replica, welcome: &mut Waiting, walks: &mut usize) -> Option<bool> {
@@ -484,7 +512,8 @@ pub(crate) fn look(replica: &Replica, welcome: &mut Waiting, walks: &mut usize) 
         };
         judged = prev;
     }
-    let short = log.has_witnesses() || log.stubs().next().is_some();
+    let short =
+        log.has_witnesses() || log.stubs().next().is_some() || log.dropped_ids().next().is_some();
     let looked = Looked {
         judged,
         log: short.then(|| (log.placed_count(), log.revision())),
@@ -501,7 +530,7 @@ pub(crate) fn look(replica: &Replica, welcome: &mut Waiting, walks: &mut usize) 
 }
 
 #[cfg(all(test, feature = "iroh"))]
-mod tests {
+pub(crate) mod tests {
     //! The waiting welcomes at rest (admission.md, 3.10 Welcomes, "A
     //! welcome that waits"; at-rest.md, "Tables", `welcome`), on engines
     //! over one store that they open again.
@@ -1102,7 +1131,7 @@ mod tests {
             granter.device_records(Table::Deposit).await.unwrap().len(),
             1
         );
-        assert!(granter.end_welcome(id, space).await.is_some());
+        assert_eq!(granter.end_welcomes(id, &[space]).await.len(), 1);
         let granter = medium.reopen(granter, &sealed).await;
         assert!(
             granter
@@ -1142,7 +1171,7 @@ mod tests {
         let id = device.device_id();
         let now = granter.welcome_time().await;
         let read = granter.links().to_deposit("https://peer.example", now);
-        granter.end_welcome(id, space).await;
+        granter.end_welcomes(id, &[space]).await;
         let put = deposit_put(&read[0], "https://peer.example");
         assert_eq!(
             granter
@@ -1259,9 +1288,9 @@ mod tests {
     }
 
     /// A store that refuses every commit once told to.
-    struct Refusing {
-        inner: MemoryStore,
-        refuse: std::sync::atomic::AtomicBool,
+    pub(crate) struct Refusing {
+        pub(crate) inner: MemoryStore,
+        pub(crate) refuse: std::sync::atomic::AtomicBool,
     }
 
     impl Store for Refusing {

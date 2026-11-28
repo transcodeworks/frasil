@@ -1193,32 +1193,33 @@ shared: a later removal from the known space does not reach the grant,
 which is therefore the application's to mirror.
 
 The entry also ends when the signer sees the newcomer at work: an event
-the newcomer's device signed, accepted in full, with the admitting event
-in its past. Holding that event in its past means the device holds the
-event, and with it the wrap the welcome carries, so the welcome has
-nothing left to give it. An event without the admitting event in its past
-ends nothing, so a device that the space granted before under another
-grant, and that keeps writing from its old view, does not end the
-welcome of its new grant. The signal costs the signer nothing it does not
-already keep: a replica holds each author's chain by `seq`, and each
-event names the one before it, so the newest event of the newcomer's
-chain that the signer accepted in full answers for every event `prev`
-leads to from it, and the walk back to the admitting event runs only when
-that event changes. In a full replica that walk goes no lower than the
-admitting event's height, since nothing at or below it can have it in its
-past. In a partial replica a height is a lower bound, so the walk follows
-every event it holds back to stubs and witnesses, and a stub filled in or
-a witness added later can carry it further: the signer judges such a log
-again when it changes, and a round of looks at every waiting welcome
-bounds the walks it makes. A peer could say more, that the newcomer collected its mailbox,
-but it tells no depositor, and saying so would tell anyone who deposits
-when a device comes online. A device that only reads may sign nothing in
-the space; for it the count of four is the only bound on the copies at
-each peer. The waiting welcomes are bounded at 4,096 per device: a
-person's grant makes one per device of the person, so an administrator
-who admits a few dozen people within `welcome_retention` would pass a
-bound of a few hundred, and the oldest welcomes, still waiting, would go
-without a word.
+the newcomer's device signed, accepted in full, with the event the entry
+waits on in its past. Holding that event in its past means the device
+holds the event, and with it the wrap the welcome carries, so the
+welcome has nothing left to give it. An event without the event the
+entry waits on in its past ends nothing, so a device that the space
+granted before under another grant, and that keeps writing from its old
+view, does not end the welcome of its new grant. The signal costs the
+signer nothing it does not already keep: a replica holds each author's
+chain by `seq`, and each event names the one before it, so the newest
+event of the newcomer's chain that the signer accepted in full answers
+for every event `prev` leads to from it, and the walk back to the event
+the entry waits on runs only when that event changes. In a full replica
+that walk goes no lower than the height of the event the entry waits on,
+since nothing at or below it can have it in its past. In a partial
+replica a height is a lower bound, so the walk follows every event it
+holds back to stubs and witnesses, and a stub filled in or a witness
+added later can carry it further: the signer judges such a log again
+when it changes, and a round of looks at every waiting welcome bounds
+the walks it makes. A peer could say more, that the newcomer collected
+its mailbox, but it tells no depositor, and saying so would tell anyone
+who deposits when a device comes online. A device that only reads may
+sign nothing in the space; for it the count of four is the only bound on
+the copies at each peer. The waiting welcomes are bounded at 4,096 per
+device: a person's grant makes one per device of the person, so an
+administrator who admits a few dozen people within `welcome_retention`
+would pass a bound of a few hundred, and the oldest welcomes, still
+waiting, would go without a word.
 
 ## References
 
