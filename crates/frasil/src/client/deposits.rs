@@ -12,7 +12,11 @@
 //! `mailbox_retention` can be, which the device does not know. Any other
 //! refusal is final. The device's upkeep attempts what is due, so a
 //! restart loses none. [`Event::Delayed`], [`Event::Delivered`] and
-//! [`Event::Undelivered`] tell the application.
+//! [`Event::Undelivered`] tell the application. A deposit of a welcome
+//! that waits no longer is dropped (admission.md, 3.10 Welcomes, "A
+//! welcome that waits"), even while an attempt of it is under way: the
+//! attempt keeps it again only while its record stands, and so it goes no
+//! further than that attempt.
 //!
 //! **Paying with a token** (ext-deposit-tokens.md, 3.6), with the
 //! `ext-deposit-tokens` feature: a device that holds a token of the peer
@@ -137,13 +141,19 @@ impl Device {
     /// `address` at the peer at `url`, as [`Device::deposit`] does, its
     /// `deposit` record kept in one commit with the welcome's record that
     /// names the peer (at-rest.md, "Tables", `welcome`), or both in memory
-    /// for a space kept in memory only. `None` when nothing was kept: the
-    /// welcome no longer waits, or the commit failed.
+    /// for a space kept in memory only. `due` is the `T` at which the
+    /// caller found the welcome due at that peer, before it read the
+    /// deposits kept to go again ([`Engine::keep_welcome_deposit`]).
+    /// `None` when nothing was kept: the welcome no longer waits or is not
+    /// due there at `due`, or the commit failed.
+    ///
+    /// [`Engine::keep_welcome_deposit`]: crate::device::Engine::keep_welcome_deposit
     pub(crate) async fn deposit_welcome(
         &self,
         url: &str,
         address: [u8; 32],
         welcome: &crate::links::Waiting,
+        due: u64,
     ) -> Option<Delivery> {
         let (id, record) = self
             .new_deposit(url, address, welcome.sealed.clone())
@@ -156,7 +166,7 @@ impl Device {
         );
         let at_rest = self
             .engine()
-            .keep_welcome_deposit(welcome, url, put)
+            .keep_welcome_deposit(welcome, url, due, put)
             .await
             .ok()??;
         if !at_rest {
@@ -206,7 +216,7 @@ impl Device {
     }
 
     /// Takes a deposit for one attempt; false when one is under way.
-    fn claim_deposit(&self, id: [u8; 16]) -> bool {
+    pub(super) fn claim_deposit(&self, id: [u8; 16]) -> bool {
         self.inner
             .depositing
             .lock()
@@ -214,7 +224,7 @@ impl Device {
             .insert(id)
     }
 
-    fn release_deposit(&self, id: [u8; 16]) {
+    pub(super) fn release_deposit(&self, id: [u8; 16]) {
         self.inner
             .depositing
             .lock()
@@ -251,17 +261,97 @@ impl Device {
         }
     }
 
-    /// Forgets a deposit, wherever it is kept.
-    async fn forget_deposit(&self, id: &[u8; 16]) {
+    /// Keeps a deposit again with what an attempt changed, only while it is
+    /// still kept: a deposit dropped while the attempt was under way, as
+    /// that of a welcome that ended, stays dropped. `Ok(false)` when it
+    /// was dropped.
+    ///
+    /// # Errors
+    ///
+    /// The store's: then it was not kept again, and its record at rest
+    /// stands as it was.
+    pub(super) async fn keep_again(
+        &self,
+        id: &[u8; 16],
+        record: &DepositRecord,
+        keep_at_rest: bool,
+    ) -> Result<bool> {
+        if keep_at_rest {
+            return self
+                .engine()
+                .keep_deposit_again(id, record, Vec::new())
+                .await;
+        }
+        match self
+            .inner
+            .unkept
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(id)
+        {
+            Some(kept) => {
+                *kept = record.clone();
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Whether a deposit is still kept in memory, for one of a space kept
+    /// in memory only.
+    #[cfg_attr(not(feature = "ext-deposit-tokens"), allow(dead_code))]
+    pub(crate) fn kept_in_memory(&self, id: &[u8; 16]) -> bool {
         self.inner
             .unkept
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .remove(id);
-        let _ = self
-            .engine()
-            .commit_device(Vec::new(), vec![(Table::Deposit, id.to_vec())])
-            .await;
+            .contains_key(id)
+    }
+
+    /// Forgets the deposits kept in memory of welcomes that ended: those of
+    /// a space kept in memory only, which no record holds. They are those
+    /// of `ended`, and of the welcomes a member connection ended, which the
+    /// engine keeps for this ([`Links::ended_in_memory`]).
+    ///
+    /// [`Links::ended_in_memory`]: crate::links::Links::ended_in_memory
+    pub(super) fn forget_unkept_of(&self, ended: &[crate::links::Waiting]) {
+        let by_members = self.engine().links().take_ended_in_memory();
+        if ended.is_empty() && by_members.is_empty() {
+            return;
+        }
+        let carried: std::collections::BTreeSet<([u8; 32], &[u8])> = ended
+            .iter()
+            .chain(&by_members)
+            .map(|w| {
+                (
+                    frasil_transport::mailbox::address(
+                        frasil_transport::mailbox::Kind::Device,
+                        &w.recipient.0,
+                    ),
+                    w.sealed.as_slice(),
+                )
+            })
+            .collect();
+        self.inner
+            .unkept
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|_, record| !carried.contains(&(record.address, record.item.as_slice())));
+    }
+
+    /// Forgets a deposit, wherever it is kept. False when it was no longer
+    /// kept: dropped while an attempt of it was under way, as that of a
+    /// welcome that ended. A store that fails counts as kept.
+    async fn forget_deposit(&self, id: &[u8; 16]) -> bool {
+        let in_memory = self
+            .inner
+            .unkept
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id)
+            .is_some();
+        let at_rest = self.engine().forget_deposit(id).await;
+        in_memory || !matches!(at_rest, Ok(false))
     }
 
     /// Every deposit kept, at rest and in memory, with whether it is at
@@ -294,7 +384,7 @@ impl Device {
         not(feature = "ext-deposit-tokens"),
         allow(unused_mut, clippy::never_loop)
     )]
-    async fn attempt_deposit(
+    pub(super) async fn attempt_deposit(
         &self,
         id: [u8; 16],
         mut record: DepositRecord,
@@ -314,7 +404,7 @@ impl Device {
             };
             match answer {
                 Answer::Accepted => {
-                    self.forget_deposit(&id).await;
+                    let _ = self.forget_deposit(&id).await;
                     if record.attempts > 0 {
                         self.report(Event::Delivered {
                             peer: record.peer.clone(),
@@ -328,7 +418,11 @@ impl Device {
                 #[cfg(feature = "ext-deposit-tokens")]
                 Answer::Refused(code) if record.token.is_some() && refuses_token(&code) => {
                     record.token = None;
-                    let _ = self.keep_deposit(&id, &record, keep_at_rest).await;
+                    // A store that fails leaves the deposit to go on
+                    // without the token all the same.
+                    if let Ok(false) = self.keep_again(&id, &record, keep_at_rest).await {
+                        return Delivery::Delayed(code);
+                    }
                 }
                 Answer::Refused(code) => {
                     // A refusal leaves a token unspent (ext-deposit-tokens.md,
@@ -337,11 +431,14 @@ impl Device {
                     if let Some(token) = record.token.take() {
                         super::tokens::give_back(self, &record.peer, token).await;
                     }
-                    self.forget_deposit(&id).await;
-                    self.report(Event::Undelivered {
-                        peer: record.peer.clone(),
-                        reason: code.clone(),
-                    });
+                    // One dropped while the attempt was under way, as that
+                    // of a welcome that ended, is not reported.
+                    if self.forget_deposit(&id).await {
+                        self.report(Event::Undelivered {
+                            peer: record.peer.clone(),
+                            reason: code.clone(),
+                        });
+                    }
                     return Delivery::Refused(code);
                 }
                 Answer::Unanswered(why) => {
@@ -368,18 +465,24 @@ impl Device {
             _ => return Delivery::Delayed(why),
         };
         if frasil_base::time::upper(&record.first, &now).at_least(KEEP_FOR) {
-            self.forget_deposit(&id).await;
-            self.report(Event::Undelivered {
-                peer: record.peer,
-                reason: "expired".into(),
-            });
+            if self.forget_deposit(&id).await {
+                self.report(Event::Undelivered {
+                    peer: record.peer,
+                    reason: "expired".into(),
+                });
+            }
             return Delivery::Refused("expired".into());
         }
         record.attempts = record.attempts.saturating_add(1);
         record.next = now
             .timeline
             .saturating_add(wait_with(retry_bound(record.attempts), random));
-        let _ = self.keep_deposit(&id, &record, keep_at_rest).await;
+        // One dropped while the attempt was under way goes no further. A
+        // store that fails leaves it as it was kept, and it is reported
+        // all the same.
+        if let Ok(false) = self.keep_again(&id, &record, keep_at_rest).await {
+            return Delivery::Delayed(why);
+        }
         self.report(Event::Delayed {
             peer: record.peer,
             reason: why.clone(),
@@ -470,28 +573,56 @@ pub(crate) fn answer_of(answer: Result<std::result::Result<(), String>>) -> Answ
 
 /// Attempts each kept deposit whose wait has passed: the device's upkeep
 /// runs it. A deposit of a waiting welcome whose space's roster no longer
-/// reaches its recipient is dropped instead, with the welcome
-/// (admission.md, 3.10 Welcomes, "A welcome that waits").
+/// reaches its recipient, or whose recipient signed an event in the space
+/// after the event the entry waits on, is dropped instead, with the
+/// welcome (admission.md, 3.10 Welcomes, "A welcome that waits"). The kept
+/// deposits and the recipients of the waiting welcomes are read once, and
+/// the welcomes the due deposits carry are checked at once, so that those
+/// that end take their deposits in one commit.
 pub(super) async fn retry(device: &Device) {
     let Ok(now) = device.engine().reading().await else {
         return;
     };
-    for (id, record, at_rest) in device.kept_deposits().await {
-        if record.next > now.timeline {
-            continue;
-        }
-        let welcome = device
-            .engine()
-            .links()
-            .carried(&record.address, &record.item, |recipient| {
-                frasil_transport::mailbox::address(
-                    frasil_transport::mailbox::Kind::Device,
-                    &recipient.0,
-                )
-            });
-        if let Some(welcome) = welcome
-            && !super::person_grants::welcome_reaches(device, &welcome).await
-        {
+    device.forget_unkept_of(&[]);
+    let due: Vec<_> = device
+        .kept_deposits()
+        .await
+        .into_iter()
+        .filter(|(_, record, _)| record.next <= now.timeline)
+        .collect();
+    if due.is_empty() {
+        return;
+    }
+    let carried: Vec<Option<crate::links::Waiting>> = {
+        let links = device.engine().links();
+        let recipients = links.recipients(|recipient| {
+            frasil_transport::mailbox::address(
+                frasil_transport::mailbox::Kind::Device,
+                &recipient.0,
+            )
+        });
+        due.iter()
+            .map(|(_, record, _)| {
+                recipients
+                    .get(&record.address)
+                    .and_then(|recipient| links.carried(recipient, &record.item))
+            })
+            .collect()
+    };
+    let mut welcomes = std::collections::BTreeMap::new();
+    for welcome in carried.iter().flatten() {
+        welcomes
+            .entry((welcome.recipient, welcome.space))
+            .or_insert_with(|| welcome.clone());
+    }
+    let waits: std::collections::BTreeSet<_> =
+        super::person_grants::still_waiting(device, welcomes.into_values().collect())
+            .await
+            .into_iter()
+            .map(|welcome| (welcome.recipient, welcome.space))
+            .collect();
+    for ((id, record, at_rest), welcome) in due.into_iter().zip(carried) {
+        if welcome.is_some_and(|w| !waits.contains(&(w.recipient, w.space))) {
             continue;
         }
         if !device.claim_deposit(id) {
@@ -499,19 +630,6 @@ pub(super) async fn retry(device: &Device) {
         }
         let _ = device.attempt_deposit(id, record, at_rest).await;
         device.release_deposit(id);
-    }
-}
-
-impl Device {
-    /// Forgets the kept deposits of `item` at `address` that no attempt
-    /// holds now.
-    pub(super) async fn forget_deposits_of(&self, address: &[u8; 32], item: &[u8]) {
-        for (id, record, _) in self.kept_deposits().await {
-            if record.address == *address && record.item == item && self.claim_deposit(id) {
-                self.forget_deposit(&id).await;
-                self.release_deposit(id);
-            }
-        }
     }
 }
 

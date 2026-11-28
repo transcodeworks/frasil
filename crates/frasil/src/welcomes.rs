@@ -2,30 +2,55 @@
 //! (admission.md, 3.10 Welcomes, "A welcome that waits"): sealed to the
 //! newcomer's keys, kept at rest as `welcome` records in the space's log
 //! (at-rest.md, "Tables") and in memory in [`Links`](crate::links::Links),
-//! loaded when the device opens, and ended by an admitted attach, a roster
-//! that no longer reaches the newcomer, the bound of 256 or
-//! `welcome_retention`.
+//! loaded when the device opens, and ended by an admitted attach, an
+//! event the newcomer signed after the event the entry waits on, a roster
+//! that no longer reaches the newcomer, the bound of 4,096 or
+//! `welcome_retention`. A welcome is deposited at 64 peers at most, and at
+//! each four times at most.
 
-use crate::at_rest::Batch;
+use crate::at_rest::{Batch, Vault};
 use crate::deposits::DevicePut;
 use crate::device::Engine;
 use crate::error::{Error, Result};
-use crate::links::{WAITING, Waiting, origin};
+use crate::links::{Looked, Waiting, origin};
+use crate::replica::Replica;
 use crate::writer::WrapOf;
 use frasil_crypto::device::{DeviceId, DeviceKeys};
 use frasil_events::EventId;
 use frasil_store::tables::{
     LogKind, MAX_PEER_URL, MAX_WELCOME_PEERS, Table, TableValue, WelcomeRecord,
 };
-use std::collections::BTreeMap;
+use frasil_transport::mailbox::{Kind, address};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The most walks of a log's past a round of looks at every waiting
+/// welcome makes (admission.md, 3.10 Welcomes, "A welcome that waits"): a
+/// walk runs under the device's lock and can cover the log above the
+/// event a welcome waits on, so a round stops there, and the next one starts
+/// with the welcome it stopped at.
+pub(crate) const WALKS_PER_ROUND: usize = 64;
+
+/// The most events a look steps back over by `prev` from the recipient's
+/// latest event, to the newest one accepted in full.
+const CHAIN_STEPS: usize = 64;
+
+/// What a check of waiting welcomes found.
+#[derive(Debug, Default)]
+pub(crate) struct Checked {
+    /// Those that wait.
+    pub waits: Vec<Waiting>,
+    /// Those the check ended, with their records and the `deposit` records
+    /// of them. One that had ended already is in neither list.
+    pub ended: Vec<Waiting>,
+}
 
 /// A record to put in a space's log: its table, item and value.
 pub(crate) type LogRecord = (Table, Vec<u8>, TableValue);
 
 /// The `welcome` record of a waiting welcome, its item the newcomer's
 /// device ID. A record names at most 64 peers, each by an origin of 1 to
-/// 512 bytes: a peer past them, or with a longer origin, is known in
-/// memory only, and deposited at again after a restart.
+/// 512 bytes, and a welcome is deposited at no other
+/// ([`Waiting::may_deposit_at`]).
 pub(crate) fn welcome_record(welcome: &Waiting) -> LogRecord {
     (
         Table::Welcome,
@@ -37,7 +62,7 @@ pub(crate) fn welcome_record(welcome: &Waiting) -> LogRecord {
             deposited: welcome
                 .deposited
                 .iter()
-                .filter(|(peer, _)| (1..=MAX_PEER_URL).contains(&peer.len()))
+                .filter(|(peer, _, _)| (1..=MAX_PEER_URL).contains(&peer.len()))
                 .take(MAX_WELCOME_PEERS)
                 .cloned()
                 .collect(),
@@ -100,7 +125,7 @@ impl Engine {
                     .map_err(Error::class)?,
                 since,
                 deposited: Vec::new(),
-                refused: Vec::new(),
+                looked: None,
             });
         }
         Ok(sealed)
@@ -172,16 +197,26 @@ impl Engine {
 
     /// Keeps a deposit of `welcome` at the peer at `url`: `deposit`, its
     /// `deposit` record, and the welcome's `welcome` record naming the
-    /// peer with the timeline's `T` now, in one commit (at-rest.md,
-    /// "Tables", `welcome`). Both are built under the device's lock from
+    /// peer with the timeline's `T` now and one more deposit counted
+    /// there, in one commit (at-rest.md, "Tables", `welcome`). Both are
+    /// built under the device's lock from
     /// the welcome as it waits then, so that two deposits at once each
     /// keep the other's peer, and the waiting welcome in memory names the
     /// peer only once the commit is made. In a space kept in memory only,
     /// nothing is committed, and the deposit is the caller's to keep in
     /// memory.
     ///
-    /// Returns `None`, keeping nothing, when `welcome` no longer waits;
-    /// otherwise whether the deposit is kept at rest.
+    /// `due` is the `T` at which the caller found the welcome due at that
+    /// peer, read before the deposits it keeps to go again: the welcome
+    /// must still be due there at `due` (admission.md, 3.10 Welcomes, "A
+    /// welcome that waits"). So of two passes that found it due at once,
+    /// only the first keeps a deposit, and a pass that read the deposits
+    /// kept before another pass kept one there keeps none.
+    ///
+    /// Returns `None`, keeping nothing, when `welcome` no longer waits, or
+    /// is not due at that peer at `due`: deposited there since, four
+    /// deposits there, or 64 other peers named; otherwise whether the
+    /// deposit is kept at rest.
     ///
     /// # Errors
     ///
@@ -191,6 +226,7 @@ impl Engine {
         &self,
         welcome: &Waiting,
         url: &str,
+        due: u64,
         (table, item, value): DevicePut,
     ) -> Result<Option<bool>> {
         let mut state = self.lock().await;
@@ -198,8 +234,9 @@ impl Engine {
         let url = origin(url);
         let Some(mut kept) = self
             .links()
-            .waiting(&welcome.recipient, &welcome.space)
-            .filter(|w| w.same(welcome))
+            .same_mut(welcome)
+            .filter(|w| w.due_at(url, due))
+            .map(|w| w.clone())
         else {
             return Ok(None);
         };
@@ -220,47 +257,100 @@ impl Engine {
         Ok(Some(at_rest))
     }
 
-    /// The peer at `url` refused the deposit of `welcome` for good: the
-    /// welcome's record names it no longer, and it is deposited there
-    /// again after `welcome_redeposit`, or after a restart (admission.md,
-    /// 3.10 Welcomes, "A welcome that waits").
-    pub(crate) async fn welcome_deposit_refused(&self, welcome: &Waiting, url: &str) {
+    /// The welcomes for `recipient` in `spaces` wait no longer: the
+    /// recipient attached the space, or the roster no longer reaches it.
+    /// Their records go, with the `deposit` records of them, in one commit.
+    /// Those of a space kept in memory only are kept for the device to
+    /// drop their deposits kept in memory ([`Links::ended_in_memory`]).
+    /// Returns the welcomes it ended.
+    ///
+    /// [`Links::ended_in_memory`]: crate::links::Links::ended_in_memory
+    #[cfg_attr(not(feature = "iroh"), allow(dead_code))]
+    pub(crate) async fn end_welcomes(
+        &self,
+        recipient: DeviceId,
+        spaces: &[EventId],
+    ) -> Vec<Waiting> {
+        if spaces.is_empty() {
+            return Vec::new();
+        }
         let mut state = self.lock().await;
-        let now = self.timeline_now(&mut state);
-        let url = origin(url);
-        let Some(mut kept) = self
-            .links()
-            .waiting(&welcome.recipient, &welcome.space)
-            .filter(|w| w.same(welcome))
-        else {
-            return;
-        };
-        let named = kept.deposited.iter().any(|(peer, _)| peer == url);
-        kept.refused_at(url, now);
-        if named {
-            let mut batch = Batch::default();
-            let (table, item, value) = welcome_record(&kept);
-            let written = state
-                .vault
-                .put(&mut batch, &welcome.space.0, table, &item, &value)
-                .is_ok()
-                && state.vault.commit(batch).await.is_ok();
-            if !written {
-                return;
+        let ended: Vec<Waiting> = {
+            let mut links = self.links();
+            let ended: Vec<Waiting> = spaces
+                .iter()
+                .filter_map(|space| links.delivered(&recipient, space))
+                .collect();
+            for welcome in &ended {
+                if state.vault.is_memory_only(&welcome.space.0) {
+                    links.ended_in_memory(welcome.clone());
+                }
             }
-        }
-        if let Some(waiting) = self.links().same_mut(welcome) {
-            waiting.refused_at(url, now);
-        }
+            ended
+        };
+        drop_ended(&mut state.vault, &ended).await;
+        ended
     }
 
-    /// The welcome for `recipient` and `space` waits no longer: the
-    /// recipient attached the space, or the roster no longer reaches it.
-    pub(crate) async fn end_welcome(&self, recipient: DeviceId, space: EventId) {
-        let ended = self.links().delivered(&recipient, &space);
-        if ended {
-            self.drop_welcome_records(&[(recipient, space)]).await;
+    /// Which of `welcomes` still wait, as the signer checks before each
+    /// deposit (admission.md, 3.10 Welcomes, "A welcome that waits"): one
+    /// is among the waiting welcomes, the space's roster in this device's
+    /// view reaches its recipient, and the recipient has not acted in the
+    /// space after the event the entry waits on ([`look`]). Those that do
+    /// not end here, and their records and the `deposit` records of them
+    /// go in one commit, which reads the `deposit` records once.
+    pub(crate) async fn check_waiting(&self, welcomes: Vec<Waiting>) -> Checked {
+        let mut state = self.lock().await;
+        let mut checked = Checked::default();
+        {
+            let mut links = self.links();
+            for welcome in welcomes {
+                let Some(waiting) = links.same_mut(&welcome) else {
+                    continue;
+                };
+                let mut walks = usize::MAX;
+                let ends = match state.replicas.get(&welcome.space) {
+                    Some(replica) => {
+                        replica.level_of(&welcome.recipient).is_none()
+                            || look(replica, waiting, &mut walks) == Some(true)
+                    }
+                    None => true,
+                };
+                if !ends {
+                    checked.waits.push(waiting.clone());
+                } else if let Some(ended) = links.delivered(&welcome.recipient, &welcome.space) {
+                    checked.ended.push(ended);
+                }
+            }
         }
+        drop_ended(&mut state.vault, &checked.ended).await;
+        checked
+    }
+
+    /// Ends every waiting welcome whose recipient signed an event in the
+    /// space after the event it waits on, and deletes their records and
+    /// the `deposit` records of them in one commit (admission.md, 3.10
+    /// Welcomes, "A welcome that waits"). The roster is checked before each
+    /// deposit and hand-over instead. A look costs a step back along
+    /// the recipient's chain to its newest event accepted in full, and a
+    /// walk of the log only when that event, or a log a walk may not reach
+    /// in full, changed since the last look; a round makes at most
+    /// [`WALKS_PER_ROUND`] walks, and the next starts where it stopped.
+    /// Returns the welcomes it ended.
+    pub(crate) async fn end_acted_welcomes(&self) -> Vec<Waiting> {
+        let mut state = self.lock().await;
+        let ended = {
+            let replicas = &state.replicas;
+            let mut walks = WALKS_PER_ROUND;
+            self.links().look_round(|waiting| {
+                let Some(replica) = replicas.get(&waiting.space) else {
+                    return Some(false);
+                };
+                look(replica, waiting, &mut walks)
+            })
+        };
+        drop_ended(&mut state.vault, &ended).await;
+        ended
     }
 
     /// Ends the welcomes kept `welcome_retention` or longer ago, on the
@@ -275,24 +365,29 @@ impl Engine {
     /// Deletes the records of welcomes that wait no longer. A record left
     /// by a failed commit goes when the device next opens, past its age,
     /// or when the welcome ends again.
-    async fn drop_welcome_records<W: Ended>(&self, ended: &[W]) {
+    async fn drop_welcome_records(&self, ended: &[Waiting]) {
         if ended.is_empty() {
             return;
         }
         let mut state = self.lock().await;
         let mut batch = Batch::default();
         for welcome in ended {
-            let (recipient, space) = welcome.ended();
-            state
-                .vault
-                .delete(&mut batch, &space.0, Table::Welcome, &recipient.0);
+            state.vault.delete(
+                &mut batch,
+                &welcome.space.0,
+                Table::Welcome,
+                &welcome.recipient.0,
+            );
         }
         let _ = state.vault.commit(batch).await;
     }
 
     /// Loads the waiting welcomes from the `welcome` records of every space
     /// this device keeps, as the device opens: those kept
-    /// `welcome_retention` or longer ago, and the oldest past 256, go.
+    /// `welcome_retention` or longer ago, and the oldest past 4,096, go.
+    /// The records are read once, each taken into the waiting welcomes by
+    /// its key and its place in order of age, and those past the bound are
+    /// deleted in one commit.
     ///
     /// # Errors
     ///
@@ -321,17 +416,14 @@ impl Engine {
                     sealed: record.sealed,
                     since: record.since,
                     deposited: record.deposited,
-                    refused: Vec::new(),
+                    looked: None,
                 });
             }
         }
-        kept.sort_by_key(|welcome| welcome.since);
-        let over = kept.len().saturating_sub(WAITING);
-        let mut gone: Vec<Waiting> = kept.drain(..over).collect();
-        let (old, young): (Vec<Waiting>, Vec<Waiting>) = kept
+        let (mut gone, young): (Vec<Waiting>, Vec<Waiting>) = kept
             .into_iter()
             .partition(|w| now.saturating_sub(w.since) >= crate::links::WELCOME_RETENTION);
-        gone.extend(old);
+        gone.extend(self.links().load_waiting(young));
         if !gone.is_empty() {
             let mut batch = Batch::default();
             for welcome in &gone {
@@ -344,40 +436,108 @@ impl Engine {
             }
             state.vault.commit(batch).await?;
         }
-        drop(state);
-        let mut links = self.links();
-        for welcome in young {
-            links.wait(welcome);
-        }
         Ok(())
     }
 }
 
-/// A welcome that waits no longer, by its recipient and space.
-trait Ended {
-    fn ended(&self) -> (DeviceId, EventId);
+/// Deletes the records of welcomes that ended, and the `deposit` records
+/// of them this device keeps at rest, read once, in one commit: the
+/// signer drops the deposits of a welcome that waits no longer
+/// (admission.md, 3.10 Welcomes, "A welcome that waits"), and a restart
+/// between the two finds neither. A deposit an attempt holds now goes
+/// too; the attempt keeps it again only while its record stands
+/// ([`Device`](crate::Device)'s deposits). A record left by a failed
+/// commit goes when the device next opens, past its age, or when the
+/// welcome ends again; a deposit left with it goes to its end as any
+/// other.
+async fn drop_ended(vault: &mut Vault, ended: &[Waiting]) {
+    if ended.is_empty() {
+        return;
+    }
+    let mut batch = Batch::default();
+    for welcome in ended {
+        vault.delete(
+            &mut batch,
+            &welcome.space.0,
+            Table::Welcome,
+            &welcome.recipient.0,
+        );
+    }
+    let carried: BTreeSet<([u8; 32], &[u8])> = ended
+        .iter()
+        .map(|w| (address(Kind::Device, &w.recipient.0), w.sealed.as_slice()))
+        .collect();
+    for (item, value) in vault.scan_device(Table::Deposit).await.unwrap_or_default() {
+        if let TableValue::Deposit(record) = value
+            && carried.contains(&(record.address, record.item.as_slice()))
+        {
+            vault.delete_device(&mut batch, Table::Deposit, &item);
+        }
+    }
+    let _ = vault.commit(batch).await;
 }
 
-impl Ended for Waiting {
-    fn ended(&self) -> (DeviceId, EventId) {
-        (self.recipient, self.space)
+/// Whether the recipient of `welcome` acted in the space after the event
+/// the entry waits on, in `replica` (admission.md, 3.10 Welcomes, "A
+/// welcome that waits"). The event looked at is the newest of the
+/// recipient's chain accepted in full (events.md, "Accepted in full, and
+/// what is cited") that `prev` reaches from its latest event, by `seq`,
+/// within [`CHAIN_STEPS`]: each event of a chain names the one before it
+/// as `prev`, so it answers for that chain below it. The recipient acted
+/// when that event has the welcome's event in its past.
+///
+/// A look that finds it has not is remembered in `welcome.looked`, with
+/// the log's placed count and revision when the log holds a stub, a
+/// witness or a dropped event, where a walk of the past can stop short of
+/// what a later stub, witness or event held again fills in; the log is
+/// walked again only when that changes.
+/// Each walk takes one from `walks`; with none left, the look answers
+/// `None` and judges nothing.
+pub(crate) fn look(replica: &Replica, welcome: &mut Waiting, walks: &mut usize) -> Option<bool> {
+    let Some(log) = replica.log() else {
+        return Some(false);
+    };
+    let Some(mut judged) = log.latest(&welcome.recipient) else {
+        return Some(false);
+    };
+    let mut steps = 0;
+    while !replica.accepted(&judged) {
+        steps += 1;
+        let Some(prev) = log
+            .event(judged)
+            .filter(|_| steps <= CHAIN_STEPS)
+            .and_then(frasil_events::Event::prev)
+        else {
+            return Some(false);
+        };
+        judged = prev;
     }
-}
-
-impl Ended for (DeviceId, EventId) {
-    fn ended(&self) -> (DeviceId, EventId) {
-        *self
+    let short =
+        log.has_witnesses() || log.stubs().next().is_some() || log.dropped_ids().next().is_some();
+    let looked = Looked {
+        judged,
+        log: short.then(|| (log.placed_count(), log.revision())),
+    };
+    if welcome.looked.as_ref() == Some(&looked) {
+        return Some(false);
     }
+    *walks = walks.checked_sub(1)?;
+    if log.precedes(welcome.event, judged) {
+        return Some(true);
+    }
+    welcome.looked = Some(looked);
+    Some(false)
 }
 
 #[cfg(all(test, feature = "iroh"))]
-mod tests {
+pub(crate) mod tests {
     //! The waiting welcomes at rest (admission.md, 3.10 Welcomes, "A
     //! welcome that waits"; at-rest.md, "Tables", `welcome`), on engines
     //! over one store that they open again.
 
     use super::*;
     use crate::advanced::{AdapterRegistry, Platform};
+    use crate::links::{WAITING, WELCOME_DEPOSITS, WELCOME_REDEPOSIT};
     use crate::platform::{Clock, ManualClock};
     use frasil_space::{HistoryMode, Level, Via};
     use frasil_store::{DeviceBoundSlot, MemorySlot, MemoryStore, Store};
@@ -555,15 +715,10 @@ mod tests {
         .0
     }
 
-    /// At most 256 welcomes wait: the 257th passes the oldest, whose record
-    /// goes, and the device opens again with the newest 256.
-    #[tokio::test]
-    async fn the_bound_passes_the_oldest_welcome_and_its_record() {
-        let medium = Medium::new();
-        let (granter, sealed) = medium.device().await;
-        let space = granter.create_space().await.unwrap();
-        let since = granter.welcome_time().await;
-        let welcomes: Vec<Waiting> = (0..=WAITING as u64)
+    /// Welcomes for `count` recipients numbered from `first`, kept at
+    /// `since` plus their number.
+    fn numbered(space: EventId, first: u64, count: u64, since: u64) -> Vec<Waiting> {
+        (first..first + count)
             .map(|n| {
                 let mut recipient = [0; 32];
                 recipient[..8].copy_from_slice(&n.to_be_bytes());
@@ -574,13 +729,31 @@ mod tests {
                     sealed: vec![1],
                     since: since + n,
                     deposited: Vec::new(),
-                    refused: Vec::new(),
+                    looked: None,
                 }
             })
-            .collect();
+            .collect()
+    }
+
+    /// At most 4,096 welcomes wait: the 257th passes none, the 4,097th
+    /// passes the oldest, whose record goes, and the device opens again
+    /// with the newest 4,096.
+    #[tokio::test]
+    async fn the_bound_passes_the_oldest_welcome_and_its_record() {
+        assert_eq!(WAITING, 4096);
+        let medium = Medium::new();
+        let (granter, sealed) = medium.device().await;
+        let space = granter.create_space().await.unwrap();
+        let since = granter.welcome_time().await;
+        let welcomes = numbered(space, 0, 257, since);
         let first = welcomes[0].recipient;
         let second = welcomes[1].recipient;
         granter.keep_welcomes(space, welcomes).await.unwrap();
+        assert!(granter.links().waiting(&first, &space).is_some());
+        assert_eq!(records(&granter, space).await.len(), 257);
+
+        let rest = numbered(space, 257, WAITING as u64 - 256, since);
+        granter.keep_welcomes(space, rest).await.unwrap();
         assert!(granter.links().waiting(&first, &space).is_none());
         assert!(granter.links().waiting(&second, &space).is_some());
         let kept = records(&granter, space).await;
@@ -590,7 +763,42 @@ mod tests {
         let granter = medium.reopen(granter, &sealed).await;
         assert!(granter.links().waiting(&first, &space).is_none());
         assert!(granter.links().waiting(&second, &space).is_some());
+        assert_eq!(granter.links().waiting_welcomes().len(), WAITING);
         assert_eq!(records(&granter, space).await.len(), WAITING);
+    }
+
+    /// A store that holds more `welcome` records than the bound, as one
+    /// written past it would, opens with the newest 4,096: the oldest
+    /// record goes as the device opens.
+    #[tokio::test]
+    async fn opening_keeps_the_newest_welcomes_and_drops_the_oldest_record() {
+        let medium = Medium::new();
+        let (granter, sealed) = medium.device().await;
+        let space = granter.create_space().await.unwrap();
+        let since = granter.welcome_time().await;
+        let welcomes = numbered(space, 0, WAITING as u64 + 1, since);
+        let first = welcomes[0].recipient;
+        let last = welcomes[WAITING].recipient;
+        {
+            let mut state = granter.lock().await;
+            let mut batch = Batch::default();
+            for (table, item, value) in welcomes.iter().rev().map(welcome_record) {
+                state
+                    .vault
+                    .put(&mut batch, &space.0, table, &item, &value)
+                    .unwrap();
+            }
+            state.vault.commit(batch).await.unwrap();
+        }
+        let granter = medium.reopen(granter, &sealed).await;
+        let waiting = granter.links().waiting_welcomes();
+        assert_eq!(waiting.len(), WAITING);
+        assert!(waiting.windows(2).all(|w| w[0].since <= w[1].since));
+        assert!(granter.links().waiting(&first, &space).is_none());
+        assert!(granter.links().waiting(&last, &space).is_some());
+        let kept = records(&granter, space).await;
+        assert_eq!(kept.len(), WAITING);
+        assert!(kept.iter().all(|(recipient, _)| *recipient != first));
     }
 
     /// A space the device forgets takes its waiting welcomes with it.
@@ -619,7 +827,7 @@ mod tests {
             welcome.recipient.0[..16].to_vec(),
             TableValue::Deposit(frasil_store::DepositRecord {
                 peer: origin(url).to_owned(),
-                address: [1; 32],
+                address: address(Kind::Device, &welcome.recipient.0),
                 item: welcome.sealed.clone(),
                 first: now,
                 attempts: 0,
@@ -639,14 +847,15 @@ mod tests {
     ) -> Result<Option<bool>> {
         let welcome = engine.links().waiting(recipient, &space).unwrap();
         let put = deposit_put(&welcome, url);
-        engine.keep_welcome_deposit(&welcome, url, put).await
+        let now = engine.welcome_time().await;
+        engine.keep_welcome_deposit(&welcome, url, now, put).await
     }
 
     fn peers(record: &WelcomeRecord) -> Vec<&str> {
         record
             .deposited
             .iter()
-            .map(|(peer, _)| peer.as_str())
+            .map(|(peer, _, _)| peer.as_str())
             .collect()
     }
 
@@ -670,7 +879,7 @@ mod tests {
         let kept = records(&granter, space).await;
         assert_eq!(
             kept[0].1.deposited,
-            [("https://peer.example".to_owned(), at)]
+            [("https://peer.example".to_owned(), at, 1)]
         );
 
         let granter = medium.reopen(granter, &sealed).await;
@@ -710,7 +919,7 @@ mod tests {
         let url = "https://peer.example";
         deposit(&granter, &id, space, url).await.unwrap();
 
-        medium.clock.advance(crate::links::WELCOME_REDEPOSIT - 1);
+        medium.clock.advance(WELCOME_REDEPOSIT - 1);
         let now = granter.welcome_time().await;
         assert!(granter.links().to_deposit(url, now).is_empty());
         let granter = medium.reopen(granter, &sealed).await;
@@ -725,7 +934,104 @@ mod tests {
         deposit(&granter, &id, space, url).await.unwrap();
         assert!(granter.links().to_deposit(url, now).is_empty());
         let kept = records(&granter, space).await;
-        assert_eq!(kept[0].1.deposited, [(url.to_owned(), now)]);
+        assert_eq!(kept[0].1.deposited, [(url.to_owned(), now, 2)]);
+    }
+
+    /// Whether the welcome for `id` in `space` is due at `url` now.
+    async fn due(engine: &Engine, id: &DeviceId, space: EventId, url: &str) -> bool {
+        let now = engine.welcome_time().await;
+        engine
+            .links()
+            .to_deposit(url, now)
+            .iter()
+            .any(|w| (w.recipient, w.space) == (*id, space))
+    }
+
+    /// A welcome is deposited at one peer four times at most: the first
+    /// deposit and three repeats `welcome_redeposit` apart, counted at
+    /// rest, so a restart between deposits does not count again. After
+    /// the fourth it is due there no more, while the welcome waits on and
+    /// another peer counts its own.
+    #[tokio::test]
+    async fn a_welcome_is_deposited_at_a_peer_four_times_at_most() {
+        assert_eq!(WELCOME_DEPOSITS, 4);
+        let medium = Medium::new();
+        let (mut granter, sealed) = medium.device().await;
+        let device = other().await;
+        let space = admitted(&granter, &device).await;
+        let id = device.device_id();
+        let (url, other_peer) = ("https://peer.example", "https://other.example");
+        for count in 1..=4u8 {
+            assert!(due(&granter, &id, space, url).await, "deposit {count}");
+            assert_eq!(
+                deposit(&granter, &id, space, url).await.unwrap(),
+                Some(true)
+            );
+            let kept = records(&granter, space).await;
+            let at = granter.welcome_time().await;
+            assert_eq!(kept[0].1.deposited, [(url.to_owned(), at, count)]);
+            granter = medium.reopen(granter, &sealed).await;
+            assert!(!due(&granter, &id, space, url).await);
+            medium.clock.advance(WELCOME_REDEPOSIT);
+        }
+        assert!(!due(&granter, &id, space, url).await, "no fifth");
+        medium.clock.advance(10 * WELCOME_REDEPOSIT);
+        assert!(!due(&granter, &id, space, url).await);
+        let granter = medium.reopen(granter, &sealed).await;
+        assert!(!due(&granter, &id, space, url).await, "nor after a restart");
+        let welcome = granter.links().waiting(&id, &space).unwrap();
+        let put = deposit_put(&welcome, url);
+        let now = granter.welcome_time().await;
+        assert_eq!(
+            granter
+                .keep_welcome_deposit(&welcome, url, now, put)
+                .await
+                .unwrap(),
+            None,
+            "a fifth deposit is not kept"
+        );
+        assert_eq!(records(&granter, space).await[0].1.deposited[0].2, 4);
+
+        // The welcome waits on, and another peer counts from one.
+        assert!(due(&granter, &id, space, other_peer).await);
+        deposit(&granter, &id, space, other_peer).await.unwrap();
+        let counts: Vec<(String, u8)> = records(&granter, space).await[0]
+            .1
+            .deposited
+            .iter()
+            .map(|(peer, _, count)| (peer.clone(), *count))
+            .collect();
+        assert_eq!(counts, [(other_peer.to_owned(), 1), (url.to_owned(), 4)]);
+        assert!(granter.links().waiting(&id, &space).is_some());
+    }
+
+    /// A welcome is deposited at 64 peers at most, those its record can
+    /// name: a 65th is never due, not even after a restart.
+    #[tokio::test]
+    async fn a_welcome_is_deposited_at_64_peers_at_most() {
+        let medium = Medium::new();
+        let (granter, sealed) = medium.device().await;
+        let device = other().await;
+        let space = admitted(&granter, &device).await;
+        let id = device.device_id();
+        for n in 0..MAX_WELCOME_PEERS {
+            let url = format!("https://peer{n:02}.example");
+            assert_eq!(
+                deposit(&granter, &id, space, &url).await.unwrap(),
+                Some(true)
+            );
+        }
+        let extra = "https://peer99.example";
+        assert!(!due(&granter, &id, space, extra).await);
+        let granter = medium.reopen(granter, &sealed).await;
+        assert!(!due(&granter, &id, space, extra).await);
+        assert_eq!(deposit(&granter, &id, space, extra).await.unwrap(), None);
+        assert_eq!(
+            records(&granter, space).await[0].1.deposited.len(),
+            MAX_WELCOME_PEERS
+        );
+        medium.clock.advance(WELCOME_REDEPOSIT);
+        assert!(due(&granter, &id, space, "https://peer00.example").await);
     }
 
     /// A `T` in a record past the timeline's own, as after a timeline that
@@ -739,8 +1045,8 @@ mod tests {
             event: EventId([3; 32]),
             sealed: vec![1],
             since: 0,
-            deposited: vec![("https://peer.example".to_owned(), 1_000_000)],
-            refused: Vec::new(),
+            deposited: vec![("https://peer.example".to_owned(), 1_000_000, 1)],
+            looked: None,
         });
         assert!(links.to_deposit("https://peer.example", 0).is_empty());
         assert!(
@@ -750,82 +1056,108 @@ mod tests {
         );
         assert_eq!(
             links
-                .to_deposit(
-                    "https://peer.example",
-                    1_000_000 + crate::links::WELCOME_REDEPOSIT
-                )
+                .to_deposit("https://peer.example", 1_000_000 + WELCOME_REDEPOSIT)
                 .len(),
             1
         );
     }
 
-    /// A peer that refused the deposit for good is taken out of the
-    /// record, and is due again after `welcome_redeposit`, or at once after
-    /// a restart; never at the next look.
+    /// Two passes that find a welcome due at a peer at the same `T` keep
+    /// one deposit there: the second finds it deposited since, and keeps
+    /// nothing. A pass that found it due before the latest deposit there
+    /// keeps none either, even once `welcome_redeposit` has passed, since
+    /// the deposits it read to go again do not hold that one.
     #[tokio::test]
-    async fn a_peer_that_refused_for_good_is_not_recorded_and_is_due_later() {
+    async fn passes_at_once_keep_one_deposit_at_a_peer() {
         let medium = Medium::new();
         let (granter, sealed) = medium.device().await;
         let device = other().await;
         let space = admitted(&granter, &device).await;
         let id = device.device_id();
         let url = "https://peer.example";
-        deposit(&granter, &id, space, "https://other.example")
-            .await
-            .unwrap();
-        deposit(&granter, &id, space, url).await.unwrap();
-        let welcome = granter.links().waiting(&id, &space).unwrap();
-        granter.welcome_deposit_refused(&welcome, url).await;
+        let at = granter.welcome_time().await;
+        let first = granter.links().to_deposit(url, at);
+        let second = granter.links().to_deposit(url, at);
         assert_eq!(
-            peers(&records(&granter, space).await[0].1),
-            ["https://other.example"]
+            granter
+                .keep_welcome_deposit(&first[0], url, at, deposit_put(&first[0], url))
+                .await
+                .unwrap(),
+            Some(true)
         );
-        let now = granter.welcome_time().await;
-        assert!(granter.links().to_deposit(url, now).is_empty());
+        assert_eq!(
+            granter
+                .keep_welcome_deposit(&second[0], url, at, deposit_put(&second[0], url))
+                .await
+                .unwrap(),
+            None,
+            "deposited there since"
+        );
+        assert_eq!(records(&granter, space).await[0].1.deposited[0].2, 1);
 
-        medium.clock.advance(crate::links::WELCOME_REDEPOSIT);
-        let now = granter.welcome_time().await;
-        assert_eq!(granter.links().to_deposit(url, now).len(), 1);
-
+        medium.clock.advance(WELCOME_REDEPOSIT);
+        assert!(due(&granter, &id, space, url).await);
+        assert_eq!(
+            granter
+                .keep_welcome_deposit(&second[0], url, at, deposit_put(&second[0], url))
+                .await
+                .unwrap(),
+            None,
+            "found due before the latest deposit there"
+        );
         let granter = medium.reopen(granter, &sealed).await;
-        let now = granter.welcome_time().await;
-        assert_eq!(granter.links().to_deposit(url, now).len(), 1);
+        assert_eq!(records(&granter, space).await[0].1.deposited[0].2, 1);
+        assert_eq!(
+            deposit(&granter, &id, space, url).await.unwrap(),
+            Some(true)
+        );
+        assert_eq!(records(&granter, space).await[0].1.deposited[0].2, 2);
     }
 
-    /// A peer whose origin is longer than a record can name is left out of
-    /// the record, which a store takes only when it would open: the
-    /// welcome's record is still written, and the welcome waits after a
-    /// restart, due at that peer again.
+    /// A welcome that ends takes the `deposit` records of it with its own
+    /// record, in one commit: a device that stops right after finds
+    /// neither.
     #[tokio::test]
-    async fn a_peer_with_a_long_origin_is_left_out_of_the_record() {
+    async fn an_ended_welcome_takes_its_deposits_in_the_same_commit() {
         let medium = Medium::new();
         let (granter, sealed) = medium.device().await;
         let device = other().await;
         let space = admitted(&granter, &device).await;
         let id = device.device_id();
-        let long = format!("https://{}.example", "a".repeat(600));
-        let mut welcome = granter.links().waiting(&id, &space).unwrap();
-        welcome.sealed = vec![9];
-        welcome.deposited = vec![(long.clone(), 0)];
-        granter.keep_welcomes(space, vec![welcome]).await.unwrap();
         deposit(&granter, &id, space, "https://peer.example")
             .await
             .unwrap();
         assert_eq!(
-            peers(&records(&granter, space).await[0].1),
-            ["https://peer.example"]
+            granter.device_records(Table::Deposit).await.unwrap().len(),
+            1
         );
-
+        assert_eq!(granter.end_welcomes(id, &[space]).await.len(), 1);
         let granter = medium.reopen(granter, &sealed).await;
-        let now = granter.welcome_time().await;
-        assert_eq!(granter.links().waiting(&id, &space).unwrap().sealed, [9]);
-        assert_eq!(granter.links().to_deposit(&long, now).len(), 1);
         assert!(
             granter
-                .links()
-                .to_deposit("https://peer.example", now)
+                .device_records(Table::Deposit)
+                .await
+                .unwrap()
                 .is_empty()
         );
+        assert!(records(&granter, space).await.is_empty());
+        assert!(granter.links().waiting(&id, &space).is_none());
+    }
+
+    /// A peer whose origin is longer than a record can name is never
+    /// deposited at: the welcome is not due there, and a deposit there is
+    /// not kept.
+    #[tokio::test]
+    async fn a_peer_with_a_long_origin_is_deposited_at_never() {
+        let medium = Medium::new();
+        let (granter, _) = medium.device().await;
+        let device = other().await;
+        let space = admitted(&granter, &device).await;
+        let id = device.device_id();
+        let long = format!("https://{}.example", "a".repeat(600));
+        assert!(!due(&granter, &id, space, &long).await);
+        assert_eq!(deposit(&granter, &id, space, &long).await.unwrap(), None);
+        assert!(records(&granter, space).await[0].1.deposited.is_empty());
     }
 
     /// A welcome that ended after the upkeep read it keeps no deposit:
@@ -839,11 +1171,11 @@ mod tests {
         let id = device.device_id();
         let now = granter.welcome_time().await;
         let read = granter.links().to_deposit("https://peer.example", now);
-        granter.end_welcome(id, space).await;
+        granter.end_welcomes(id, &[space]).await;
         let put = deposit_put(&read[0], "https://peer.example");
         assert_eq!(
             granter
-                .keep_welcome_deposit(&read[0], "https://peer.example", put)
+                .keep_welcome_deposit(&read[0], "https://peer.example", now, put)
                 .await
                 .unwrap(),
             None
@@ -877,7 +1209,7 @@ mod tests {
         let put = deposit_put(&read[0], "https://peer.example");
         assert_eq!(
             granter
-                .keep_welcome_deposit(&read[0], "https://peer.example", put)
+                .keep_welcome_deposit(&read[0], "https://peer.example", now, put)
                 .await
                 .unwrap(),
             None
@@ -939,22 +1271,26 @@ mod tests {
             deposit_put(&b[0], "https://b.example"),
         );
         let (kept_a, kept_b) = tokio::join!(
-            granter.keep_welcome_deposit(&a[0], "https://a.example", put_a),
-            granter.keep_welcome_deposit(&b[0], "https://b.example", put_b),
+            granter.keep_welcome_deposit(&a[0], "https://a.example", now, put_a),
+            granter.keep_welcome_deposit(&b[0], "https://b.example", now, put_b),
         );
         assert_eq!((kept_a.unwrap(), kept_b.unwrap()), (Some(true), Some(true)));
         let both = ["https://a.example", "https://b.example"];
         assert_eq!(peers(&records(&granter, space).await[0].1), both);
         let granter = medium.reopen(granter, &sealed).await;
         let waiting = granter.links().waiting(&id, &space).unwrap();
-        let named: Vec<&str> = waiting.deposited.iter().map(|(p, _)| p.as_str()).collect();
+        let named: Vec<&str> = waiting
+            .deposited
+            .iter()
+            .map(|(p, _, _)| p.as_str())
+            .collect();
         assert_eq!(named, both);
     }
 
     /// A store that refuses every commit once told to.
-    struct Refusing {
-        inner: MemoryStore,
-        refuse: std::sync::atomic::AtomicBool,
+    pub(crate) struct Refusing {
+        pub(crate) inner: MemoryStore,
+        pub(crate) refuse: std::sync::atomic::AtomicBool,
     }
 
     impl Store for Refusing {

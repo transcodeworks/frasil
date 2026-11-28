@@ -6,8 +6,8 @@
 //! waiting welcomes at rest, with the peers it deposited each at and when
 //! (admission.md, 3.10 Welcomes, "A welcome that waits"), so a restart
 //! neither loses a deposit nor makes one again before it is due, and it
-//! deposits each again at a peer before the peer lets it go. Every wait
-//! has a deadline, and nothing leaves the host.
+//! deposits each again at a peer before the peer lets it go, four times
+//! there at most. Every wait has a deadline, and nothing leaves the host.
 
 use frasil::{Device, Level, Options, Space, SpaceId, Storage};
 use frasil_conformance::spawn_loopback;
@@ -278,8 +278,9 @@ async fn a_restart_deposits_no_welcome_again_at_a_peer_that_holds_it() {
 
 /// A peer keeps an item of a mailbox its device has never collected for
 /// `uncollected_retention`, 72 hours by default, so the granter deposits a
-/// waiting welcome there again every `welcome_redeposit`, 48 hours: a
-/// member that first reaches the peer on the fourth day still finds it.
+/// waiting welcome there again `welcome_redeposit`, 48 hours, after its
+/// latest deposit there, four times there at most: a member that first
+/// reaches the peer on the fourth day still finds it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_welcome_is_deposited_again_before_the_peer_lets_it_go() {
     const HOUR: u64 = 3_600;
@@ -343,6 +344,224 @@ async fn a_welcome_is_deposited_again_before_the_peer_lets_it_go() {
     for device in [granter, member] {
         device.close().await.unwrap();
     }
+    drop((space, known));
+    peer.shutdown().await;
+}
+
+/// A newcomer whose keys come from `seed`, so that a test collects its
+/// device mailbox itself: its identity seed and its keys.
+fn newcomer(seed: u8) -> ([u8; 32], frasil_crypto::device::DeviceKeys) {
+    let identity = [seed; 32];
+    let xwing = frasil_crypto::wrap::xwing_public(&identity);
+    let signer =
+        frasil_crypto::schemes::Signer::from_seeds(&identity, &[seed + 1; 32], Some(&xwing));
+    let keys = frasil_crypto::device::DeviceKeys {
+        ed: *signer.identity_key(),
+        keys: frasil_crypto::device::HybridKeys::new(signer.mldsa_public(), Some(&xwing)).unwrap(),
+    };
+    (identity, keys)
+}
+
+/// Every item in the device mailbox of `keys` at `peer`, collected over the
+/// WebSocket with its identity seed: the first collection claims the
+/// mailbox (transport.md, "Claimed device mailboxes").
+async fn mailbox_items(
+    peer: &frasil_relay::testing::TestPeer,
+    identity: &[u8; 32],
+    keys: &frasil_crypto::device::DeviceKeys,
+) -> Vec<Vec<u8>> {
+    use frasil_transport::frame::MessageType;
+    use frasil_transport::mailbox::{MailboxItems, collect};
+    let mut device = frasil_conformance::client::PeerClient::ws(
+        peer,
+        frasil_transport::peer::Purpose::SpaceTraffic,
+    )
+    .await;
+    let request = device.request();
+    let get = collect(
+        request,
+        identity,
+        keys.keys.commitment(),
+        &device.binding,
+        None,
+    );
+    let answer = device
+        .request_answer(request, &get)
+        .await
+        .expect("MailboxItems")
+        .expect("a message");
+    assert_eq!(answer.kind, MessageType::MailboxItems);
+    device.close().await;
+    MailboxItems::read(&answer)
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|(_, item)| item)
+        .collect()
+}
+
+/// A granter deposits a waiting welcome at one peer four times at most,
+/// the first and three repeats `welcome_redeposit` apart, so a mailbox the
+/// newcomer claimed, which keeps every copy for `mailbox_retention`, holds
+/// four copies of it and no more, while the welcome waits on (admission.md,
+/// 3.10 Welcomes, "A welcome that waits").
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_welcome_is_deposited_at_a_peer_four_times_at_most() {
+    const HOUR: u64 = 3_600;
+    let peer = spawn_loopback().await.unwrap();
+    let origin = peer.origin.clone();
+    let clock = std::sync::Arc::new(frasil::advanced::ManualClock::new(
+        1_000,
+        Some(1_800_000_000),
+    ));
+    let granter = Device::open_with(
+        Storage::Memory,
+        &[89; 32],
+        Options::new().loopback().clock(clock.clone()),
+    )
+    .await
+    .expect("a device");
+    let (identity, keys) = newcomer(91);
+    assert!(
+        within(mailbox_items(&peer, &identity, &keys))
+            .await
+            .is_empty()
+    );
+    let known = granter.create_space().await.unwrap();
+    granter
+        .engine()
+        .grant_device(
+            ev(known.id()),
+            keys.clone(),
+            Level::Write,
+            HistoryMode::WithHistory,
+            Via::Code,
+        )
+        .await
+        .unwrap();
+    let space = with_note(&granter, "four").await;
+    granter
+        .engine()
+        .admit_member(
+            ev(space.id()),
+            ev(known.id()),
+            keys.device_id(),
+            Level::Read,
+            None,
+        )
+        .await
+        .unwrap();
+    granter.connect(&origin).await.unwrap();
+    within(space.wait_durable(Duration::from_secs(60)))
+        .await
+        .unwrap();
+    let deposited = |at_least: u64| {
+        let granter = granter.clone();
+        async move {
+            within(async {
+                while granter.welcome_deposits() < at_least {
+                    granter.welcome_upkeep().await;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await;
+        }
+    };
+    deposited(1).await;
+    for count in 2..=4 {
+        peer.advance(48 * HOUR).await;
+        clock.advance(48 * HOUR);
+        deposited(count).await;
+    }
+    // Three more periods of `welcome_redeposit`: no fifth deposit.
+    for _ in 0..3 {
+        peer.advance(48 * HOUR).await;
+        clock.advance(48 * HOUR);
+        granter.welcome_upkeep().await;
+    }
+    assert_eq!(granter.welcome_deposits(), 4);
+    let items = within(mailbox_items(&peer, &identity, &keys)).await;
+    assert_eq!(items.len(), 4, "four copies at the peer");
+    assert!(items.iter().all(|item| *item == items[0]));
+    assert_eq!(granter.waiting_welcomes().len(), 1, "the welcome waits on");
+
+    granter.close().await.unwrap();
+    drop((space, known));
+    peer.shutdown().await;
+}
+
+/// An administrator that admits several devices in a loop starts a pass
+/// of deposits for each grant, and its upkeep runs one too, all at once:
+/// each pass finds every welcome due at the peer, yet each welcome is
+/// deposited there once, counted once, and the peer holds one copy of each
+/// (admission.md, 3.10 Welcomes, "A welcome that waits").
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn welcomes_of_grants_made_at_once_are_deposited_once_each() {
+    const DEVICES: u8 = 5;
+    let peer = spawn_loopback().await.unwrap();
+    let origin = peer.origin.clone();
+    let granter = device(93).await;
+    let newcomers: Vec<_> = (0..DEVICES).map(|n| newcomer(101 + 2 * n)).collect();
+    let known = granter.create_space().await.unwrap();
+    for (_, keys) in &newcomers {
+        granter
+            .engine()
+            .grant_device(
+                ev(known.id()),
+                keys.clone(),
+                Level::Write,
+                HistoryMode::WithHistory,
+                Via::Code,
+            )
+            .await
+            .unwrap();
+    }
+    let space = with_note(&granter, "at once").await;
+    granter.connect(&origin).await.unwrap();
+    within(space.wait_durable(Duration::from_secs(60)))
+        .await
+        .unwrap();
+    for (_, keys) in &newcomers {
+        space
+            .admit_member(
+                known.id(),
+                frasil::MemberId::from_bytes(keys.device_id().0),
+                Level::Read,
+            )
+            .await
+            .unwrap();
+    }
+    within(async {
+        while granter.welcome_deposits() < u64::from(DEVICES) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    // Every pass the grants started has ended.
+    within(space.wait_durable(Duration::from_secs(60)))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    granter.welcome_upkeep().await;
+    assert_eq!(granter.welcome_deposits(), u64::from(DEVICES));
+    let waiting = granter.waiting_welcomes();
+    assert_eq!(waiting.len(), usize::from(DEVICES));
+    assert!(
+        waiting
+            .iter()
+            .all(|(_, _, peers)| *peers == [origin.as_str()])
+    );
+    assert_eq!(
+        granter.welcome_deposit_counts(&origin),
+        vec![1; usize::from(DEVICES)],
+        "each counted once"
+    );
+    for (identity, keys) in &newcomers {
+        let items = within(mailbox_items(&peer, identity, keys)).await;
+        assert_eq!(items.len(), 1, "one copy at the peer");
+    }
+
+    granter.close().await.unwrap();
     drop((space, known));
     peer.shutdown().await;
 }

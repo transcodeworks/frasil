@@ -160,7 +160,7 @@ aad       = "frasil/at-rest/record/v1" || u8(1) || address
 | `0x20` | `host` | log | 1 to 256 bytes | what a device that hosts the space as an always-on peer keeps ([peers.md](peers.md)) |
 | `0x21` | `dropped` | log | event ID (32) | `{1: origin, 2: kind, 3: height}`, key 2 present exactly with origin 1, key 3 only with origin 1: an event of the log that is in the past of its kept checkpoint and that this device does not hold (section 3.4, "Forgetting before a checkpoint"): origin 1, the device held it and dropped it, with its envelope's kind and, in a space's log, when it is a parent of an event the log keeps of that past, its height, from 1 ([events.md](events.md), "Placement and order"); origin 2, a peer answered `Missing` for it when the device fetched it as a parent, at a device that started from a checkpoint ([roster.md](roster.md), section 3.15.6) |
 | `0x22` | `retention` | log | object ID (32) | `{1: state, 2: read, 3: keep}`, key 1 present, key 2 present exactly with state 2, key 3 only with state 3 and then the unsigned integer 1: how long this device keeps an object it stores as sealed chunks (section 2.9): state 1, kept until the application drops it; state 2, cached within the device's budget, with the timeline's `T` ([overview.md](overview.md), section 6.3) at which the device last read the object, rounded down to a multiple of 3,600; state 3, put by this device, and kept until an always-on peer holds it, with key 3 when the application asked to keep it after that too |
-| `0x23` | `welcome` | log | the newcomer's device ID (32) | `{1: event, 2: welcome, 3: since, 4: deposited}`, keys 1 to 3 present: a welcome this device signed that waits to be handed over a member connection or deposited at a peer ([admission.md](admission.md), "Welcomes", "A welcome that waits"): the event ID (32) the welcome names; the sealed welcome, 1 to 262,144 bytes, as a device mailbox item carries it ([admission.md](admission.md), "The welcome"); the timeline's `T` at which the device kept it; the peers it was deposited at in the newcomer's device mailbox, 1 to 64 entries `[origin, deposited]`, each an array of the peer's origin, 1 to 512 bytes of text as a `deposit` record names its peer, and the timeline's `T` of the latest deposit there, strictly ascending by the origins' bytes, absent when there are none |
+| `0x23` | `welcome` | log | the newcomer's device ID (32) | `{1: event, 2: welcome, 3: since, 4: deposited}`, keys 1 to 3 present: a welcome this device signed that waits to be handed over a member connection or deposited at a peer ([admission.md](admission.md), "Welcomes", "A welcome that waits"): the ID (32) of the event the entry waits on, the event the welcome names or the unit that publishes the snapshot of a welcome that answers a welcome request; the sealed welcome, 1 to 262,144 bytes, as a device mailbox item carries it ([admission.md](admission.md), "The welcome"); the timeline's `T` at which the device kept it; the peers it was deposited at in the newcomer's device mailbox, 1 to 64 entries `[origin, deposited, count]`, each an array of the peer's origin, 1 to 512 bytes of text as a `deposit` record names its peer, the timeline's `T` of the latest deposit there, and the number of deposits made there, 1 to 4, a deposit the peer refused for good included, strictly ascending by the origins' bytes, absent when there are none |
 
 - Every other code is `Malformed`. Device-wide tables appear only under 16
   zero bytes, and log tables only under a log's scope tag. An
@@ -195,14 +195,18 @@ aad       = "frasil/at-rest/record/v1" || u8(1) || address
   key, as a peer holds it: nothing in it opens without the newcomer's
   keys, and the device that kept it cannot open it again. The device puts
   the record of a grant's welcome in the commit that holds the grant, and
-  that of any other welcome in a commit after the event it names; it puts
-  a peer in key 4, or its new `T` there, in the commit that puts the
-  `deposit` record of that peer's deposit, built from the welcome as it
-  waits when that commit is made; it takes the peer out again when the
-  peer refuses the deposit for good, and deletes the record when the
-  welcome no longer waits. A peer whose origin is longer than 512 bytes,
-  and any past the first 64, are left out of key 4.
-  A device keeps at most 256 `welcome` records and none for longer than
+  that of any other welcome in a commit after the event the entry waits
+  on; it puts a peer in key 4, or its new `T` and count there, in the
+  commit that puts the `deposit` record of that peer's deposit, built
+  from the welcome as it waits when that commit is made; it keeps the
+  peer there when the peer refuses the deposit for good, and deletes the
+  record when the welcome no longer waits, in the same commit as the
+  `deposit` records of that welcome when it drops them. An attempt of a
+  deposit that is under way when its record goes does not keep it again.
+  It deposits the welcome at no peer key 4 cannot name: none whose
+  origin is longer than 512 bytes, none past the first 64, and none whose
+  count is 4 ([admission.md](admission.md), "A welcome that waits").
+  A device keeps at most 4,096 `welcome` records and none for longer than
   `welcome_retention` ([overview.md](overview.md), "Every timer") past key
   3: when it starts, and before it hands a welcome over or deposits it, it
   deletes those past either bound, the oldest by key 3 first. A client
@@ -1133,8 +1137,8 @@ finds it held or not held; neither fails.
   with and without a height, and of origin 2; a `retention` record of each
   state, one of state 2 whose last read is no multiple of 3,600, and one
   of state 3 with key 3; and a `welcome` record deposited nowhere and one
-  deposited at two peers.
-  `record_refusals`: thirty-seven
+  deposited at two peers, at one of them four times.
+  `record_refusals`: forty
   records refused by section 3.2, each with the log key it is opened
   under, among them a moved record, another log's key or scope, an item
   that is not the address's, a claim naming another space, `dropped`
@@ -1147,8 +1151,8 @@ finds it held or not held; neither fails.
   state 3 with a key 3 of 0 and of 2,
   with no state, and with an item that is not 32 bytes, and `welcome`
   records with no key 3, an empty welcome, an empty key 4, peers out of
-  order or named twice, a peer with no `T`, and a peer named by bytes
-  rather than text.
+  order or named twice, a peer with no `T`, a peer with no count, counts
+  of 0 and of 5, and a peer named by bytes rather than text.
 - `mark`: a mark, and four refusals, each with the mark and the device ID
   it is opened with.
 - `continuity`: section 3.5's nine outcomes, from agreeing head and mark to

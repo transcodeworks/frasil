@@ -336,7 +336,7 @@
     },
     {
       "name": "welcome_redeposit",
-      "bounds": "a waiting welcome's deposit at a peer, made again",
+      "bounds": "a waiting welcome's deposit at a peer, made again, at most 3 times there",
       "default": 172800,
       "minimum": 172800,
       "maximum": 172800,
@@ -345,7 +345,8 @@
       "in": [
         "admission.md",
         "at-rest.md"
-      ]
+      ],
+      "default_text": "48 hours, and 3 times"
     },
     {
       "name": "link_lifetime",

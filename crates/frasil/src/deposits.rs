@@ -7,7 +7,7 @@
 use crate::at_rest::Batch;
 use crate::device::Engine;
 use crate::error::Result;
-use frasil_store::{Table, TableValue};
+use frasil_store::{DepositRecord, Table, TableValue};
 
 /// A device-wide record to put: its table, its item and its value.
 pub(crate) type DevicePut = (Table, Vec<u8>, TableValue);
@@ -28,6 +28,65 @@ impl Engine {
     ) -> Result<Option<TableValue>> {
         let state = self.lock().await;
         state.vault.get_device_item(table, item).await
+    }
+
+    /// Puts the `deposit` record `id` again as `record`, with `deletes` in
+    /// the same commit, only while it stands: a deposit dropped meanwhile,
+    /// as that of a welcome that ended, stays dropped. Whether it stood.
+    ///
+    /// # Errors
+    ///
+    /// The store's.
+    pub(crate) async fn keep_deposit_again(
+        &self,
+        id: &[u8; 16],
+        record: &DepositRecord,
+        deletes: Vec<(Table, Vec<u8>)>,
+    ) -> Result<bool> {
+        let mut state = self.lock().await;
+        if state
+            .vault
+            .get_device_item(Table::Deposit, id)
+            .await?
+            .is_none()
+        {
+            return Ok(false);
+        }
+        let mut batch = Batch::default();
+        for (table, item) in &deletes {
+            state.vault.delete_device(&mut batch, *table, item);
+        }
+        state.vault.put_device(
+            &mut batch,
+            Table::Deposit,
+            id,
+            &TableValue::Deposit(record.clone()),
+        )?;
+        state.vault.commit(batch).await?;
+        Ok(true)
+    }
+
+    /// Deletes the `deposit` record `id`, only while it stands. Whether it
+    /// stood: false for one dropped meanwhile, as that of a welcome that
+    /// ended, or for one kept in memory.
+    ///
+    /// # Errors
+    ///
+    /// The store's.
+    pub(crate) async fn forget_deposit(&self, id: &[u8; 16]) -> Result<bool> {
+        let mut state = self.lock().await;
+        if state
+            .vault
+            .get_device_item(Table::Deposit, id)
+            .await?
+            .is_none()
+        {
+            return Ok(false);
+        }
+        let mut batch = Batch::default();
+        state.vault.delete_device(&mut batch, Table::Deposit, id);
+        state.vault.commit(batch).await?;
+        Ok(true)
     }
 
     /// Deletes and puts device-wide records in one commit: its deletes

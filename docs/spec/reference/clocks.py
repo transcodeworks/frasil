@@ -100,9 +100,10 @@ PARAMETERS = [
     _t("welcome_retention", "a welcome its signer keeps waiting to hand over or deposit",
        30 * DAY, 30 * DAY, 30 * DAY, "protocol", "the signer's timeline, from keeping it",
        ["admission.md", "at-rest.md"]),
-    _t("welcome_redeposit", "a waiting welcome's deposit at a peer, made again", 48 * HOUR,
-       48 * HOUR, 48 * HOUR, "protocol",
-       "the signer's timeline, from its last deposit at that peer", ["admission.md", "at-rest.md"]),
+    _t("welcome_redeposit", "a waiting welcome's deposit at a peer, made again, at most 3 "
+       "times there", 48 * HOUR, 48 * HOUR, 48 * HOUR, "protocol",
+       "the signer's timeline, from its last deposit at that peer", ["admission.md", "at-rest.md"],
+       "48 hours, and 3 times"),
     _t("link_lifetime", "an invite, ended by a revocation", 7 * DAY, 15 * MINUTE, 7 * DAY,
        "the inviter's client", "wall, the inviter's clock; lower, from each administering "
        "device's first sight, for the maximum", ["ext-invite-links.md"]),

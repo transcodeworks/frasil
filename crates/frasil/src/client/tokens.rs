@@ -244,22 +244,29 @@ pub(super) async fn take(
     let (item, token) = tokens.into_iter().next()?;
     let mut paid = record.clone();
     paid.token = Some(token.clone());
-    let puts = if keep_at_rest {
-        vec![(
-            Table::Deposit,
-            id.to_vec(),
-            TableValue::Deposit(paid.clone()),
-        )]
+    // Only while the deposit is kept: one dropped meanwhile, as that of a
+    // welcome that ended, takes no token.
+    if keep_at_rest {
+        device
+            .engine()
+            .keep_deposit_again(id, &paid, vec![(Table::Token, item)])
+            .await
+            .ok()
+            .filter(|kept| *kept)?;
     } else {
-        Vec::new()
-    };
-    device
-        .engine()
-        .commit_device(puts, vec![(Table::Token, item)])
-        .await
-        .ok()?;
-    if !keep_at_rest {
-        let _ = device.keep_deposit(id, &paid, false).await;
+        if !device.kept_in_memory(id) {
+            return None;
+        }
+        device
+            .engine()
+            .commit_device(Vec::new(), vec![(Table::Token, item)])
+            .await
+            .ok()?;
+        // Dropped while the token left the store: the token goes back.
+        if let Ok(false) = device.keep_again(id, &paid, false).await {
+            give_back(device, &record.peer, token).await;
+            return None;
+        }
     }
     Some(token)
 }

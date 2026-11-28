@@ -251,6 +251,9 @@ MAX_PEER_HINTS = 8
 MAX_PEER_URL = 512
 # The most peers a `welcome` record names as holding its welcome.
 MAX_WELCOME_PEERS = 64
+# The most deposits of a waiting welcome at one peer: the first and three
+# repeats (admission.md, "A welcome that waits").
+WELCOME_DEPOSITS = 4
 MAX_HELD_STAMP = 64
 
 
@@ -592,17 +595,19 @@ def read_value(table: int, item: bytes, value: bytes, log_id: bytes | None):
         return m
     if table == T_WELCOME:
         m = _map(value, {1, 2, 3, 4}, {1, 2, 3})
-        # Key 4, the peers the welcome was deposited at: [origin, T]
-        # entries, the origin as a deposit names its peer and T that of
-        # the latest deposit there, strictly ascending by the origins'
-        # bytes, absent when there are none.
+        # Key 4, the peers the welcome was deposited at: [origin, T,
+        # count] entries, the origin as a deposit names its peer, T that of
+        # the latest deposit there and count the deposits made there, 1 to
+        # 4, strictly ascending by the origins' bytes, absent when there
+        # are none.
         peers = m.get(4, [])
         if not (is_bytes(m[1], 32) and is_bytes(m[2]) and 1 <= len(m[2]) <= MAX_MAILBOX_ITEM
                 and is_uint(m[3])
                 and (4 not in m or (isinstance(peers, list)
                                     and 1 <= len(peers) <= MAX_WELCOME_PEERS))
-                and all(isinstance(p, list) and len(p) == 2 and isinstance(p[0], str)
+                and all(isinstance(p, list) and len(p) == 3 and isinstance(p[0], str)
                         and 1 <= len(p[0].encode()) <= MAX_PEER_URL and is_uint(p[1])
+                        and is_uint(p[2]) and 1 <= p[2] <= WELCOME_DEPOSITS
                         for p in peers)
                 and all(a[0].encode() < b[0].encode() for a, b in zip(peers, peers[1:]))):
             raise SpecError("Malformed")
@@ -1475,10 +1480,11 @@ def at_rest_vectors(persons: dict | None = None) -> dict:
              "deposited nowhere yet")
     add("a welcome deposited at two peers", T_WELCOME, example("at-rest/newcomer/deposited"),
         cbor({1: example("at-rest/welcome/event"), 2: b"a sealed welcome", 3: 90000,
-              4: [["https://other.example", 262800], ["https://peer.example", 90000]]}),
+              4: [["https://other.example", 608400, 4], ["https://peer.example", 90000, 1]]}),
         space, label="welcome/deposited",
-        note="key 4: each peer's origin and the T of its latest deposit, strictly ascending by "
-             "origin, each put in the commit that keeps its deposit")
+        note="key 4: each peer's origin, the T of its latest deposit and the count of deposits "
+             "there, strictly ascending by origin, each put in the commit that keeps its "
+             "deposit; four deposits at the first peer, so none more there")
     add("the space's peers and its home peer", T_PEERS, b"",
         cbor({1: ["https://peer.example", "https://other.example"],
               2: "https://home.example"}), space,
@@ -1595,19 +1601,31 @@ def at_rest_vectors(persons: dict | None = None) -> dict:
              "welcome-no-peer", "key 4 is absent when the welcome was deposited nowhere"),
             ("a welcome record whose peers are out of order", T_WELCOME,
              cbor({1: example("at-rest/welcome/event"), 2: b"a sealed welcome", 3: 86400,
-                   4: [["https://peer.example", 86400], ["https://other.example", 86400]]}),
+                   4: [["https://peer.example", 86400, 1], ["https://other.example", 86400, 1]]}),
              "welcome-unordered", "key 4 is strictly ascending by the origins' bytes"),
             ("a welcome record that names a peer twice", T_WELCOME,
              cbor({1: example("at-rest/welcome/event"), 2: b"a sealed welcome", 3: 86400,
-                   4: [["https://peer.example", 86400], ["https://peer.example", 90000]]}),
+                   4: [["https://peer.example", 86400, 1], ["https://peer.example", 90000, 2]]}),
              "welcome-twice", "key 4 is strictly ascending by the origins' bytes"),
             ("a welcome record whose peer has no time of deposit", T_WELCOME,
              cbor({1: example("at-rest/welcome/event"), 2: b"a sealed welcome", 3: 86400,
                    4: ["https://peer.example"]}),
-             "welcome-peer-untimed", "each entry of key 4 is an origin and a T"),
+             "welcome-peer-untimed", "each entry of key 4 is an origin, a T and a count"),
+            ("a welcome record whose peer has no count of deposits", T_WELCOME,
+             cbor({1: example("at-rest/welcome/event"), 2: b"a sealed welcome", 3: 86400,
+                   4: [["https://peer.example", 86400]]}),
+             "welcome-peer-uncounted", "each entry of key 4 is an origin, a T and a count"),
+            ("a welcome record whose peer has a count of 0", T_WELCOME,
+             cbor({1: example("at-rest/welcome/event"), 2: b"a sealed welcome", 3: 86400,
+                   4: [["https://peer.example", 86400, 0]]}),
+             "welcome-count-0", "a count is 1 to 4"),
+            ("a welcome record whose peer has a count of 5", T_WELCOME,
+             cbor({1: example("at-rest/welcome/event"), 2: b"a sealed welcome", 3: 86400,
+                   4: [["https://peer.example", 86400, 5]]}),
+             "welcome-count-5", "a count is 1 to 4"),
             ("a welcome record whose peer is named by bytes", T_WELCOME,
              cbor({1: example("at-rest/welcome/event"), 2: b"a sealed welcome", 3: 86400,
-                   4: [[b"https://peer.example", 86400]]}),
+                   4: [[b"https://peer.example", 86400, 1]]}),
              "welcome-peer-bytes", "an origin is text")):
         item = b"" if table == T_STATE else unit_id if table == T_EVENT \
             else example(f"at-rest/space/dropped/{label}")
@@ -2031,6 +2049,9 @@ def self_test() -> None:
         "a welcome record whose peers are out of order": "Malformed",
         "a welcome record that names a peer twice": "Malformed",
         "a welcome record whose peer has no time of deposit": "Malformed",
+        "a welcome record whose peer has no count of deposits": "Malformed",
+        "a welcome record whose peer has a count of 0": "Malformed",
+        "a welcome record whose peer has a count of 5": "Malformed",
         "a welcome record whose peer is named by bytes": "Malformed",
         "a retention record whose item is not an object ID": "Malformed",
         "a claim naming another space": "Malformed",

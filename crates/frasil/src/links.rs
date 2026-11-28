@@ -8,6 +8,8 @@
 
 use frasil_crypto::device::DeviceId;
 use frasil_events::EventId;
+pub(crate) use frasil_store::tables::WELCOME_DEPOSITS;
+use frasil_store::tables::{MAX_PEER_URL, MAX_WELCOME_PEERS};
 use frasil_transport::addresses::{LEARNED_SECONDS, LEARNED_TICKETS};
 use frasil_transport::ticket::Ticket;
 use std::collections::BTreeMap;
@@ -15,7 +17,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// The most welcomes a device keeps waiting; past it, the oldest go.
-pub(crate) const WAITING: usize = 256;
+pub(crate) const WAITING: usize = 4096;
 
 /// How long a welcome waits at most, on the device's timeline from when it
 /// was kept: `welcome_retention` (overview.md, "Every timer"), the longest
@@ -25,7 +27,8 @@ pub(crate) const WELCOME_RETENTION: u64 = 30 * 24 * 3600;
 /// How long after its latest deposit at a peer a waiting welcome is
 /// deposited there again: `welcome_redeposit` (overview.md, "Every
 /// timer"), under the 72 hours a peer keeps by default an item of a
-/// mailbox its device has not collected (`uncollected_retention`).
+/// mailbox its device has not collected (`uncollected_retention`). A
+/// welcome is deposited at one peer [`WELCOME_DEPOSITS`] times at most.
 pub(crate) const WELCOME_REDEPOSIT: u64 = 48 * 3600;
 
 /// A welcome sealed to its recipient.
@@ -39,7 +42,9 @@ pub(crate) struct Waiting {
     pub recipient: DeviceId,
     /// The space it admits the recipient to.
     pub space: EventId,
-    /// The event that admits it.
+    /// The event the entry waits on: the event that admits the recipient,
+    /// or, for a welcome that answers a welcome request, the unit that
+    /// publishes its snapshot, written after that event.
     pub event: EventId,
     /// The sealed welcome (admission.md, "The welcome").
     pub sealed: Vec<u8>,
@@ -47,12 +52,30 @@ pub(crate) struct Waiting {
     pub since: u64,
     /// The peers, by origin, it was deposited at in the recipient's
     /// device mailbox, ascending, each with the timeline's `T` of the
-    /// latest deposit there: as its `welcome` record names them.
-    pub deposited: Vec<(String, u64)>,
-    /// The peers, by origin, that refused its deposit for good, each with
-    /// the timeline's `T` of the deposit: kept in memory only, so that a
-    /// restart deposits there again.
-    pub refused: Vec<(String, u64)>,
+    /// latest deposit there and the number of deposits there, a deposit
+    /// the peer refused for good included: as its `welcome` record names
+    /// them.
+    pub deposited: Vec<(String, u64, u8)>,
+    /// The last look at the recipient's events in the space that found
+    /// none that ends the welcome: judged again only once it changes. In
+    /// memory only.
+    pub looked: Option<Looked>,
+}
+
+/// A look at a welcome's recipient that found it had not acted in the
+/// space (admission.md, 3.10 Welcomes, "A welcome that waits"): the event
+/// it judged, and, in a log that holds stubs, witnesses or dropped events,
+/// where a walk of the past can stop short, how many events the log had
+/// placed and its revision then, so that a stub filled, a witness added or
+/// an event held again is looked at again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Looked {
+    /// The newest event of the recipient's chain accepted in full, judged
+    /// without the welcome's event in its past.
+    pub judged: EventId,
+    /// The log's placed count and revision, in a log whose past a walk may
+    /// not reach in full.
+    pub log: Option<(usize, u64)>,
 }
 
 #[cfg_attr(
@@ -60,14 +83,38 @@ pub(crate) struct Waiting {
     allow(dead_code)
 )]
 impl Waiting {
-    /// Whether it is due at the peer at `origin` at `now`: deposited and
-    /// refused there never, or `WELCOME_REDEPOSIT` or longer before.
-    fn due_at(&self, origin: &str, now: u64) -> bool {
+    /// Whether it is due at the peer at `origin` at `now`: deposited there
+    /// never, while it names fewer than 64 peers, or fewer than
+    /// `WELCOME_DEPOSITS` times, the latest `WELCOME_REDEPOSIT` or longer
+    /// before.
+    pub(crate) fn due_at(&self, origin: &str, now: u64) -> bool {
+        match self.named(origin) {
+            Ok(index) => {
+                let (_, at, count) = self.deposited[index];
+                count < WELCOME_DEPOSITS && now.saturating_sub(at) >= WELCOME_REDEPOSIT
+            }
+            Err(_) => self.may_deposit_at(origin),
+        }
+    }
+
+    /// Where `origin` is among the peers it was deposited at.
+    fn named(&self, origin: &str) -> std::result::Result<usize, usize> {
         self.deposited
-            .iter()
-            .chain(&self.refused)
-            .filter(|(peer, _)| peer == origin)
-            .all(|(_, at)| now.saturating_sub(*at) >= WELCOME_REDEPOSIT)
+            .binary_search_by(|(peer, _, _)| peer.as_str().cmp(origin))
+    }
+
+    /// Whether one more deposit at the peer at `origin` stays within the
+    /// bounds its record can keep: fewer than `WELCOME_DEPOSITS` there, a
+    /// peer its record names or one more it can, and an origin of 1 to 512
+    /// bytes (admission.md, 3.10 Welcomes, "A welcome that waits").
+    pub(crate) fn may_deposit_at(&self, origin: &str) -> bool {
+        if !(1..=MAX_PEER_URL).contains(&origin.len()) {
+            return false;
+        }
+        match self.named(origin) {
+            Ok(index) => self.deposited[index].2 < WELCOME_DEPOSITS,
+            Err(_) => self.deposited.len() < MAX_WELCOME_PEERS,
+        }
     }
 
     /// The same welcome as `other`: the same recipient, space, event and
@@ -78,24 +125,16 @@ impl Waiting {
     }
 
     /// Deposited at the peer at `origin` at `at`: named there with that
-    /// `T`, and refused there no longer.
+    /// `T`, and one more deposit counted there.
     pub(crate) fn deposit_at(&mut self, origin: &str, at: u64) {
-        self.refused.retain(|(peer, _)| peer != origin);
-        match self
-            .deposited
-            .binary_search_by(|(peer, _)| peer.as_str().cmp(origin))
-        {
-            Ok(index) => self.deposited[index].1 = at,
-            Err(index) => self.deposited.insert(index, (origin.to_owned(), at)),
+        match self.named(origin) {
+            Ok(index) => {
+                let (_, latest, count) = &mut self.deposited[index];
+                *latest = at;
+                *count = count.saturating_add(1).min(WELCOME_DEPOSITS);
+            }
+            Err(index) => self.deposited.insert(index, (origin.to_owned(), at, 1)),
         }
-    }
-
-    /// Refused for good at the peer at `origin` at `at`: named there no
-    /// longer, and held in memory to be deposited again later.
-    pub(crate) fn refused_at(&mut self, origin: &str, at: u64) {
-        self.deposited.retain(|(peer, _)| peer != origin);
-        self.refused.retain(|(peer, _)| peer != origin);
-        self.refused.push((origin.to_owned(), at));
     }
 }
 
@@ -136,13 +175,31 @@ struct Held {
     at: Instant,
 }
 
+/// Where a waiting welcome stands among the others, oldest first: the `T`
+/// it was kept at, then the order the device took it in.
+type Place = (u64, u64);
+
+/// A waiting welcome's recipient and space, which name it.
+type Key = (DeviceId, EventId);
+
 /// What the device's member connections share.
 #[derive(Debug, Default)]
 #[cfg_attr(not(feature = "iroh"), allow(dead_code))]
 pub(crate) struct Links {
-    /// Welcomes not yet known to have arrived, oldest first, as their
-    /// `welcome` records hold them.
-    welcomes: Vec<Waiting>,
+    /// Welcomes not yet known to have arrived, by recipient and space, as
+    /// their `welcome` records hold them, each with its place.
+    welcomes: BTreeMap<Key, (Place, Waiting)>,
+    /// The same welcomes oldest first, by place.
+    oldest: BTreeMap<Place, Key>,
+    /// The order the next welcome taken stands in.
+    taken: u64,
+    /// The welcome the last look for welcomes whose recipient acted
+    /// stopped at: the next one starts after it.
+    looked_up_to: Option<Key>,
+    /// Welcomes of spaces kept in memory only that a member connection
+    /// ended, oldest first, at most [`WAITING`]: the device drops the
+    /// deposits of them it keeps in memory.
+    ended_in_memory: Vec<Waiting>,
     /// For each space, the admitted attaches that serve it.
     attached: BTreeMap<EventId, usize>,
     /// For each space and member, the admitted attaches with that member.
@@ -167,96 +224,221 @@ pub(crate) struct Links {
 
 #[cfg_attr(not(feature = "iroh"), allow(dead_code))]
 impl Links {
+    /// Takes a welcome in, in place of one for the same recipient and
+    /// space, after every other.
+    fn take(&mut self, welcome: Waiting) {
+        let key = (welcome.recipient, welcome.space);
+        self.remove(&key);
+        let place = (welcome.since, self.taken);
+        self.taken = self.taken.wrapping_add(1);
+        self.oldest.insert(place, key);
+        self.welcomes.insert(key, (place, welcome));
+    }
+
+    /// Takes a welcome out.
+    fn remove(&mut self, key: &Key) -> Option<Waiting> {
+        let (place, welcome) = self.welcomes.remove(key)?;
+        self.oldest.remove(&place);
+        Some(welcome)
+    }
+
+    /// The welcomes past the bound, the oldest first, taken out.
+    fn over(&mut self) -> Vec<Waiting> {
+        let mut over = Vec::new();
+        while self.welcomes.len() > WAITING {
+            let Some((_, key)) = self.oldest.pop_first() else {
+                break;
+            };
+            if let Some((_, welcome)) = self.welcomes.remove(&key) {
+                over.push(welcome);
+            }
+        }
+        over
+    }
+
     /// Keeps a welcome until a member connection with its recipient hands
     /// it over and the recipient attaches the space, in place of one for
     /// the same recipient and space. Returns the welcomes the bound
     /// passes, the oldest first, which wait no longer.
     pub(crate) fn wait(&mut self, welcome: Waiting) -> Vec<Waiting> {
-        self.welcomes
-            .retain(|w| (w.recipient, w.space) != (welcome.recipient, welcome.space));
-        let at = self.welcomes.partition_point(|w| w.since <= welcome.since);
-        self.welcomes.insert(at, welcome);
-        let over = self.welcomes.len().saturating_sub(WAITING);
-        self.welcomes.drain(..over).collect()
+        self.take(welcome);
+        self.over()
+    }
+
+    /// Keeps the welcomes a device loads as it opens, in place of any for
+    /// the same recipient and space, as [`wait`](Links::wait) keeps each
+    /// one. Returns the welcomes the bound passes, the oldest first, which
+    /// wait no longer.
+    pub(crate) fn load_waiting(&mut self, loaded: Vec<Waiting>) -> Vec<Waiting> {
+        for welcome in loaded {
+            self.take(welcome);
+        }
+        self.over()
     }
 
     /// The welcomes kept `WELCOME_RETENTION` or longer before `now`, on
     /// the device's timeline, which wait no longer.
     pub(crate) fn expire_welcomes(&mut self, now: u64) -> Vec<Waiting> {
-        let (old, young) = std::mem::take(&mut self.welcomes)
-            .into_iter()
-            .partition(|w| now.saturating_sub(w.since) >= WELCOME_RETENTION);
-        self.welcomes = young;
-        old
+        let old: Vec<Key> = self
+            .oldest
+            .iter()
+            .take_while(|((since, _), _)| now.saturating_sub(*since) >= WELCOME_RETENTION)
+            .map(|(_, key)| *key)
+            .collect();
+        old.iter().filter_map(|key| self.remove(key)).collect()
     }
 
     /// The welcomes of a space the device forgets: none of them waits.
     pub(crate) fn forget_welcomes(&mut self, space: &EventId) {
-        self.welcomes.retain(|w| w.space != *space);
+        let gone: Vec<Key> = self
+            .welcomes
+            .keys()
+            .filter(|(_, of)| of == space)
+            .copied()
+            .collect();
+        for key in &gone {
+            self.remove(key);
+        }
     }
 
     /// The welcomes due at the peer at `url` at `now`, on the device's
-    /// timeline: never deposited there, or last deposited or refused
-    /// there `WELCOME_REDEPOSIT` or longer before. A `T` past `now`, as
-    /// after a timeline that started again, is not due until `now` passes
-    /// it by that much.
+    /// timeline, oldest first: never deposited there while they name fewer
+    /// than 64 peers, or deposited there fewer than `WELCOME_DEPOSITS`
+    /// times, the latest `WELCOME_REDEPOSIT` or longer before. A `T` past
+    /// `now`, as after a timeline that started again, is not due until
+    /// `now` passes it by that much.
     pub(crate) fn to_deposit(&self, url: &str, now: u64) -> Vec<Waiting> {
         let url = origin(url);
-        self.welcomes
-            .iter()
+        self.in_order()
             .filter(|w| w.due_at(url, now))
             .cloned()
             .collect()
     }
 
     /// Every waiting welcome, oldest first.
+    fn in_order(&self) -> impl Iterator<Item = &Waiting> {
+        self.oldest
+            .values()
+            .filter_map(|key| self.welcomes.get(key).map(|(_, welcome)| welcome))
+    }
+
+    /// Every waiting welcome, oldest first.
     pub(crate) fn waiting_welcomes(&self) -> Vec<Waiting> {
-        self.welcomes.clone()
+        self.in_order().cloned().collect()
     }
 
     /// The welcome for a recipient and space, as it waits now.
     pub(crate) fn waiting(&self, recipient: &DeviceId, space: &EventId) -> Option<Waiting> {
         self.welcomes
-            .iter()
-            .find(|w| (w.recipient, w.space) == (*recipient, *space))
-            .cloned()
+            .get(&(*recipient, *space))
+            .map(|(_, welcome)| welcome.clone())
     }
 
     /// The waiting welcome that is the same as `welcome`, to change.
     pub(crate) fn same_mut(&mut self, welcome: &Waiting) -> Option<&mut Waiting> {
-        self.welcomes.iter_mut().find(|w| w.same(welcome))
+        self.welcomes
+            .get_mut(&(welcome.recipient, welcome.space))
+            .map(|(_, waiting)| waiting)
+            .filter(|waiting| waiting.same(welcome))
     }
 
-    /// The waiting welcome a deposit of `item` at the device mailbox
-    /// `address` carries, where `address_of` gives a recipient's address.
-    pub(crate) fn carried(
-        &self,
-        address: &[u8; 32],
-        item: &[u8],
-        address_of: impl Fn(&DeviceId) -> [u8; 32],
-    ) -> Option<Waiting> {
-        self.welcomes
-            .iter()
-            .find(|w| w.sealed == item && address_of(&w.recipient) == *address)
+    /// Looks at the waiting welcomes in turn with `look`, starting after
+    /// the one the last such round stopped at, and around to it, until
+    /// `look` answers `None`, which leaves that welcome for the next round.
+    /// Takes out, and returns, the welcomes for which it answers true.
+    pub(crate) fn look_round(
+        &mut self,
+        mut look: impl FnMut(&mut Waiting) -> Option<bool>,
+    ) -> Vec<Waiting> {
+        use std::ops::Bound::{Excluded, Included, Unbounded};
+        let start = self.looked_up_to;
+        let mut last = start;
+        let mut ended = Vec::new();
+        let mut stopped = false;
+        let after = start.map_or(Unbounded, Excluded);
+        for (key, (_, welcome)) in self.welcomes.range_mut((after, Unbounded)) {
+            match look(welcome) {
+                None => {
+                    stopped = true;
+                    break;
+                }
+                Some(true) => ended.push(*key),
+                Some(false) => {}
+            }
+            last = Some(*key);
+        }
+        if !stopped && let Some(start) = start {
+            for (key, (_, welcome)) in self.welcomes.range_mut((Unbounded, Included(start))) {
+                match look(welcome) {
+                    None => break,
+                    Some(true) => ended.push(*key),
+                    Some(false) => {}
+                }
+                last = Some(*key);
+            }
+        }
+        self.looked_up_to = last;
+        ended.iter().filter_map(|key| self.remove(key)).collect()
+    }
+
+    /// The waiting welcome a deposit of `item` carries to `recipient`.
+    pub(crate) fn carried(&self, recipient: &DeviceId, item: &[u8]) -> Option<Waiting> {
+        self.of_recipient(recipient)
+            .find(|w| w.sealed == item)
             .cloned()
+    }
+
+    /// The recipient each waiting welcome goes to, by the address of its
+    /// device mailbox, where `address_of` gives a recipient's address: read
+    /// once for many deposits.
+    pub(crate) fn recipients(
+        &self,
+        address_of: impl Fn(&DeviceId) -> [u8; 32],
+    ) -> BTreeMap<[u8; 32], DeviceId> {
+        let mut recipients = BTreeMap::new();
+        let mut last = None;
+        for (recipient, _) in self.welcomes.keys() {
+            if last != Some(*recipient) {
+                recipients.insert(address_of(recipient), *recipient);
+                last = Some(*recipient);
+            }
+        }
+        recipients
+    }
+
+    /// The welcomes waiting for a recipient, by space.
+    fn of_recipient(&self, recipient: &DeviceId) -> impl Iterator<Item = &Waiting> {
+        self.welcomes
+            .range((*recipient, EventId([0; 32]))..=(*recipient, EventId([0xff; 32])))
+            .map(|(_, (_, welcome))| welcome)
     }
 
     /// The welcomes waiting for a recipient.
     pub(crate) fn welcomes_for(&self, recipient: &DeviceId) -> Vec<Waiting> {
-        self.welcomes
-            .iter()
-            .filter(|w| w.recipient == *recipient)
-            .cloned()
-            .collect()
+        self.of_recipient(recipient).cloned().collect()
+    }
+
+    /// Keeps a welcome of a space kept in memory only that ended outside
+    /// the device's own passes, for the device to drop the deposits of it
+    /// it keeps in memory, which no record holds. Past [`WAITING`], the
+    /// oldest goes.
+    pub(crate) fn ended_in_memory(&mut self, welcome: Waiting) {
+        if self.ended_in_memory.len() >= WAITING {
+            self.ended_in_memory.remove(0);
+        }
+        self.ended_in_memory.push(welcome);
+    }
+
+    /// The welcomes [`ended_in_memory`](Links::ended_in_memory) keeps,
+    /// taken out.
+    pub(crate) fn take_ended_in_memory(&mut self) -> Vec<Waiting> {
+        std::mem::take(&mut self.ended_in_memory)
     }
 
     /// The recipient holds the space, or the space's roster no longer
-    /// reaches it: its welcome no longer waits. Whether one waited.
-    pub(crate) fn delivered(&mut self, recipient: &DeviceId, space: &EventId) -> bool {
-        let before = self.welcomes.len();
-        self.welcomes
-            .retain(|w| (w.recipient, w.space) != (*recipient, *space));
-        self.welcomes.len() != before
+    /// reaches it: its welcome no longer waits. The one that waited.
+    pub(crate) fn delivered(&mut self, recipient: &DeviceId, space: &EventId) -> Option<Waiting> {
+        self.remove(&(*recipient, *space))
     }
 
     /// An attach admitted for a space, with the member on the other side
@@ -441,5 +623,134 @@ impl Links {
         let keep = Duration::from_secs(LEARNED_SECONDS);
         self.held
             .retain(|h| now.saturating_duration_since(h.at) < keep);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The waiting welcomes in memory (admission.md, 3.10 Welcomes, "A
+    //! welcome that waits"): by recipient and space, in order of age, and
+    //! a round of looks over them that resumes where the last one stopped.
+
+    use super::*;
+
+    /// A welcome for recipient `n` in one space, kept at `since`, its
+    /// sealed bytes `sealed`.
+    fn welcome(n: u16, since: u64, sealed: u8) -> Waiting {
+        let mut recipient = [0; 32];
+        recipient[..2].copy_from_slice(&n.to_be_bytes());
+        Waiting {
+            recipient: DeviceId(recipient),
+            space: EventId([1; 32]),
+            event: EventId([2; 32]),
+            sealed: vec![sealed],
+            since,
+            deposited: Vec::new(),
+            looked: None,
+        }
+    }
+
+    /// The recipient number of a welcome.
+    fn number(welcome: &Waiting) -> u16 {
+        u16::from_be_bytes([welcome.recipient.0[0], welcome.recipient.0[1]])
+    }
+
+    /// The recipients of the waiting welcomes, oldest first.
+    fn in_order(links: &Links) -> Vec<u16> {
+        links.waiting_welcomes().iter().map(number).collect()
+    }
+
+    /// A round with a budget of `walks` looks, each answering whether the
+    /// welcome ends by `ends`: the welcomes looked at, in order, and those
+    /// ended.
+    fn round(links: &mut Links, walks: usize, ends: impl Fn(u16) -> bool) -> (Vec<u16>, Vec<u16>) {
+        let mut left = walks;
+        let mut looked = Vec::new();
+        let ended = links.look_round(|welcome| {
+            left = left.checked_sub(1)?;
+            looked.push(number(welcome));
+            Some(ends(number(welcome)))
+        });
+        (looked, ended.iter().map(number).collect())
+    }
+
+    /// A round stops when its look answers `None`, at 64 walks in a
+    /// device's round, and the next starts after the last welcome looked
+    /// at and goes around to it; a round whose cursor's welcome has gone
+    /// meanwhile starts after where it stood.
+    #[test]
+    fn a_round_of_looks_resumes_where_the_last_stopped() {
+        let mut links = Links::default();
+        for n in 0..70 {
+            links.wait(welcome(n, 10, 0));
+        }
+        let (looked, ended) = round(&mut links, 64, |_| false);
+        assert_eq!(looked, (0..64).collect::<Vec<_>>());
+        assert!(ended.is_empty());
+
+        let (looked, _) = round(&mut links, 64, |_| false);
+        let around: Vec<u16> = (64..70).chain(0..58).collect();
+        assert_eq!(looked, around, "around past the last");
+
+        // The cursor stands at 57; its welcome goes.
+        assert!(
+            links
+                .delivered(&welcome(57, 0, 0).recipient, &EventId([1; 32]))
+                .is_some()
+        );
+        let (looked, ended) = round(&mut links, usize::MAX, |n| n == 60);
+        let all: Vec<u16> = (58..70).chain(0..57).collect();
+        assert_eq!(looked, all, "each once, from after the cursor");
+        assert_eq!(ended, [60]);
+        assert_eq!(links.waiting_welcomes().len(), 68);
+
+        let (looked, _) = round(&mut links, usize::MAX, |_| false);
+        assert_eq!(looked.first(), Some(&58), "after the last looked at");
+        assert_eq!(looked.len(), 68);
+    }
+
+    /// Welcomes stand in order of the `T` each was kept at, those kept at
+    /// the same `T` in the order taken; one that takes the place of
+    /// another for the same recipient and space stands after every other,
+    /// and the bound passes the oldest first.
+    #[test]
+    fn the_waiting_welcomes_stand_in_order_of_age() {
+        let mut links = Links::default();
+        assert!(links.wait(welcome(0, 10, 0)).is_empty());
+        assert!(links.wait(welcome(1, 10, 0)).is_empty());
+        assert!(links.wait(welcome(2, 5, 0)).is_empty());
+        assert_eq!(in_order(&links), [2, 0, 1], "ties in the order taken");
+
+        assert!(links.wait(welcome(0, 10, 1)).is_empty());
+        assert_eq!(
+            in_order(&links),
+            [2, 1, 0],
+            "a replaced one after every other"
+        );
+        let replaced = links
+            .waiting(&welcome(0, 0, 0).recipient, &EventId([1; 32]))
+            .unwrap();
+        assert_eq!(replaced.sealed, [1]);
+        assert_eq!(links.waiting_welcomes().len(), 3);
+
+        for n in 3..u16::try_from(WAITING).unwrap() {
+            assert!(links.wait(welcome(n, 20, 0)).is_empty());
+        }
+        let n = u16::try_from(WAITING).unwrap();
+        let passed: Vec<u16> = links.wait(welcome(n, 20, 0)).iter().map(number).collect();
+        assert_eq!(passed, [2]);
+        let passed: Vec<u16> = links
+            .wait(welcome(n + 1, 20, 0))
+            .iter()
+            .map(number)
+            .collect();
+        assert_eq!(passed, [1], "the one replaced after it stays");
+        let passed: Vec<u16> = links
+            .wait(welcome(n + 2, 20, 0))
+            .iter()
+            .map(number)
+            .collect();
+        assert_eq!(passed, [0]);
+        assert_eq!(links.waiting_welcomes().len(), WAITING);
     }
 }

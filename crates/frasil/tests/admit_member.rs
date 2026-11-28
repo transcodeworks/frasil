@@ -807,3 +807,90 @@ async fn a_restricted_known_space_vouches_only_for_a_device_its_parent_reaches()
         .await
         .unwrap_err();
 }
+
+/// A note `device` writes in `space`, as one unit it signs.
+async fn write_note(device: &Device, space: SpaceId, text: &str) {
+    let held = device.space(space).await.unwrap();
+    let note = held.create_document().unwrap();
+    note.edit(|doc| doc.get_text("body").insert(0, text))
+        .await
+        .unwrap();
+}
+
+/// The welcome ends once the granter's own view of the space holds an
+/// event the newcomer signed with the admitting event in its past: the
+/// newcomer holds that event and the wrap in it (admission.md, 3.10
+/// Welcomes, "A welcome that waits"). An event it signed before the grant,
+/// as a member under an earlier grant that a removal ended, or
+/// concurrently with the grant, ends nothing. No member connection joins the two devices: the events are
+/// carried by hand.
+#[tokio::test]
+async fn an_event_the_newcomer_signs_after_the_grant_ends_its_welcome() {
+    let dir = dir("acted");
+    let granter = stored(&dir, 61).await;
+    let device = memory(62).await;
+    let known = granter.create_space().await.unwrap();
+    let space = granter.create_space().await.unwrap();
+    for held in [&known, &space] {
+        granter
+            .engine()
+            .grant_device(
+                ev(held.id()),
+                device.engine().public_keys().clone(),
+                Level::Write,
+                HistoryMode::WithHistory,
+                Via::Code,
+            )
+            .await
+            .unwrap();
+    }
+    let space_id = space.id();
+    // A writer under the earlier grant, the device writes before it is
+    // removed and admitted again, and again concurrently with that.
+    carry(&granter, &device, space_id).await;
+    write_note(&device, space_id, "before").await;
+    carry(&device, &granter, space_id).await;
+    granter
+        .engine()
+        .remove(ev(space_id), MemberRef::device(device.engine().device_id()))
+        .await
+        .unwrap();
+    space
+        .admit_member(known.id(), device.id(), Level::Write)
+        .await
+        .unwrap();
+    assert_eq!(granter.waiting_welcomes().len(), 1);
+    write_note(&device, space_id, "concurrently").await;
+    carry(&device, &granter, space_id).await;
+    granter.welcome_upkeep().await;
+    assert_eq!(
+        granter.waiting_welcomes().len(),
+        1,
+        "an event without the grant in its past ends nothing"
+    );
+    granter.welcome_upkeep().await;
+    assert_eq!(granter.waiting_welcomes().len(), 1, "nor at a second look");
+    granter.close().await.unwrap();
+    drop((space, known, granter));
+    let granter = stored(&dir, 61).await;
+    granter.welcome_upkeep().await;
+    assert_eq!(granter.waiting_welcomes().len(), 1, "nor after a restart");
+    granter.welcome_upkeep().await;
+    assert_eq!(granter.waiting_welcomes().len(), 1);
+
+    // Once the device holds the grant and writes, its event has the grant
+    // in its past: the welcome ends, at rest too.
+    carry(&granter, &device, space_id).await;
+    write_note(&device, space_id, "after").await;
+    carry(&device, &granter, space_id).await;
+    granter.welcome_upkeep().await;
+    assert!(granter.waiting_welcomes().is_empty());
+    granter.close().await.unwrap();
+    drop(granter);
+    let granter = stored(&dir, 61).await;
+    assert!(granter.waiting_welcomes().is_empty(), "no record is left");
+    granter.close().await.unwrap();
+    device.close().await.unwrap();
+    drop((granter, device));
+    let _ = std::fs::remove_dir_all(&dir);
+}

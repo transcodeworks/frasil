@@ -716,10 +716,7 @@ impl Vault {
 
     /// Reads one record of a device-wide table, by its item.
     #[cfg_attr(
-        not(all(
-            feature = "ext-deposit-tokens",
-            any(feature = "server", feature = "iroh", feature = "server-socket")
-        )),
+        not(any(feature = "server", feature = "iroh", feature = "server-socket")),
         allow(dead_code)
     )]
     pub async fn get_device_item(&self, table: Table, item: &[u8]) -> Result<Option<TableValue>> {

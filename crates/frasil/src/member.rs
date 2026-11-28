@@ -1067,7 +1067,7 @@ impl Driver {
         }
         self.device.links().attach(space, remote);
         if let Some(remote) = remote {
-            self.device.end_welcome(remote, space).await;
+            self.device.end_welcomes(remote, &[space]).await;
         }
         // Where the other device is, for dialing it again after a restart
         // (transport.md, "Reconnecting"), and for member addresses.
@@ -1281,6 +1281,8 @@ impl Driver {
         };
         self.device.expire_welcomes().await;
         let waiting = self.device.links().welcomes_for(&remote);
+        // Those the roster no longer reaches end at once, in one commit.
+        let (mut handing, mut unreached) = (Vec::new(), Vec::new());
         for welcome in waiting {
             if self.handed.contains(&welcome.space) {
                 continue;
@@ -1292,10 +1294,14 @@ impl Driver {
                 })
                 .await
                 .unwrap_or(false);
-            if !reaches {
-                self.device.end_welcome(remote, welcome.space).await;
-                continue;
+            if reaches {
+                handing.push(welcome);
+            } else {
+                unreached.push(welcome.space);
             }
+        }
+        self.device.end_welcomes(remote, &unreached).await;
+        for welcome in handing {
             self.handed.insert(welcome.space);
             let put = MailboxPut {
                 request: 0,
